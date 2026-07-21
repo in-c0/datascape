@@ -1,0 +1,32 @@
+{
+  "name": "datascape",
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "build:public": "vite build --mode public --outDir dist-public",
+    "lint": "oxlint",
+    "preview": "vite preview",
+    "navigator": "node scripts/navigator-server.mjs",
+    "sample": "node scripts/make-sample.mjs",
+    "deploy-data": "node scripts/deploy-data.mjs"
+  },
+  "dependencies": {
+    "@react-three/drei": "^10.7.7",
+    "@react-three/fiber": "^9.6.1",
+    "maath": "^0.10.8",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "three": "^0.185.1"
+  },
+  "devDependencies": {
+    "@anthropic-ai/sdk": "^0.112.1",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.3",
+    "oxlint": "^1.71.0",
+    "vite": "^8.1.1"
+  },
+  "description": "A 3D landscape of your own thinking — a data-decoupled portfolio template."
+}

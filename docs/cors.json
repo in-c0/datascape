@@ -1,0 +1,11 @@
+[
+  {
+    "AllowedOrigins": [
+      "http://localhost:3778",
+      "https://your-domain.com"
+    ],
+    "AllowedMethods": ["GET", "HEAD"],
+    "AllowedHeaders": ["*"],
+    "MaxAgeSeconds": 3600
+  }
+]
