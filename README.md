@@ -174,6 +174,7 @@ else's.
 
 ## Credits
 
+Inspired by **“topology of thoughts” by [poet.engineer](https://www.instagram.com/the.poet.engineer/)**.
 Built on Vite + React + [react-three-fiber](https://github.com/pmndrs/react-three-fiber).
 Originally the engine behind a personal portfolio; generalized into a template.
 MIT licensed — make something that's unmistakably yours.
