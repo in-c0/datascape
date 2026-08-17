@@ -1,0 +1,192 @@
+{
+  "_readme": "SAMPLE DATA — fictional Continuity state for Sam Rivers. This file is optional; omit it if your Datascape data source does not yet produce temporal decision state.",
+  "attentionBudget": {
+    "maxNeighbors": 4,
+    "targetReadSeconds": 15
+  },
+  "snapshots": [
+    {
+      "id": "5d",
+      "label": "5 days ago",
+      "largeContext": "QuietInbox is still blocked by product reliability.",
+      "dominant": "Product readiness",
+      "hiddenCount": 1264,
+      "concepts": {
+        "Product readiness": {
+          "status": "live",
+          "summary": "The digest flow is not yet reliable enough to justify acquisition work.",
+          "resolutions": [
+            ["Core reliability", "User access", "Persistence"],
+            ["Digest generation", "Signup", "Saved preferences"],
+            ["Generation timeout", "Account creation", "Preference reload"]
+          ],
+          "evidence": [
+            "Generation timeout still reproduces intermittently.",
+            "Preference reload has not completed a full regression pass."
+          ]
+        },
+        "Distribution": {
+          "status": "live",
+          "summary": "Acquisition ideas exist, but product reliability still dominates the next commitment.",
+          "resolutions": [
+            ["Social", "Communities", "Direct outreach"],
+            ["Short-form", "Newsletter communities", "Friends beta"],
+            ["Demo clip", "Indie newsletter groups", "Invite loop"]
+          ],
+          "evidence": [
+            "No acquisition channel has enough evidence to outrank reliability work."
+          ]
+        }
+      }
+    },
+    {
+      "id": "2d",
+      "label": "2 days ago",
+      "largeContext": "QuietInbox reliability is acceptable; distribution becomes the main uncertainty.",
+      "dominant": "Distribution",
+      "hiddenCount": 2418,
+      "concepts": {
+        "Product readiness": {
+          "status": "committed",
+          "summary": "Core generation and persistence flows are reliable enough for external testing.",
+          "resolutions": [
+            ["Core flows", "Persistence", "Monitoring"],
+            ["Digest generation", "Saved preferences", "Error watch"],
+            ["Generation pass", "Reload pass", "No blocking errors"]
+          ],
+          "evidence": [
+            "Generation regression suite passed.",
+            "Saved preference reload passed.",
+            "No blocking production error observed in the validation window."
+          ]
+        },
+        "Distribution": {
+          "status": "live",
+          "summary": "The project has crossed from build-first into evidence-first acquisition work.",
+          "resolutions": [
+            ["Social acquisition", "Community acquisition", "Direct acquisition"],
+            ["Short-form", "Newsletter communities", "Friends beta"],
+            ["Demo clip", "Community post", "Invite loop"]
+          ],
+          "evidence": [
+            "Product reliability no longer blocks an acquisition experiment."
+          ]
+        }
+      }
+    },
+    {
+      "id": "yesterday",
+      "label": "Yesterday",
+      "largeContext": "Distribution is primary; short-form content is becoming the leading hypothesis.",
+      "dominant": "Distribution",
+      "hiddenCount": 4187,
+      "concepts": {
+        "Distribution": {
+          "status": "live",
+          "summary": "The system is comparing short-form, community, and direct acquisition paths.",
+          "resolutions": [
+            ["Social", "Communities", "Direct"],
+            ["Short-form", "Newsletter communities", "Invite loop"],
+            ["Short-form experiment", "Community post", "Invite loop"]
+          ],
+          "evidence": [
+            "Short-form produced the strongest initial click signal.",
+            "Community traffic appears smaller but more intentional."
+          ]
+        },
+        "Short-form experiment": {
+          "parent": "Distribution",
+          "status": "live",
+          "summary": "The first demo clip produced promising acquisition signal, but durability is unknown.",
+          "resolutions": [
+            ["Initial acquisition", "Creative fit", "Durability"],
+            ["Click intent", "Demo comprehension", "Retention signal"],
+            ["Profile clicks", "Product-story clarity", "24h return"]
+          ],
+          "evidence": [
+            "Profile-click rate exceeded the other tested channel.",
+            "Return behavior is still immature."
+          ]
+        }
+      }
+    },
+    {
+      "id": "now",
+      "label": "Now",
+      "largeContext": "Distribution remains the main uncertainty; short-form leads provisionally.",
+      "dominant": "Distribution",
+      "hiddenCount": 8412,
+      "concepts": {
+        "Distribution": {
+          "status": "live",
+          "summary": "A repeatable acquisition path is still unproven; short-form currently leads.",
+          "resolutions": [
+            ["Social acquisition", "Community acquisition", "Direct acquisition"],
+            ["Short-form promising", "Communities niche", "Invite loop slow"],
+            ["Short-form experiment", "Community post", "Invite loop", "Launch platform deferred"]
+          ],
+          "evidence": [
+            "Short-form currently has the strongest acquisition signal.",
+            "Community users show stronger intent but lower reach.",
+            "Launch-platform exposure was deferred until the acquisition story is clearer."
+          ]
+        },
+        "Short-form experiment": {
+          "parent": "Distribution",
+          "status": "live",
+          "summary": "Initial acquisition is positive; retention and the repeatable creative pattern remain unresolved.",
+          "resolutions": [
+            ["Acquisition positive", "Durability unresolved", "Creative pattern unsettled"],
+            ["Content-market fit", "Algorithmic distribution", "Retention signal", "Creator path"],
+            ["Demo comprehension", "Cold-start boost", "24h return", "Creator-led acquisition"]
+          ],
+          "evidence": [
+            "Demo comprehension improved after the latest edit.",
+            "Click-to-signup intent strengthened.",
+            "24-hour return evidence is still incomplete."
+          ]
+        },
+        "Algorithmic distribution": {
+          "parent": "Short-form experiment",
+          "status": "live",
+          "summary": "The system is testing which early signals best explain initial reach.",
+          "resolutions": [
+            ["Initial reach", "Signal interpretation", "Alternative explanation"],
+            ["Cold-start boost", "Early signals", "Alternative ranking"],
+            ["Cohort lift", "Watch depth", "Novelty effect", "Control comparison"]
+          ],
+          "evidence": [
+            "Two cohorts show similar early lift.",
+            "Watch depth tracks signup intent better than raw views.",
+            "Novelty remains a plausible competing explanation."
+          ]
+        },
+        "Retention signal": {
+          "parent": "Short-form experiment",
+          "status": "live",
+          "summary": "Acquisition looks promising, but there is not enough evidence yet to call the intent durable.",
+          "resolutions": [
+            ["Return behavior", "Signup quality", "Novelty risk"],
+            ["24h return", "Activated signup", "Novelty spike"],
+            ["Returning cohort", "First digest completed", "One-off curiosity"]
+          ],
+          "evidence": [
+            "The current cohort is too young for a durable-retention commitment."
+          ]
+        },
+        "Product readiness": {
+          "status": "committed",
+          "summary": "Core generation and persistence flows remain stable enough for acquisition experiments.",
+          "resolutions": [
+            ["Core flows", "Persistence", "Monitoring"],
+            ["Digest generation", "Saved preferences", "Error watch"],
+            ["Generation pass", "Reload pass", "No blocking errors"]
+          ],
+          "evidence": [
+            "No blocker has reappeared since validation."
+          ]
+        }
+      }
+    }
+  ]
+}
