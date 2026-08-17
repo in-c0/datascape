@@ -16,6 +16,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: npm run continuity:adapters -- --dry-run tests/fixtures/continuity-adapter.mjs
       - run: npm run continuity:observations -- public/sample-data --replace
       - run: npm run validate:continuity:observations -- public/sample-data/continuity-observations.json
       - run: npm run continuity:graph -- public/sample-data
