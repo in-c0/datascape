@@ -154,10 +154,45 @@ button, input { font: inherit; }
 .ct-empty p, .ct-empty a { color: var(--ct-muted); }
 
 @media (max-width: 760px) {
-  .ct-top { left: 12px; right: 12px; grid-template-columns: auto auto; }
-  .ct-context { grid-column: 1 / 3; grid-row: 2; justify-self: start; max-width: 92vw; }
-  .ct-bottom { left: 12px; right: 12px; grid-template-columns: 1fr; }
+  .ct-top {
+    top: 12px;
+    left: 12px;
+    right: 12px;
+    grid-template-columns: 1fr auto;
+    gap: 8px 10px;
+  }
+  .ct-brand { font-size: 13px; white-space: nowrap; }
+  .ct-top__actions { gap: 5px; }
+  .ct-top__actions button:first-child { display: none; }
+  .ct-top button, .ct-top a {
+    padding: 6px 7px;
+    border-radius: 8px;
+    font-size: 10.5px;
+  }
+  .ct-context {
+    grid-column: 1 / 3;
+    grid-row: 2;
+    justify-self: start;
+    max-width: calc(100vw - 24px);
+    font-size: 11px;
+  }
+  .ct-bottom {
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+    grid-template-columns: 1fr;
+  }
   .ct-summary { display: none; }
-  .ct-controls { grid-column: 1; }
-  .ct-inspect { left: 12px; right: 12px; top: 94px; width: auto; }
+  .ct-controls { grid-column: 1; gap: 7px; }
+  .ct-resolution, .ct-time { gap: 7px; font-size: 10px; }
+  .ct-time input { width: 155px; }
+  .ct-resolution button { width: 29px; height: 29px; }
+  .ct-inspect {
+    left: 12px;
+    right: 12px;
+    top: 82px;
+    width: auto;
+    max-height: calc(100vh - 170px);
+    overflow: auto;
+  }
 }
