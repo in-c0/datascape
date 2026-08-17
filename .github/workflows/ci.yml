@@ -18,6 +18,8 @@ jobs:
       - run: npm ci
       - run: npm run continuity:observations -- public/sample-data --replace
       - run: npm run validate:continuity:observations -- public/sample-data/continuity-observations.json
+      - run: npm run continuity:graph -- public/sample-data
+      - run: npm run validate:continuity:graph -- public/sample-data/continuity-graph.json
       - run: npm run continuity -- public/sample-data --dry-run
       - run: npm test
       - run: npm run validate:continuity
