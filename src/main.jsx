@@ -19,6 +19,8 @@ if (import.meta.env.DEV) {
 }
 
 const root = document.getElementById("root");
+const requestedView = new URLSearchParams(window.location.search).get("view");
+const view = requestedView === "continuity" ? "continuity" : "landscape";
 
 function screen(html) {
   root.innerHTML = `<div class="boot">${html}</div>`;
@@ -26,16 +28,19 @@ function screen(html) {
 
 // minimal boot screen while the data loads from config.dataBase
 screen(`<div class="boot__brand">${config.siteName.toUpperCase()}</div>
-  <div class="boot__msg">loading landscape…</div>`);
+  <div class="boot__msg">loading ${view}…</div>`);
 
 loadData(config.dataBase)
   .then(async () => {
-    // dynamic import AFTER data is in the store, so nodes.js and every
-    // data-derived module evaluate against populated data
+    // Dynamic import AFTER data is in the store. Continuity is another
+    // projection over the same runtime data boundary, not a second app/data silo.
+    const appModule = view === "continuity"
+      ? import("./continuity/ContinuityView.jsx")
+      : import("./App.jsx");
     const [{ StrictMode }, { createRoot }, { default: App }] = await Promise.all([
       import("react"),
       import("react-dom/client"),
-      import("./App.jsx"),
+      appModule,
     ]);
     root.innerHTML = "";
     createRoot(root).render(
