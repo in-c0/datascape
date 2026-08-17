@@ -59,8 +59,8 @@ button, input { font: inherit; }
   text-decoration: none;
   cursor: pointer;
 }
-.ct-top button:hover, .ct-top a:hover, .ct-resolution button:hover { color: var(--ct-text); }
-.ct-top button:disabled { opacity: 0.35; cursor: default; }
+.ct-top button:hover, .ct-top a:hover, .ct-resolution button:hover:not(:disabled) { color: var(--ct-text); }
+.ct-top button:disabled, .ct-resolution button:disabled { opacity: 0.35; cursor: default; }
 
 .ct-graph { position: absolute; inset: 0; width: 100%; height: 100%; }
 .ct-edge { fill: none; stroke: #40506a; stroke-width: 1.35; opacity: 0.74; }
@@ -74,11 +74,30 @@ button, input { font: inherit; }
 .ct-node--committed .ct-node__circle { stroke: var(--ct-green); }
 .ct-node--merged .ct-node__circle { stroke: var(--ct-cyan); }
 .ct-node--superseded .ct-node__circle { stroke: #64748b; opacity: 0.65; }
+.ct-node--deferred .ct-node__circle,
+.ct-node--blocked .ct-node__circle,
+.ct-node--needs_human .ct-node__circle { stroke: #d8b46a; }
+.ct-node--reverted .ct-node__circle { stroke: #9f7aea; opacity: 0.72; }
+.ct-node--absent .ct-node__circle {
+  fill: transparent;
+  stroke: #536174;
+  stroke-dasharray: 2 6;
+  opacity: 0.75;
+  filter: none;
+}
+.ct-node--absent .ct-node__label,
+.ct-node--absent .ct-node__sub { fill: #708095; }
 .ct-node--center .ct-node__circle {
   fill: #17132b;
   stroke: var(--ct-accent);
   stroke-width: 2.6;
   filter: drop-shadow(0 0 11px rgba(167, 139, 250, 0.55));
+}
+.ct-node--center.ct-node--absent .ct-node__circle {
+  fill: transparent;
+  stroke: #536174;
+  stroke-dasharray: 2 6;
+  filter: none;
 }
 .ct-pulse { fill: rgba(167, 139, 250, 0.12); animation: ctPulse 2s infinite; }
 @keyframes ctPulse { 0%,100% { r: 27; opacity: .14; } 50% { r: 38; opacity: .02; } }
