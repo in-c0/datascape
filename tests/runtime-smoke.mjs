@@ -27,8 +27,16 @@ try {
   await page.locator(".ct-root").waitFor({ state: "visible", timeout: 10_000 });
   assert.equal(await page.locator(".boot__err").count(), 0, "Continuity booted into an error state");
 
+  // Styling is part of the correctness contract. A previous production build
+  // mounted the Continuity DOM while its split CSS chunk never applied,
+  // yielding a technically interactive but black-on-black interface.
+  const rootColor = await page.locator(".ct-root").evaluate((element) => getComputedStyle(element).color);
+  assert.equal(rootColor, "rgb(238, 243, 248)", "Continuity shell styles must be applied in the production build");
+
   const center = page.locator(".ct-node--center .ct-node__label");
   assert.equal(await center.textContent(), "Distribution", "Current synthetic snapshot should center the dominant concept");
+  const centerFill = await center.evaluate((element) => getComputedStyle(element).fill);
+  assert.equal(centerFill, "rgb(238, 243, 248)", "Continuity SVG labels must remain readable on the dark canvas");
 
   const visibleNeighbors = page.locator(".ct-node:not(.ct-node--center):not(.ct-node--faint)");
   assert.ok((await visibleNeighbors.count()) <= 4, "Runtime viewport must not exceed the four-neighbor attention budget");
