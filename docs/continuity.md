@@ -44,7 +44,8 @@ The command:
 1. reads the **preprocessed Datascape output**, not the raw ChatGPT export;
 2. asks the local owner's configured Anthropic account to produce the smallest useful current decision-state projection;
 3. validates concept ancestry before writing;
-4. appends the new snapshot to `public/data/continuity.json` instead of rewriting previous snapshots.
+4. records that the result is an `llm_projection`, including generator/model and source-volume metadata;
+5. appends the new snapshot to `public/data/continuity.json` instead of rewriting previous snapshots.
 
 That append-only behavior is intentional: later time travel should reconstruct what the semantic ontology looked like at that point, not overwrite it with today's interpretation.
 
@@ -65,6 +66,22 @@ The generator currently follows the repository's existing local Anthropic integr
 
 `DATASCAPE_CONTINUITY_MODEL` can override the configured model and `CONTINUITY_THOUGHT_LIMIT` controls how many recent preprocessed thoughts are supplied to a generation run.
 
+### Projection is not evidence
+
+Generated semantic nodes are a **projection over source material**, not the source of truth themselves. Snapshot `source.kind` makes that boundary explicit:
+
+```text
+synthetic       demonstration data
+manual          human-authored semantic snapshot
+imported        externally produced snapshot
+a llm_projection  generated semantic interpretation
+decision_graph  projection from a future canonical temporal decision graph
+```
+
+(`llm_projection` is the actual machine-readable value; the spaced wording above is explanatory.)
+
+Inspect may expose this provenance, but the sparse default graph should not make users read it unless they ask why a node exists.
+
 ## Minimal example
 
 ```json
@@ -77,6 +94,7 @@ The generator currently follows the repository's existing local Anthropic integr
     {
       "id": "now",
       "label": "Now",
+      "source": { "kind": "manual" },
       "largeContext": "Distribution is the primary uncertainty.",
       "dominant": "Distribution",
       "concepts": {
