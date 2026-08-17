@@ -13,6 +13,14 @@ const VALID_STATUS = new Set([
   "needs_human",
 ]);
 
+const VALID_SOURCE_KIND = new Set([
+  "synthetic",
+  "manual",
+  "imported",
+  "llm_projection",
+  "decision_graph",
+]);
+
 const file = path.resolve(process.argv[2] || "public/sample-data/continuity.json");
 const errors = [];
 
@@ -22,6 +30,32 @@ function fail(message) {
 
 function nonEmptyString(value) {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+function validateOptionalCount(prefix, source, field) {
+  if (source[field] == null) return;
+  if (!Number.isInteger(source[field]) || source[field] < 0) {
+    fail(`${prefix}: source.${field} must be a non-negative integer when supplied`);
+  }
+}
+
+function validateSource(prefix, source) {
+  if (source == null) return;
+  if (!source || typeof source !== "object" || Array.isArray(source)) {
+    fail(`${prefix}: source must be an object when supplied`);
+    return;
+  }
+  if (!VALID_SOURCE_KIND.has(source.kind)) {
+    fail(`${prefix}: invalid source.kind ${JSON.stringify(source.kind)}`);
+  }
+  for (const field of ["projects", "suppliedThoughts", "corpusThoughts", "corpusMessages"]) {
+    validateOptionalCount(prefix, source, field);
+  }
+  for (const field of ["generator", "model"]) {
+    if (source[field] != null && !nonEmptyString(source[field])) {
+      fail(`${prefix}: source.${field} must be a non-empty string when supplied`);
+    }
+  }
 }
 
 function validateConcept(snapshot, name, concept) {
@@ -124,6 +158,8 @@ if (!Array.isArray(data?.snapshots) || data.snapshots.length === 0) {
     if (!nonEmptyString(snapshot.label)) fail(`${prefix}: label must be a non-empty string`);
     if (!nonEmptyString(snapshot.largeContext)) fail(`${prefix}: largeContext must be a non-empty string`);
     if (!nonEmptyString(snapshot.dominant)) fail(`${prefix}: dominant must be a non-empty string`);
+    validateSource(prefix, snapshot.source);
+
     if (!snapshot.concepts || typeof snapshot.concepts !== "object" || Array.isArray(snapshot.concepts)) {
       fail(`${prefix}: concepts must be an object`);
       continue;
