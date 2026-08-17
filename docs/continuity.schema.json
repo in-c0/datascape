@@ -22,6 +22,14 @@
   },
   "additionalProperties": true,
   "$defs": {
+    "observationId": {
+      "type": "string",
+      "pattern": "^obs_[a-f0-9]{16}$"
+    },
+    "graphNodeId": {
+      "type": "string",
+      "pattern": "^(sem|ent)_[a-f0-9]{16}$"
+    },
     "snapshotSource": {
       "type": "object",
       "required": ["kind"],
@@ -40,6 +48,25 @@
         "corpusMessages": { "type": ["integer", "null"], "minimum": 0 }
       },
       "additionalProperties": true
+    },
+    "evidenceRef": {
+      "type": "object",
+      "required": ["summary", "sourceObservationIds", "sourceGraphNodeIds"],
+      "properties": {
+        "summary": { "type": "string", "minLength": 1 },
+        "sourceObservationIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/observationId" }
+        },
+        "sourceGraphNodeIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/graphNodeId" }
+        }
+      },
+      "additionalProperties": false
     },
     "snapshot": {
       "type": "object",
@@ -78,6 +105,16 @@
           ]
         },
         "summary": { "type": "string", "minLength": 1 },
+        "sourceObservationIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/observationId" }
+        },
+        "sourceGraphNodeIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/graphNodeId" }
+        },
         "resolutions": {
           "type": "array",
           "minItems": 1,
@@ -89,7 +126,12 @@
         },
         "evidence": {
           "type": "array",
-          "items": { "type": "string", "minLength": 1 }
+          "items": {
+            "oneOf": [
+              { "type": "string", "minLength": 1 },
+              { "$ref": "#/$defs/evidenceRef" }
+            ]
+          }
         }
       },
       "additionalProperties": true
