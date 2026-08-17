@@ -2,16 +2,18 @@
 
 Status: ACTIVE
 Cadence: hourly at :45 Australia/Sydney
-Allocation: UNASSIGNED
-Allocation since: —
-Last execution: —
-Last durable artifact: —
+Allocation: Research A — E3 Tahoe final external freeze / target-isolated implementation
+Allocation since: 2026-08-18 09:47 Australia/Sydney
+Last execution: 2026-08-18 09:47 Australia/Sydney
+Last durable artifact: `in-c0/northstar-os@0ec3fc7` — `research/A/e3-tahoe-comparator-freeze.json`
 Human blocker: NONE
-Congestion state: CLEAN / UNKNOWN BASELINE
+Congestion state: CLEAN
+Forbes deadline last check: 2026-08-18 Australia/Sydney
+Forbes deadline result: Official 2026 nominations page is open; no nomination closing deadline is published on-page. Eligibility remains age <=29 on 2026-12-31; methodology/factors unchanged from current published page.
 
 ## Allocation rule
 
-On the next run, select the highest-value runnable machine-side workstream consistent with current Northstar evidence, then replace `UNASSIGNED` with that project/workstream and keep the allocation sticky.
+Continue the current Research A workstream until the Tahoe target-isolated implementation + code-hash freeze gate is complete, genuinely blocked, or materially reprioritized. The next bounded action is to implement/freeze the Tahoe safe-input -> target-isolated prediction -> sealed scoring workflow without opening Tahoe expression outcomes during development.
 
 Do not select:
 - DataScape / Continuity (Executor A owns it);
@@ -26,4 +28,4 @@ If human-blocked, record the minimum human action and reallocate to another runn
 
 Keep this file compact. Update only material fields above plus, when useful, append one line here:
 
-- YYYY-MM-DD HH:MM — RESULT — durable artifact / blocker / reallocation reason
+- 2026-08-18 09:47 — PROGRESS — allocated Research A; froze final Tahoe comparator families/hyperparameters and preserved the expression-sealed code-hash gate in `0ec3fc7`.
