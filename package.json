@@ -8,6 +8,7 @@
     "build:public": "vite build --mode public --outDir dist-public",
     "test": "node --test tests/*.test.mjs",
     "validate:continuity": "node scripts/validate-continuity.mjs",
+    "continuity:observations": "node scripts/build-continuity-observations.mjs",
     "continuity": "node scripts/build-continuity.mjs",
     "lint": "oxlint",
     "preview": "vite preview",
