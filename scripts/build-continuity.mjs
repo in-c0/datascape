@@ -22,6 +22,8 @@ const dataDir = path.resolve(positional[0] || "public/data");
 const outFile = path.join(dataDir, "continuity.json");
 const thoughtLimit = Math.max(20, Math.min(300, Number(process.env.CONTINUITY_THOUGHT_LIMIT) || 120));
 const observationLimit = Math.max(40, Math.min(500, Number(process.env.CONTINUITY_OBSERVATION_LIMIT) || 220));
+const graphNodeLimit = Math.max(40, Math.min(600, Number(process.env.CONTINUITY_GRAPH_NODE_LIMIT) || 320));
+const graphEdgeLimit = Math.max(40, Math.min(900, Number(process.env.CONTINUITY_GRAPH_EDGE_LIMIT) || 500));
 const model = process.env.DATASCAPE_CONTINUITY_MODEL || "claude-opus-4-8";
 
 function readJson(name, { optional = false } = {}) {
@@ -39,6 +41,7 @@ const provenance = readJson("provenance.json", { optional: true }) || {};
 const evidence = readJson("evidence.json", { optional: true }) || {};
 const gitHistory = readJson("git-history.json", { optional: true }) || {};
 const observationFile = readJson("continuity-observations.json", { optional: true });
+const graphFile = readJson("continuity-graph.json", { optional: true });
 
 const projects = Array.isArray(content.projects) ? content.projects : [];
 const projectByIndex = projects.map((project) => project.title || project.id);
@@ -93,6 +96,62 @@ const normalizedObservations = [...normalizedDocument.observations]
     payload: observation.payload || null,
   }));
 
+// The graph is an interpreted layer over observations, not a replacement for
+// them. Keep only the graph region grounded in the observations supplied to
+// this generation run plus structural entity nodes connected to that region.
+const recentObservationIds = new Set(normalizedObservations.map((observation) => observation.id));
+let semanticGraph = null;
+if (graphFile?.version === 1 && Array.isArray(graphFile.nodes) && Array.isArray(graphFile.edges)) {
+  const seededNodeIds = new Set(
+    graphFile.nodes
+      .filter((node) => (node.sourceObservationIds || []).some((id) => recentObservationIds.has(id)))
+      .map((node) => node.id),
+  );
+  const candidateEdges = graphFile.edges.filter(
+    (edge) =>
+      (edge.sourceObservationIds || []).some((id) => recentObservationIds.has(id)) ||
+      seededNodeIds.has(edge.from) ||
+      seededNodeIds.has(edge.to),
+  );
+  const connectedNodeIds = new Set(seededNodeIds);
+  for (const edge of candidateEdges) {
+    connectedNodeIds.add(edge.from);
+    connectedNodeIds.add(edge.to);
+  }
+  const candidateNodes = graphFile.nodes.filter((node) => connectedNodeIds.has(node.id));
+  const keptNodes = candidateNodes.slice(-graphNodeLimit);
+  const keptNodeIds = new Set(keptNodes.map((node) => node.id));
+  const keptEdges = candidateEdges
+    .filter((edge) => keptNodeIds.has(edge.from) && keptNodeIds.has(edge.to))
+    .slice(-graphEdgeLimit);
+  semanticGraph = {
+    generatedAt: graphFile.generatedAt || null,
+    nodes: keptNodes.map((node) => ({
+      id: node.id,
+      kind: node.kind,
+      entityType: node.entityType || null,
+      label: node.label,
+      summary: node.summary,
+      epistemic: node.epistemic,
+      scope: node.scope || null,
+      validFrom: node.validFrom || null,
+      validTo: node.validTo || null,
+      timePrecision: node.timePrecision || null,
+      confidence: node.confidence ?? null,
+      sourceObservationIds: node.sourceObservationIds || [],
+    })),
+    edges: keptEdges.map((edge) => ({
+      id: edge.id,
+      kind: edge.kind,
+      from: edge.from,
+      to: edge.to,
+      epistemic: edge.epistemic,
+      confidence: edge.confidence ?? null,
+      sourceObservationIds: edge.sourceObservationIds || [],
+    })),
+  };
+}
+
 const source = {
   corpus: {
     firstMonth: thoughts.meta?.firstMonth || null,
@@ -103,11 +162,12 @@ const source = {
   projects: projectContext,
   recentThoughts: latestThoughts,
   normalizedObservations,
+  semanticGraph,
 };
 
 const SYSTEM = `You are Datascape's Continuity abstraction engine.
 
-Your job is NOT to summarize a portfolio. Infer the smallest useful current decision-state view from the supplied preprocessed project/chat/git metadata and normalized observations.
+Your job is NOT to summarize a portfolio. Infer the smallest useful current decision-state view from the supplied preprocessed project/chat/git metadata, normalized observations, and (when present) a conservative temporal semantic graph.
 
 Continuity is an attention-bounded semantic viewport over ongoing work. Produce a CURRENT semantic snapshot only. A later run will append this snapshot immutably to history.
 
@@ -117,6 +177,8 @@ Normalized observations are the interoperable ingestion layer. Their epistemic f
 - inferred = derived interpretation
 - projected = generated semantic interpretation
 Never silently promote inferred/projected material into observed evidence. A projected observation cannot be evidence for itself.
+
+The semanticGraph is an interpreted convenience layer over those observations, not a new source of truth. In the current deterministic graph builder, about/part_of/supersedes edges may be inferred safely from provenance and same-source temporal lineage. Do NOT treat temporal adjacency as causation. The absence of a causes/supports/contradicts edge means only that no such relationship is asserted in the supplied graph, not that the relationship is false. Respect every graph node/edge epistemic class and trace claims back to sourceObservationIds when deciding whether they can support evidence text.
 
 Rules:
 - Express meaningful state, commitments, constraints, unresolved hypotheses, and decisions — not raw activity feeds.
@@ -248,6 +310,8 @@ function toSnapshot(result) {
       projects: projects.length,
       suppliedThoughts: latestThoughts.length,
       normalizedObservations: normalizedObservations.length,
+      graphNodes: semanticGraph?.nodes.length || 0,
+      graphEdges: semanticGraph?.edges.length || 0,
       corpusThoughts: thoughts.meta?.thoughts || allThoughts.length,
       corpusMessages: thoughts.meta?.messages || null,
     },
@@ -261,7 +325,7 @@ function toSnapshot(result) {
 function existingDocument() {
   if (replace || !fs.existsSync(outFile)) {
     return {
-      _readme: "Generated by scripts/build-continuity.mjs from normalized source observations and the preprocessed Datascape corpus. Snapshots are append-only semantic history.",
+      _readme: "Generated by scripts/build-continuity.mjs from normalized observations, an optional temporal semantic graph, and the preprocessed Datascape corpus. Snapshots are append-only semantic history.",
       attentionBudget: { maxNeighbors: 4, targetReadSeconds: 15 },
       snapshots: [],
     };
@@ -278,13 +342,14 @@ if (dryRun) {
   console.log(`thoughts supplied: ${latestThoughts.length}/${allThoughts.length}`);
   console.log(`normalized observations supplied: ${normalizedObservations.length}/${normalizedDocument.observations.length}`);
   console.log(`observation source: ${observationFile ? "continuity-observations.json" : "in-memory standard adapter"}`);
+  console.log(`semantic graph supplied: ${semanticGraph ? `${semanticGraph.nodes.length} nodes / ${semanticGraph.edges.length} edges` : "none"}`);
   console.log(`model: ${model}`);
   console.log(`output: ${outFile}`);
   process.exit(0);
 }
 
 console.log(`Continuity generation is local, but sends the preprocessed context bundle to the configured Anthropic API.`);
-console.log(`projects: ${projects.length} · recent thoughts: ${latestThoughts.length} · observations: ${normalizedObservations.length} · model: ${model}`);
+console.log(`projects: ${projects.length} · recent thoughts: ${latestThoughts.length} · observations: ${normalizedObservations.length} · graph: ${semanticGraph ? `${semanticGraph.nodes.length}/${semanticGraph.edges.length}` : "none"} · model: ${model}`);
 
 const client = new Anthropic();
 const response = await client.messages.create({
