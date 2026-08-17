@@ -73,9 +73,36 @@ try {
   await page.locator(".ct-inspect").waitFor({ state: "visible" });
   assert.equal(await center.textContent(), "Short-form experiment", "Inspect must not recenter the semantic viewport");
   await page.getByText("Synthetic demonstration snapshot", { exact: true }).waitFor();
+  await page.screenshot({ path: "test-results/continuity-inspect.png", fullPage: true });
 
   assert.deepEqual(pageErrors, [], `Browser page errors: ${pageErrors.join(" | ")}`);
-  console.log("Runtime smoke passed: Landscape + Continuity core interaction contract");
+
+  // Mobile must reflow the graph rather than scale a 1200-unit desktop canvas
+  // down until semantic labels become unreadable.
+  const mobile = await browser.newPage({ viewport: { width: 375, height: 812 } });
+  const mobileErrors = [];
+  mobile.on("pageerror", (error) => mobileErrors.push(error.message));
+  await mobile.goto(`${baseUrl}/?view=continuity`, { waitUntil: "networkidle" });
+  await mobile.locator(".ct-root").waitFor({ state: "visible", timeout: 10_000 });
+
+  const mobileCenter = mobile.locator(".ct-node--center .ct-node__label");
+  const mobileCenterBox = await mobileCenter.boundingBox();
+  assert.ok(mobileCenterBox?.height >= 10, `Mobile semantic labels are too small (${mobileCenterBox?.height ?? "missing"}px)`);
+
+  const mobileChromeFits = await mobile.evaluate(() => {
+    const header = document.querySelector(".ct-top")?.getBoundingClientRect();
+    const controls = document.querySelector(".ct-controls")?.getBoundingClientRect();
+    if (!header || !controls) return false;
+    return header.left >= -1 && header.right <= window.innerWidth + 1
+      && controls.left >= -1 && controls.right <= window.innerWidth + 1;
+  });
+  assert.equal(mobileChromeFits, true, "Mobile Continuity chrome must remain inside the viewport");
+  assert.ok((await mobile.locator(".ct-node:not(.ct-node--center):not(.ct-node--faint)").count()) <= 4);
+  assert.deepEqual(mobileErrors, [], `Mobile browser page errors: ${mobileErrors.join(" | ")}`);
+  await mobile.screenshot({ path: "test-results/continuity-mobile.png", fullPage: true });
+  await mobile.close();
+
+  console.log("Runtime smoke passed: Landscape + Continuity desktop/mobile interaction contract");
 } finally {
   await browser.close();
 }
