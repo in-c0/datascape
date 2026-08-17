@@ -16,6 +16,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: npm run continuity -- public/sample-data --dry-run
       - run: npm test
       - run: npm run validate:continuity
       - run: npm run build
