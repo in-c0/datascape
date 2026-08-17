@@ -47,11 +47,25 @@ try {
   assert.equal(await center.textContent(), "Distribution", "Re-abstract must preserve the center concept");
   const labelsAfter = await visibleNeighbors.locator(".ct-node__label").allTextContents();
   assert.notDeepEqual(labelsAfter, labelsBefore, "Re-abstract should change the local semantic partition");
+  assert.equal(new URL(page.url()).searchParams.get("r"), "1", "Resolution should be URL-addressable");
 
   // A persisted literal concept is traversable; dynamic labels are not required to be persisted nodes.
   const shortForm = page.locator("g.ct-node--clickable", { hasText: "Short-form experiment" });
   await shortForm.click();
   assert.equal(await center.textContent(), "Short-form experiment", "Clicking a literal semantic node should recenter");
+  assert.equal(new URL(page.url()).searchParams.get("concept"), "Short-form experiment");
+
+  // Semantic traversal participates in browser history: Back returns to the
+  // prior concept, Forward restores the drill-in, and Reload preserves it.
+  await page.goBack();
+  await page.getByText("Distribution", { exact: true }).first().waitFor();
+  assert.equal(await center.textContent(), "Distribution", "Back should restore the previous semantic center");
+  await page.goForward();
+  await page.getByText("Short-form experiment", { exact: true }).first().waitFor();
+  assert.equal(await center.textContent(), "Short-form experiment", "Forward should restore the drilled semantic center");
+  await page.reload({ waitUntil: "networkidle" });
+  await page.locator(".ct-root").waitFor({ state: "visible", timeout: 10_000 });
+  assert.equal(await center.textContent(), "Short-form experiment", "Reload should preserve URL-addressed semantic position");
 
   await page.screenshot({ path: "test-results/continuity.png", fullPage: true });
 
@@ -63,6 +77,7 @@ try {
   await time.press("Home");
   await page.locator(".ct-node--center.ct-node--absent").waitFor({ state: "visible", timeout: 10_000 });
   assert.equal(await center.textContent(), "Short-form experiment", "Time travel must not substitute a different historical concept");
+  assert.equal(new URL(page.url()).searchParams.get("t"), "5d", "Historical position should use stable snapshot identity");
   await page.getByText("semantic resolution unavailable", { exact: true }).waitFor();
   await page.screenshot({ path: "test-results/continuity-historical-absence.png", fullPage: true });
 
@@ -102,7 +117,7 @@ try {
   await mobile.screenshot({ path: "test-results/continuity-mobile.png", fullPage: true });
   await mobile.close();
 
-  console.log("Runtime smoke passed: Landscape + Continuity desktop/mobile interaction contract");
+  console.log("Runtime smoke passed: Landscape + Continuity desktop/mobile/history interaction contract");
 } finally {
   await browser.close();
 }
