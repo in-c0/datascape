@@ -22,12 +22,30 @@
   },
   "additionalProperties": true,
   "$defs": {
+    "snapshotSource": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "enum": ["synthetic", "manual", "imported", "llm_projection", "decision_graph"]
+        },
+        "generator": { "type": "string" },
+        "model": { "type": "string" },
+        "projects": { "type": "integer", "minimum": 0 },
+        "suppliedThoughts": { "type": "integer", "minimum": 0 },
+        "corpusThoughts": { "type": "integer", "minimum": 0 },
+        "corpusMessages": { "type": ["integer", "null"], "minimum": 0 }
+      },
+      "additionalProperties": true
+    },
     "snapshot": {
       "type": "object",
       "required": ["id", "label", "largeContext", "dominant", "concepts"],
       "properties": {
         "id": { "type": "string", "minLength": 1 },
         "label": { "type": "string", "minLength": 1 },
+        "generatedAt": { "type": "string" },
+        "source": { "$ref": "#/$defs/snapshotSource" },
         "largeContext": { "type": "string", "minLength": 1 },
         "dominant": { "type": "string", "minLength": 1 },
         "hiddenCount": { "type": "integer", "minimum": 0 },
