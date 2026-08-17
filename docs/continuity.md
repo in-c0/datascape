@@ -31,6 +31,40 @@ The normal landscape remains the default view.
 
 The formal shape is documented in [`continuity.schema.json`](continuity.schema.json).
 
+## Generate a snapshot locally
+
+If you have already run the normal Datascape import pipeline and have `content.json`, `thoughts.json`, and the optional evidence/provenance files, Continuity can synthesize the next current semantic snapshot:
+
+```bash
+npm run continuity -- public/data
+```
+
+The command:
+
+1. reads the **preprocessed Datascape output**, not the raw ChatGPT export;
+2. asks the local owner's configured Anthropic account to produce the smallest useful current decision-state projection;
+3. validates concept ancestry before writing;
+4. appends the new snapshot to `public/data/continuity.json` instead of rewriting previous snapshots.
+
+That append-only behavior is intentional: later time travel should reconstruct what the semantic ontology looked like at that point, not overwrite it with today's interpretation.
+
+Useful development commands:
+
+```bash
+# verify that the input bundle can be assembled without making an API call
+npm run continuity -- public/sample-data --dry-run
+
+# start a fresh semantic history instead of appending
+npm run continuity -- public/data --replace
+
+# validate an existing Continuity file
+npm run validate:continuity -- public/data/continuity.json
+```
+
+The generator currently follows the repository's existing local Anthropic integration pattern. The **browser never receives an API key**. However, running the generator does send the preprocessed context bundle to the configured Anthropic API. If that is not acceptable for a particular corpus, skip this generator and produce the same `continuity.json` contract with a local/private model instead.
+
+`DATASCAPE_CONTINUITY_MODEL` can override the configured model and `CONTINUITY_THOUGHT_LIMIT` controls how many recent preprocessed thoughts are supplied to a generation run.
+
 ## Minimal example
 
 ```json
@@ -84,7 +118,7 @@ Distribution
 
 Such labels are displayed as **dynamic abstractions** and are not treated as persisted graph nodes.
 
-This distinction lets a future abstraction engine generate human-friendly local partitions without forcing every visible label to become part of the permanent ontology.
+This distinction lets the abstraction engine generate human-friendly local partitions without forcing every visible label to become part of the permanent ontology.
 
 ## Historical ontology
 
@@ -136,7 +170,7 @@ not a public Datascape clone that requires a private submodule.
 
 ## Current vs target architecture
 
-The current public implementation consumes precomputed semantic snapshots. That gives us a stable portable UI/data contract first.
+The current public implementation consumes immutable precomputed semantic snapshots. The local generator gives those snapshots a first automated production path while keeping the UI/data contract stable.
 
 The target architecture is:
 
@@ -152,6 +186,6 @@ raw events / chats / projects / git / tools
             Continuity
 ```
 
-In that architecture, `resolutions` become cached semantic projections produced from the underlying graph rather than manually authored arrays.
+In that architecture, snapshot `resolutions` are cached semantic projections produced from the underlying graph rather than the primary source of truth.
 
 The UI contract should remain stable while that substrate evolves.
