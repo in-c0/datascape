@@ -1,11 +1,10 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { store } from "../store.js";
 import { config } from "../../datascape.config.js";
 import {
   buildContinuityViewport,
   resolutionStep,
 } from "./model.js";
-import "./continuity.css";
 
 const STATUS = {
   live: "Live",
@@ -19,11 +18,34 @@ const STATUS = {
   absent: "Not represented",
 };
 
-function positions(count) {
+function positions(count, compact = false) {
+  if (compact) {
+    if (count === 1) return [325];
+    if (count === 2) return [240, 410];
+    if (count === 3) return [180, 325, 470];
+    return [135, 260, 390, 515];
+  }
   if (count === 1) return [350];
   if (count === 2) return [255, 445];
   if (count === 3) return [205, 350, 495];
   return [160, 285, 415, 540];
+}
+
+function useCompactLayout() {
+  const query = "(max-width: 760px)";
+  const [compact, setCompact] = useState(
+    () => typeof window !== "undefined" && window.matchMedia(query).matches,
+  );
+
+  useEffect(() => {
+    const media = window.matchMedia(query);
+    const sync = () => setCompact(media.matches);
+    sync();
+    media.addEventListener("change", sync);
+    return () => media.removeEventListener("change", sync);
+  }, []);
+
+  return compact;
 }
 
 function sourceSummary(source) {
@@ -83,6 +105,7 @@ function ContinuitySurface({ data }) {
   const [selected, setSelected] = useState(data.snapshots.at(-1).dominant);
   const [resolution, setResolution] = useState(0.5);
   const [inspectOpen, setInspectOpen] = useState(false);
+  const compact = useCompactLayout();
 
   const viewport = useMemo(
     () => buildContinuityViewport(data, { timeIndex, selectedId: selected, resolution }),
@@ -90,7 +113,20 @@ function ContinuitySurface({ data }) {
   );
 
   const snapshot = viewport.snapshot;
-  const ys = positions(viewport.neighbors.length);
+  const layout = compact
+    ? {
+        viewBox: "0 0 450 650",
+        center: { x: 75, y: 325 },
+        parent: { x: 75, y: 150 },
+        neighborX: 220,
+      }
+    : {
+        viewBox: "0 0 1200 700",
+        center: { x: 600, y: 350 },
+        parent: { x: 170, y: 350 },
+        neighborX: 910,
+      };
+  const ys = positions(viewport.neighbors.length, compact);
   const snapshotSource = sourceSummary(snapshot.source);
 
   const historyNote = useMemo(() => {
@@ -139,15 +175,21 @@ function ContinuitySurface({ data }) {
         </div>
       </header>
 
-      <svg className="ct-graph" viewBox="0 0 1200 700" aria-label="Continuity semantic graph">
+      <svg className="ct-graph" viewBox={layout.viewBox} aria-label="Continuity semantic graph">
         {viewport.parent && (
           <>
-            <Edge x1={170} y1={350} x2={600} y2={350} faint />
+            <Edge
+              x1={layout.parent.x}
+              y1={layout.parent.y}
+              x2={layout.center.x}
+              y2={layout.center.y}
+              faint
+            />
             <Node
               label={viewport.parent.label}
               status={viewport.parent.status}
-              x={170}
-              y={350}
+              x={layout.parent.x}
+              y={layout.parent.y}
               faint
               onClick={() => selectConcept(viewport.parent.label)}
             />
@@ -157,17 +199,17 @@ function ContinuitySurface({ data }) {
         <Node
           label={viewport.selectedId}
           status={viewport.absent ? "absent" : viewport.concept.status}
-          x={600}
-          y={350}
+          x={layout.center.x}
+          y={layout.center.y}
           center
         />
 
         {viewport.neighbors.map((neighbor, index) => (
           <g key={`${viewport.selectedId}-${viewport.level}-${neighbor.label}`}>
             <Edge
-              x1={600}
-              y1={350}
-              x2={910}
+              x1={layout.center.x}
+              y1={layout.center.y}
+              x2={layout.neighborX}
               y2={ys[index]}
               live={neighbor.status === "live"}
               faint={viewport.absent}
@@ -175,7 +217,7 @@ function ContinuitySurface({ data }) {
             <Node
               label={neighbor.label}
               status={neighbor.status}
-              x={910}
+              x={layout.neighborX}
               y={ys[index]}
               dynamic={neighbor.dynamic}
               onClick={neighbor.clickable ? () => selectConcept(neighbor.label) : undefined}
