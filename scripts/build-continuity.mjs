@@ -13,6 +13,7 @@ import path from "node:path";
 import process from "node:process";
 import Anthropic from "@anthropic-ai/sdk";
 import { normalizeDatascapeBundle } from "./lib/continuity-observations.mjs";
+import { assertProjectionReferences } from "./lib/continuity-projection.mjs";
 
 const args = process.argv.slice(2);
 const dryRun = args.includes("--dry-run");
@@ -180,6 +181,14 @@ Never silently promote inferred/projected material into observed evidence. A pro
 
 The semanticGraph is an interpreted convenience layer over those observations, not a new source of truth. In the current deterministic graph builder, about/part_of/supersedes edges may be inferred safely from provenance and same-source temporal lineage. Do NOT treat temporal adjacency as causation. The absence of a causes/supports/contradicts edge means only that no such relationship is asserted in the supplied graph, not that the relationship is false. Respect every graph node/edge epistemic class and trace claims back to sourceObservationIds when deciding whether they can support evidence text.
 
+Source-addressing rules:
+- Every persisted concept MUST cite one or more exact IDs from normalizedObservations in sourceObservationIds.
+- sourceGraphNodeIds may cite only exact IDs present in semanticGraph.nodes; use [] when no graph node is needed or no graph is supplied.
+- Every evidence item is an object with summary + exact sourceObservationIds + sourceGraphNodeIds.
+- Every evidence item must include at least one observed or reported observation; inferred/projected observations may supplement but never be the sole evidence basis.
+- Never invent an ID. Never cite a source that was not supplied in this request.
+- Concept-level source IDs should identify the smallest set of source records that materially justify the concept, not every loosely related record.
+
 Rules:
 - Express meaningful state, commitments, constraints, unresolved hypotheses, and decisions — not raw activity feeds.
 - Never invent a commitment. Use "committed" only when the supplied evidence clearly supports that it is already settled.
@@ -192,12 +201,29 @@ Rules:
 - Each concept gets exactly 3 semantic resolutions. Each resolution contains 2-4 short labels.
 - Resolution labels may be dynamic abstractions and therefore do not all need to be persisted concepts.
 - Parent links form a DAG-like local semantic ancestry but MUST be acyclic within this snapshot.
-- Evidence strings must be short paraphrases traceable to supplied observed/reported source material; do not fabricate metrics.
+- Evidence summaries must be short paraphrases traceable to their cited observed/reported source material; do not fabricate metrics.
 - The largeContext sentence must let a returning operator recover the current overall state in seconds.
 - Avoid agent names, tool-call counts, token counts, and implementation chatter unless they are themselves decision-relevant.
 - Keep labels terse; prefer state transitions such as "distribution now dominates" over generic nouns such as "marketing".
 
 The human-facing viewport will show one center plus at most four neighbors. Compression quality matters more than completeness.`;
+
+const ID_ARRAY = {
+  type: "array",
+  maxItems: 12,
+  items: { type: "string" },
+};
+
+const EVIDENCE_REF_SCHEMA = {
+  type: "object",
+  properties: {
+    summary: { type: "string" },
+    sourceObservationIds: { ...ID_ARRAY, minItems: 1 },
+    sourceGraphNodeIds: ID_ARRAY,
+  },
+  required: ["summary", "sourceObservationIds", "sourceGraphNodeIds"],
+  additionalProperties: false,
+};
 
 const SCHEMA = {
   type: "object",
@@ -227,6 +253,8 @@ const SCHEMA = {
             ],
           },
           summary: { type: "string" },
+          sourceObservationIds: { ...ID_ARRAY, minItems: 1 },
+          sourceGraphNodeIds: ID_ARRAY,
           resolutions: {
             type: "array",
             minItems: 3,
@@ -241,10 +269,19 @@ const SCHEMA = {
           evidence: {
             type: "array",
             maxItems: 6,
-            items: { type: "string" },
+            items: EVIDENCE_REF_SCHEMA,
           },
         },
-        required: ["label", "parent", "status", "summary", "resolutions", "evidence"],
+        required: [
+          "label",
+          "parent",
+          "status",
+          "summary",
+          "sourceObservationIds",
+          "sourceGraphNodeIds",
+          "resolutions",
+          "evidence"
+        ],
         additionalProperties: false,
       },
     },
@@ -285,6 +322,10 @@ function assertGenerated(result) {
       cursor = byLabel[cursor]?.parent || null;
     }
   }
+
+  // A syntactically valid LLM response is still rejected if its provenance is
+  // not a subset of the exact context supplied to this generation run.
+  assertProjectionReferences(result, normalizedObservations, semanticGraph);
 }
 
 function toSnapshot(result) {
