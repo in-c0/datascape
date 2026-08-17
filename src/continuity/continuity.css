@@ -68,6 +68,13 @@ button, input { font: inherit; }
 .ct-edge--faint { opacity: 0.28; }
 .ct-node { cursor: default; }
 .ct-node--clickable { cursor: pointer; }
+.ct-node--clickable:focus { outline: none; }
+.ct-node--clickable:focus-visible .ct-node__circle {
+  stroke: var(--ct-text);
+  stroke-width: 3.5;
+  filter: drop-shadow(0 0 9px rgba(238, 243, 248, 0.55));
+}
+.ct-node--clickable:focus-visible .ct-node__label { text-decoration: underline; }
 .ct-node--faint { opacity: 0.32; }
 .ct-node__circle { fill: #0c1422; stroke: #65758a; stroke-width: 2; }
 .ct-node--live .ct-node__circle { stroke: var(--ct-accent); stroke-dasharray: 5 4; }
