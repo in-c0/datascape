@@ -1,4 +1,5 @@
 import "./index.css";
+import "./continuity/continuity.css";
 import { loadData } from "./store.js";
 import { config } from "../datascape.config.js";
 
@@ -34,6 +35,9 @@ loadData(config.dataBase)
   .then(async () => {
     // Dynamic import AFTER data is in the store. Continuity is another
     // projection over the same runtime data boundary, not a second app/data silo.
+    // Its tiny, ct-* scoped stylesheet is loaded by the shell above so the
+    // production build cannot render an unstyled semantic viewport while the
+    // dynamically imported JS has already mounted.
     const appModule = view === "continuity"
       ? import("./continuity/ContinuityView.jsx")
       : import("./App.jsx");
