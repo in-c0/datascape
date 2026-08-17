@@ -56,8 +56,9 @@ function sourceSummary(source) {
   if (!source) return null;
   if (source.kind === "llm_projection") {
     const parts = ["LLM semantic projection"];
-    if (source.suppliedThoughts != null) parts.push(`${source.suppliedThoughts} supplied thoughts`);
-    if (source.projects != null) parts.push(`${source.projects} projects`);
+    if (source.normalizedObservations != null) parts.push(`${source.normalizedObservations} supplied observations`);
+    if (source.graphNodes != null) parts.push(`${source.graphNodes} graph records`);
+    else if (source.suppliedThoughts != null) parts.push(`${source.suppliedThoughts} supplied thoughts`);
     return parts.join(" · ");
   }
   if (source.kind === "decision_graph") return "Projection derived from the temporal decision graph";
@@ -65,6 +66,22 @@ function sourceSummary(source) {
   if (source.kind === "manual") return "Manually authored semantic snapshot";
   if (source.kind === "imported") return "Imported semantic snapshot";
   return `Snapshot source: ${source.kind}`;
+}
+
+function evidenceSummary(item) {
+  if (typeof item === "string") return item;
+  return item?.summary || "";
+}
+
+function conceptSourceSummary(concept) {
+  if (!concept) return null;
+  const observations = new Set(concept.sourceObservationIds || []).size;
+  const graphNodes = new Set(concept.sourceGraphNodeIds || []).size;
+  if (!observations && !graphNodes) return null;
+  const parts = [];
+  if (observations) parts.push(`${observations} source observation${observations === 1 ? "" : "s"}`);
+  if (graphNodes) parts.push(`${graphNodes} graph record${graphNodes === 1 ? "" : "s"}`);
+  return parts.join(" · ");
 }
 
 function Edge({ x1, y1, x2, y2, live = false, faint = false }) {
@@ -160,6 +177,7 @@ function ContinuitySurface({ data }) {
       };
   const ys = positions(viewport.neighbors.length, compact);
   const snapshotSource = sourceSummary(snapshot.source);
+  const conceptSource = conceptSourceSummary(viewport.concept);
 
   const historyNote = useMemo(() => {
     const missing = viewport.history.filter((point) => !point.exists).length;
@@ -279,9 +297,10 @@ function ContinuitySurface({ data }) {
           <div className="ct-inspect__eyebrow">Evidence inspection</div>
           <h2>{viewport.selectedId}</h2>
           <p>{viewport.summary}</p>
-          {(viewport.concept?.evidence || []).map((item) => (
-            <div className="ct-evidence" key={item}>• {item}</div>
+          {(viewport.concept?.evidence || []).map((item, index) => (
+            <div className="ct-evidence" key={`${evidenceSummary(item)}-${index}`}>• {evidenceSummary(item)}</div>
           ))}
+          {conceptSource && <div className="ct-history-note">{conceptSource}</div>}
           {historyNote && <div className="ct-history-note">{historyNote}</div>}
           {snapshotSource && <div className="ct-history-note">{snapshotSource}</div>}
         </aside>
