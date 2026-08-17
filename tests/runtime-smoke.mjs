@@ -48,23 +48,19 @@ try {
   await page.screenshot({ path: "test-results/continuity.png", fullPage: true });
 
   // Time-travel preserves semantic identity even before that concept existed.
+  // Use real keyboard interaction so the controlled React range input follows
+  // the same path an accessible keyboard user would take.
   const time = page.locator(".ct-time input[type=range]");
-  await time.evaluate((element) => {
-    element.value = "0";
-    element.dispatchEvent(new Event("input", { bubbles: true }));
-    element.dispatchEvent(new Event("change", { bubbles: true }));
-  });
-  await page.locator(".ct-node--center.ct-node--absent").waitFor({ state: "visible" });
+  await time.focus();
+  await time.press("Home");
+  await page.locator(".ct-node--center.ct-node--absent").waitFor({ state: "visible", timeout: 10_000 });
   assert.equal(await center.textContent(), "Short-form experiment", "Time travel must not substitute a different historical concept");
   await page.getByText("semantic resolution unavailable", { exact: true }).waitFor();
   await page.screenshot({ path: "test-results/continuity-historical-absence.png", fullPage: true });
 
   // Return to now and inspect evidence without changing semantic position.
-  await time.evaluate((element) => {
-    element.value = element.max;
-    element.dispatchEvent(new Event("input", { bubbles: true }));
-    element.dispatchEvent(new Event("change", { bubbles: true }));
-  });
+  await time.press("End");
+  await page.locator(".ct-node--center.ct-node--live").waitFor({ state: "visible", timeout: 10_000 });
   await page.getByRole("button", { name: "Inspect" }).click();
   await page.locator(".ct-inspect").waitFor({ state: "visible" });
   assert.equal(await center.textContent(), "Short-form experiment", "Inspect must not recenter the semantic viewport");
