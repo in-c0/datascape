@@ -31,6 +31,27 @@ The normal landscape remains the default view.
 
 The formal shape is documented in [`continuity.schema.json`](continuity.schema.json).
 
+## Navigation continuity
+
+A semantic position is URL-addressable rather than being trapped in transient component state. Continuity records:
+
+```text
+?view=continuity&concept=<semantic concept>&t=<snapshot id>&r=<resolution>
+```
+
+This means:
+
+- **Reload** restores the same selected concept, time point, and semantic resolution.
+- **Back / Forward** traverse recenter operations as browser history.
+- Time uses the snapshot's stable `id`, not its current array index.
+- A URL may still name a concept at a historical snapshot where that concept did not yet exist; the absence is rendered instead of silently substituting another node.
+
+Re-abstraction and time scrubbing replace the current history entry rather than flooding browser history with every wheel/slider increment. Recenter creates a new history entry because it is a meaningful change of semantic position.
+
+Persisted semantic nodes are keyboard-operable: focus a traversable node and press **Enter** or **Space** to recenter. Dynamic projection labels that are not persisted concepts are intentionally not presented as fake navigation targets. Focused semantic nodes receive an explicit visual focus treatment.
+
+The graph also reflows for narrow screens instead of scaling the desktop 1200-unit canvas down until labels become unreadable.
+
 ## Generate a snapshot locally
 
 If you have already run the normal Datascape import pipeline and have `content.json`, `thoughts.json`, and the optional evidence/provenance files, Continuity can synthesize the next current semantic snapshot:
