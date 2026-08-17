@@ -49,10 +49,15 @@ try {
   assert.notDeepEqual(labelsAfter, labelsBefore, "Re-abstract should change the local semantic partition");
   assert.equal(new URL(page.url()).searchParams.get("r"), "1", "Resolution should be URL-addressable");
 
-  // A persisted literal concept is traversable; dynamic labels are not required to be persisted nodes.
-  const shortForm = page.locator("g.ct-node--clickable", { hasText: "Short-form experiment" });
-  await shortForm.click();
-  assert.equal(await center.textContent(), "Short-form experiment", "Clicking a literal semantic node should recenter");
+  // A persisted literal concept is traversable by keyboard; dynamic labels are
+  // not required to become persisted/focusable graph nodes.
+  const shortForm = page.getByRole("button", { name: "Recenter on Short-form experiment" });
+  await shortForm.focus();
+  assert.equal(await shortForm.evaluate((element) => element === document.activeElement), true);
+  const focusedStroke = await shortForm.locator(".ct-node__circle").evaluate((element) => getComputedStyle(element).stroke);
+  assert.equal(focusedStroke, "rgb(238, 243, 248)", "Keyboard-focused semantic nodes need a visible focus state");
+  await shortForm.press("Enter");
+  assert.equal(await center.textContent(), "Short-form experiment", "Keyboard activation should recenter a literal semantic node");
   assert.equal(new URL(page.url()).searchParams.get("concept"), "Short-form experiment");
 
   // Semantic traversal participates in browser history: Back returns to the
@@ -117,7 +122,7 @@ try {
   await mobile.screenshot({ path: "test-results/continuity-mobile.png", fullPage: true });
   await mobile.close();
 
-  console.log("Runtime smoke passed: Landscape + Continuity desktop/mobile/history interaction contract");
+  console.log("Runtime smoke passed: Landscape + Continuity desktop/mobile/history/accessibility contract");
 } finally {
   await browser.close();
 }
