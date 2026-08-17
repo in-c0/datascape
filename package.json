@@ -11,6 +11,7 @@
     "validate:continuity:observations": "node scripts/validate-continuity-observations.mjs",
     "validate:continuity:graph": "node scripts/validate-continuity-graph.mjs",
     "continuity:observations": "node scripts/build-continuity-observations.mjs",
+    "continuity:adapters": "node scripts/run-continuity-adapters.mjs",
     "continuity:graph": "node scripts/build-continuity-graph.mjs",
     "continuity": "node scripts/build-continuity.mjs",
     "lint": "oxlint",
