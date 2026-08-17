@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://datascape.local/schemas/continuity-observation.schema.json",
+  "title": "Datascape Continuity normalized observations",
+  "type": "object",
+  "required": ["version", "generatedAt", "observations"],
+  "properties": {
+    "version": { "const": 1 },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "observations": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/observation" }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "source": {
+      "type": "object",
+      "required": ["kind", "ref"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "project_manifest",
+            "git",
+            "conversation",
+            "session",
+            "exception",
+            "decision_log",
+            "metric",
+            "human",
+            "system",
+            "other"
+          ]
+        },
+        "ref": { "type": "string", "minLength": 1 },
+        "adapter": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": true
+    },
+    "scope": {
+      "type": "object",
+      "properties": {
+        "project": { "type": "string", "minLength": 1 },
+        "workstream": { "type": "string", "minLength": 1 },
+        "session": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": true
+    },
+    "observation": {
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "observedAt",
+        "timePrecision",
+        "epistemic",
+        "source",
+        "summary"
+      ],
+      "properties": {
+        "id": { "type": "string", "pattern": "^obs_[a-f0-9]{16}$" },
+        "kind": {
+          "enum": [
+            "state",
+            "activity",
+            "commitment",
+            "decision",
+            "hypothesis",
+            "evidence",
+            "blocker",
+            "metric",
+            "objective",
+            "exception",
+            "relationship",
+            "cognition"
+          ]
+        },
+        "observedAt": { "type": "string", "format": "date-time" },
+        "occurredAt": { "type": ["string", "null"], "format": "date-time" },
+        "timePrecision": { "enum": ["instant", "day", "month", "unknown"] },
+        "epistemic": { "enum": ["observed", "reported", "inferred", "projected"] },
+        "source": { "$ref": "#/$defs/source" },
+        "scope": { "$ref": "#/$defs/scope" },
+        "summary": { "type": "string", "minLength": 1 },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "payload": { "type": "object" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

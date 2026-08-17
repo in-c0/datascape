@@ -21,6 +21,7 @@ export const store = {
   featured: null,     // precomputed navigator answers
   gitHistory: null,   // per-commit cadence (optional)
   thoughts: null,     // { meta, thoughts[] } — the big one
+  continuity: null,   // temporal decision/continuity graph (optional)
 };
 
 export function dataUrl(name) {
@@ -43,14 +44,13 @@ async function fetchJson(base, name, { optional = false } = {}) {
   }
 }
 
-// Load every data file in parallel. Core files are required; git-history is
-// optional (only present once you've run the git-walker). Throws on a missing
-// core file so the boot screen can report exactly what's absent.
+// Load every data file in parallel. Core files are required; git-history and
+// continuity are optional so existing Datascape datasets remain compatible.
 export async function loadData(base) {
   store._base = base;
   const [
     content, prov, corpus, evidence, creed,
-    mirrors, becoming, featured, gitHistory, thoughts,
+    mirrors, becoming, featured, gitHistory, thoughts, continuity,
   ] = await Promise.all([
     fetchJson(base, "content.json"),
     fetchJson(base, "provenance.json"),
@@ -62,10 +62,11 @@ export async function loadData(base) {
     fetchJson(base, "featured.json"),
     fetchJson(base, "git-history.json", { optional: true }),
     fetchJson(base, "thoughts.json"),
+    fetchJson(base, "continuity.json", { optional: true }),
   ]);
   Object.assign(store, {
     content, prov, corpus, evidence, creed,
-    mirrors, becoming, featured, gitHistory, thoughts,
+    mirrors, becoming, featured, gitHistory, thoughts, continuity,
   });
   return store;
 }

@@ -73,6 +73,7 @@ anywhere.
 | `becoming.json` | aspiration vs trajectory | ✔ |
 | `featured.json` | precomputed answers for the "ask anything" bar | ✔ |
 | `git-history.json` | per-commit cadence | optional |
+| `continuity.json` | temporal semantic decision-state snapshots | optional |
 
 The shipped `public/sample-data/` is a complete, valid example of all of them —
 copy it, read the shapes, and replace piece by piece.
@@ -112,6 +113,28 @@ below).
 (`.data/private-terms.json`, gitignored) from every shipped string, and fully
 abstracts conversations it judges personal. Nothing but titles and short quotes
 ever leaves your machine — full message bodies are never written to the output.
+
+### Continuity — semantic navigation *(experimental)*
+
+The landscape answers **“what is the shape of this corpus?”**. Continuity is a second projection that answers **“what matters now, what is unresolved, and why?”** while keeping the visible information budget intentionally tiny.
+
+With the synthetic demo running, open:
+
+```text
+?view=continuity
+```
+
+Continuity keeps four interactions separate: recenter on another concept, re-abstract the same concept, time-travel its history, and inspect supporting evidence. The default viewport is one center plus at most four semantic neighbors.
+
+For a real imported corpus, generate the next append-only semantic snapshot locally:
+
+```bash
+npm run continuity -- public/data
+```
+
+The app itself still needs no API key. The optional generator uses the repository's local Anthropic integration and sends the already-preprocessed Datascape context bundle to that configured API; use a local/private generator instead when the corpus must not leave the machine.
+
+See [`docs/continuity.md`](docs/continuity.md) for the data contract, privacy boundary, generation flow, and historical-ontology semantics.
 
 ---
 
@@ -159,16 +182,17 @@ Press <kbd>/</kbd> and ask. Three tiers, in order:
 
 `src/main.jsx` statically imports **only** the store and config. It calls
 `loadData(config.dataBase)`, and only *after* the data resolves does it
-**dynamically import** the app. Because of that ordering, every module — even
-`src/data/nodes.js`, which builds the node graph at import time — evaluates with
-data already present. No async plumbing leaks into the rest of the engine.
+**dynamically import** the selected surface. Because of that ordering, every
+module that derives meaning from the runtime corpus evaluates with data already
+present. No async plumbing leaks into the rest of the engine.
 
-```
-main.jsx ──▶ loadData() ──▶ store populated ──▶ import('./App.jsx') ──▶ render
+```text
+main.jsx ──▶ loadData() ──▶ store populated ──┬─▶ Landscape
+                                               └─▶ Continuity
 ```
 
-Swap the data source, rebrand in one file, and the whole landscape is someone
-else's.
+Swap the data source, rebrand in one file, and the same engine becomes someone
+else's Datascape.
 
 ---
 

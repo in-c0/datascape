@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://datascape.local/schemas/continuity.schema.json",
+  "title": "Datascape Continuity data",
+  "type": "object",
+  "required": ["snapshots"],
+  "properties": {
+    "_readme": { "type": "string" },
+    "attentionBudget": {
+      "type": "object",
+      "properties": {
+        "maxNeighbors": { "type": "integer", "minimum": 1, "maximum": 4 },
+        "targetReadSeconds": { "type": "integer", "minimum": 5, "maximum": 60 }
+      },
+      "additionalProperties": true
+    },
+    "snapshots": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/snapshot" }
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "observationId": {
+      "type": "string",
+      "pattern": "^obs_[a-f0-9]{16}$"
+    },
+    "graphNodeId": {
+      "type": "string",
+      "pattern": "^(sem|ent)_[a-f0-9]{16}$"
+    },
+    "snapshotSource": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "enum": ["synthetic", "manual", "imported", "llm_projection", "decision_graph"]
+        },
+        "generator": { "type": "string" },
+        "model": { "type": "string" },
+        "projects": { "type": "integer", "minimum": 0 },
+        "suppliedThoughts": { "type": "integer", "minimum": 0 },
+        "normalizedObservations": { "type": "integer", "minimum": 0 },
+        "graphNodes": { "type": "integer", "minimum": 0 },
+        "graphEdges": { "type": "integer", "minimum": 0 },
+        "corpusThoughts": { "type": "integer", "minimum": 0 },
+        "corpusMessages": { "type": ["integer", "null"], "minimum": 0 }
+      },
+      "additionalProperties": true
+    },
+    "evidenceRef": {
+      "type": "object",
+      "required": ["summary", "sourceObservationIds", "sourceGraphNodeIds"],
+      "properties": {
+        "summary": { "type": "string", "minLength": 1 },
+        "sourceObservationIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/observationId" }
+        },
+        "sourceGraphNodeIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/graphNodeId" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "snapshot": {
+      "type": "object",
+      "required": ["id", "label", "largeContext", "dominant", "concepts"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "label": { "type": "string", "minLength": 1 },
+        "generatedAt": { "type": "string" },
+        "source": { "$ref": "#/$defs/snapshotSource" },
+        "largeContext": { "type": "string", "minLength": 1 },
+        "dominant": { "type": "string", "minLength": 1 },
+        "hiddenCount": { "type": "integer", "minimum": 0 },
+        "concepts": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": { "$ref": "#/$defs/concept" }
+        }
+      },
+      "additionalProperties": true
+    },
+    "concept": {
+      "type": "object",
+      "required": ["status", "summary", "resolutions"],
+      "properties": {
+        "parent": { "type": "string", "minLength": 1 },
+        "status": {
+          "enum": [
+            "live",
+            "committed",
+            "merged",
+            "superseded",
+            "deferred",
+            "reverted",
+            "blocked",
+            "needs_human"
+          ]
+        },
+        "summary": { "type": "string", "minLength": 1 },
+        "sourceObservationIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/observationId" }
+        },
+        "sourceGraphNodeIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/graphNodeId" }
+        },
+        "resolutions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string", "minLength": 1 }
+          }
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              { "type": "string", "minLength": 1 },
+              { "$ref": "#/$defs/evidenceRef" }
+            ]
+          }
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

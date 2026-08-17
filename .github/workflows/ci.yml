@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [master, agent/continuity]
+  pull_request:
+    branches: [master]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run continuity:adapters -- --dry-run tests/fixtures/continuity-adapter.mjs
+      - run: npm run continuity:observations -- public/sample-data --replace
+      - run: npm run validate:continuity:observations -- public/sample-data/continuity-observations.json
+      - run: npm run continuity:graph -- public/sample-data
+      - run: npm run validate:continuity:graph -- public/sample-data/continuity-graph.json
+      - run: npm run continuity -- public/sample-data --dry-run
+      - run: npm test
+      - run: npm run validate:continuity
+      - run: npm run build
+      - run: npm run lint
+      - name: Install browser smoke dependency
+        run: |
+          npm install --no-save --ignore-scripts playwright@1.55.0
+          npx playwright install --with-deps chromium
+      - name: Runtime smoke
+        run: |
+          npm run preview -- --host 127.0.0.1 --port 4173 > /tmp/datascape-vite.log 2>&1 &
+          for i in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:4173/ > /dev/null; then break; fi
+            sleep 1
+          done
+          E2E_BASE_URL=http://127.0.0.1:4173 node tests/runtime-smoke.mjs
+      - name: Upload runtime screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: datascape-runtime-smoke
+          path: test-results/*.png
+          if-no-files-found: ignore

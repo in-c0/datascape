@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://datascape.local/schemas/continuity-graph.schema.json",
+  "title": "Datascape Continuity temporal semantic graph",
+  "type": "object",
+  "required": ["version", "generatedAt", "nodes", "edges"],
+  "properties": {
+    "version": { "const": 1 },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "observationGeneratedAt": { "type": ["string", "null"], "format": "date-time" },
+    "nodes": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/node" }
+    },
+    "edges": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/edge" }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "scope": {
+      "type": "object",
+      "properties": {
+        "project": { "type": "string", "minLength": 1 },
+        "workstream": { "type": "string", "minLength": 1 },
+        "session": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": true
+    },
+    "node": {
+      "type": "object",
+      "required": ["id", "kind", "label", "summary", "epistemic", "sourceObservationIds"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^(sem|ent)_[a-f0-9]{16}$" },
+        "kind": {
+          "enum": [
+            "entity",
+            "state",
+            "activity",
+            "commitment",
+            "decision",
+            "hypothesis",
+            "evidence",
+            "constraint",
+            "metric",
+            "objective",
+            "cognition"
+          ]
+        },
+        "entityType": { "enum": ["project", "workstream", "session"] },
+        "label": { "type": "string", "minLength": 1 },
+        "summary": { "type": "string", "minLength": 1 },
+        "epistemic": { "enum": ["observed", "reported", "inferred", "projected"] },
+        "scope": { "$ref": "#/$defs/scope" },
+        "validFrom": { "type": ["string", "null"], "format": "date-time" },
+        "validTo": { "type": ["string", "null"], "format": "date-time" },
+        "timePrecision": { "enum": ["instant", "day", "month", "unknown"] },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "sourceObservationIds": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^obs_[a-f0-9]{16}$" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "edge": {
+      "type": "object",
+      "required": ["id", "kind", "from", "to", "epistemic", "sourceObservationIds"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^edge_[a-f0-9]{16}$" },
+        "kind": {
+          "enum": [
+            "about",
+            "part_of",
+            "supersedes",
+            "supports",
+            "contradicts",
+            "depends_on",
+            "causes",
+            "related_to"
+          ]
+        },
+        "from": { "type": "string" },
+        "to": { "type": "string" },
+        "epistemic": { "enum": ["observed", "reported", "inferred", "projected"] },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "sourceObservationIds": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^obs_[a-f0-9]{16}$" }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}
