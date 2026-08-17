@@ -5,6 +5,10 @@ import {
   buildContinuityViewport,
   resolutionStep,
 } from "./model.js";
+import {
+  readContinuityLocation,
+  writeContinuityLocation,
+} from "./navigation.js";
 
 const STATUS = {
   live: "Live",
@@ -101,11 +105,27 @@ function EmptyContinuity() {
 }
 
 function ContinuitySurface({ data }) {
-  const [timeIndex, setTimeIndex] = useState(data.snapshots.length - 1);
-  const [selected, setSelected] = useState(data.snapshots.at(-1).dominant);
-  const [resolution, setResolution] = useState(0.5);
+  const initialLocation = useMemo(
+    () => readContinuityLocation(data, window.location.href),
+    [data],
+  );
+  const [timeIndex, setTimeIndex] = useState(initialLocation.timeIndex);
+  const [selected, setSelected] = useState(initialLocation.selected);
+  const [resolution, setResolution] = useState(initialLocation.resolution);
   const [inspectOpen, setInspectOpen] = useState(false);
   const compact = useCompactLayout();
+
+  useEffect(() => {
+    const restoreLocation = () => {
+      const next = readContinuityLocation(data, window.location.href);
+      setTimeIndex(next.timeIndex);
+      setSelected(next.selected);
+      setResolution(next.resolution);
+      setInspectOpen(false);
+    };
+    window.addEventListener("popstate", restoreLocation);
+    return () => window.removeEventListener("popstate", restoreLocation);
+  }, [data]);
 
   const viewport = useMemo(
     () => buildContinuityViewport(data, { timeIndex, selectedId: selected, resolution }),
@@ -136,6 +156,11 @@ function ContinuitySurface({ data }) {
   }, [viewport.history, viewport.selectedId]);
 
   function selectConcept(label) {
+    writeContinuityLocation(
+      data,
+      { timeIndex, selected: label, resolution },
+      "push",
+    );
     setSelected(label);
     setInspectOpen(false);
   }
@@ -143,13 +168,24 @@ function ContinuitySurface({ data }) {
   function reabstract(direction) {
     if (!viewport.concept) return;
     const step = resolutionStep(viewport.concept);
-    setResolution((value) => Math.max(0, Math.min(1, value + direction * step)));
+    const nextResolution = Math.max(0, Math.min(1, resolution + direction * step));
+    writeContinuityLocation(
+      data,
+      { timeIndex, selected, resolution: nextResolution },
+      "replace",
+    );
+    setResolution(nextResolution);
   }
 
   function moveTime(index) {
     // Keep the selected concept even if it did not exist in this snapshot.
     // The viewport will render its historical absence rather than substitute a
     // modern concept or silently jump to the dominant project state.
+    writeContinuityLocation(
+      data,
+      { timeIndex: index, selected, resolution },
+      "replace",
+    );
     setTimeIndex(index);
     setInspectOpen(false);
   }
