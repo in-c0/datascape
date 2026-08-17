@@ -12,6 +12,7 @@ import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import Anthropic from "@anthropic-ai/sdk";
+import { normalizeDatascapeBundle } from "./lib/continuity-observations.mjs";
 
 const args = process.argv.slice(2);
 const dryRun = args.includes("--dry-run");
@@ -20,6 +21,7 @@ const positional = args.filter((arg) => !arg.startsWith("--"));
 const dataDir = path.resolve(positional[0] || "public/data");
 const outFile = path.join(dataDir, "continuity.json");
 const thoughtLimit = Math.max(20, Math.min(300, Number(process.env.CONTINUITY_THOUGHT_LIMIT) || 120));
+const observationLimit = Math.max(40, Math.min(500, Number(process.env.CONTINUITY_OBSERVATION_LIMIT) || 220));
 const model = process.env.DATASCAPE_CONTINUITY_MODEL || "claude-opus-4-8";
 
 function readJson(name, { optional = false } = {}) {
@@ -35,6 +37,8 @@ const content = readJson("content.json");
 const thoughts = readJson("thoughts.json");
 const provenance = readJson("provenance.json", { optional: true }) || {};
 const evidence = readJson("evidence.json", { optional: true }) || {};
+const gitHistory = readJson("git-history.json", { optional: true }) || {};
+const observationFile = readJson("continuity-observations.json", { optional: true });
 
 const projects = Array.isArray(content.projects) ? content.projects : [];
 const projectByIndex = projects.map((project) => project.title || project.id);
@@ -62,6 +66,33 @@ const projectContext = projects.map((project) => ({
   evidence: evidence[project.id] || null,
 }));
 
+// A private deployment may supply continuity-observations.json from additional
+// adapters (_hub, exceptions, sessions, tool state, etc). Otherwise build the
+// same generic contract in memory from the ordinary Datascape bundle.
+const normalizedDocument = observationFile?.version === 1 && Array.isArray(observationFile.observations)
+  ? observationFile
+  : normalizeDatascapeBundle(
+      { content, thoughts, provenance, evidence, gitHistory },
+      { thoughtLimit },
+    );
+
+const normalizedObservations = [...normalizedDocument.observations]
+  .sort((a, b) => String(a.occurredAt || a.observedAt || "").localeCompare(String(b.occurredAt || b.observedAt || "")))
+  .slice(-observationLimit)
+  .map((observation) => ({
+    id: observation.id,
+    kind: observation.kind,
+    observedAt: observation.observedAt,
+    occurredAt: observation.occurredAt || null,
+    timePrecision: observation.timePrecision,
+    epistemic: observation.epistemic,
+    source: observation.source,
+    scope: observation.scope || null,
+    summary: observation.summary,
+    confidence: observation.confidence ?? null,
+    payload: observation.payload || null,
+  }));
+
 const source = {
   corpus: {
     firstMonth: thoughts.meta?.firstMonth || null,
@@ -71,17 +102,26 @@ const source = {
   },
   projects: projectContext,
   recentThoughts: latestThoughts,
+  normalizedObservations,
 };
 
 const SYSTEM = `You are Datascape's Continuity abstraction engine.
 
-Your job is NOT to summarize a portfolio. Infer the smallest useful current decision-state view from the supplied preprocessed project/chat/git metadata.
+Your job is NOT to summarize a portfolio. Infer the smallest useful current decision-state view from the supplied preprocessed project/chat/git metadata and normalized observations.
 
 Continuity is an attention-bounded semantic viewport over ongoing work. Produce a CURRENT semantic snapshot only. A later run will append this snapshot immutably to history.
+
+Normalized observations are the interoperable ingestion layer. Their epistemic field is meaningful:
+- observed = directly measured source fact
+- reported = asserted by an authoritative source record
+- inferred = derived interpretation
+- projected = generated semantic interpretation
+Never silently promote inferred/projected material into observed evidence. A projected observation cannot be evidence for itself.
 
 Rules:
 - Express meaningful state, commitments, constraints, unresolved hypotheses, and decisions — not raw activity feeds.
 - Never invent a commitment. Use "committed" only when the supplied evidence clearly supports that it is already settled.
+- Do not infer a decision merely because code changed, a conversation occurred, or a project is marked active.
 - Use "live" for unresolved cognition, active hypotheses, or an unsettled decision frontier.
 - "needs_human" is reserved for a genuinely human-only commitment or value choice.
 - Preserve uncertainty. If the evidence is weak, say so in the summary rather than manufacturing confidence.
@@ -90,7 +130,7 @@ Rules:
 - Each concept gets exactly 3 semantic resolutions. Each resolution contains 2-4 short labels.
 - Resolution labels may be dynamic abstractions and therefore do not all need to be persisted concepts.
 - Parent links form a DAG-like local semantic ancestry but MUST be acyclic within this snapshot.
-- Evidence strings must be short paraphrases traceable to the supplied corpus; do not fabricate metrics.
+- Evidence strings must be short paraphrases traceable to supplied observed/reported source material; do not fabricate metrics.
 - The largeContext sentence must let a returning operator recover the current overall state in seconds.
 - Avoid agent names, tool-call counts, token counts, and implementation chatter unless they are themselves decision-relevant.
 - Keep labels terse; prefer state transitions such as "distribution now dominates" over generic nouns such as "marketing".
@@ -207,12 +247,13 @@ function toSnapshot(result) {
       model,
       projects: projects.length,
       suppliedThoughts: latestThoughts.length,
+      normalizedObservations: normalizedObservations.length,
       corpusThoughts: thoughts.meta?.thoughts || allThoughts.length,
       corpusMessages: thoughts.meta?.messages || null,
     },
     largeContext: result.largeContext,
     dominant: result.dominant,
-    hiddenCount: thoughts.meta?.messages || thoughts.meta?.thoughts || allThoughts.length,
+    hiddenCount: normalizedDocument.observations.length || thoughts.meta?.messages || thoughts.meta?.thoughts || allThoughts.length,
     concepts,
   };
 }
@@ -220,7 +261,7 @@ function toSnapshot(result) {
 function existingDocument() {
   if (replace || !fs.existsSync(outFile)) {
     return {
-      _readme: "Generated by scripts/build-continuity.mjs from the preprocessed Datascape corpus. Snapshots are append-only semantic history.",
+      _readme: "Generated by scripts/build-continuity.mjs from normalized source observations and the preprocessed Datascape corpus. Snapshots are append-only semantic history.",
       attentionBudget: { maxNeighbors: 4, targetReadSeconds: 15 },
       snapshots: [],
     };
@@ -235,13 +276,15 @@ if (dryRun) {
   console.log(`data: ${dataDir}`);
   console.log(`projects: ${projects.length}`);
   console.log(`thoughts supplied: ${latestThoughts.length}/${allThoughts.length}`);
+  console.log(`normalized observations supplied: ${normalizedObservations.length}/${normalizedDocument.observations.length}`);
+  console.log(`observation source: ${observationFile ? "continuity-observations.json" : "in-memory standard adapter"}`);
   console.log(`model: ${model}`);
   console.log(`output: ${outFile}`);
   process.exit(0);
 }
 
 console.log(`Continuity generation is local, but sends the preprocessed context bundle to the configured Anthropic API.`);
-console.log(`projects: ${projects.length} · recent thoughts: ${latestThoughts.length} · model: ${model}`);
+console.log(`projects: ${projects.length} · recent thoughts: ${latestThoughts.length} · observations: ${normalizedObservations.length} · model: ${model}`);
 
 const client = new Anthropic();
 const response = await client.messages.create({
