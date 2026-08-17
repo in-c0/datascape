@@ -21,7 +21,11 @@ const VALID_SOURCE_KIND = new Set([
   "decision_graph",
 ]);
 
+const OBSERVATION_ID = /^obs_[a-f0-9]{16}$/;
+const GRAPH_NODE_ID = /^(sem|ent)_[a-f0-9]{16}$/;
+
 const file = path.resolve(process.argv[2] || "public/sample-data/continuity.json");
+const dataDir = path.dirname(file);
 const errors = [];
 
 function fail(message) {
@@ -30,6 +34,17 @@ function fail(message) {
 
 function nonEmptyString(value) {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+function readOptionalJson(name) {
+  const target = path.join(dataDir, name);
+  if (!fs.existsSync(target)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(target, "utf8"));
+  } catch (error) {
+    fail(`${name}: could not parse sidecar for provenance validation: ${error.message}`);
+    return null;
+  }
 }
 
 function validateOptionalCount(prefix, source, field) {
@@ -48,7 +63,15 @@ function validateSource(prefix, source) {
   if (!VALID_SOURCE_KIND.has(source.kind)) {
     fail(`${prefix}: invalid source.kind ${JSON.stringify(source.kind)}`);
   }
-  for (const field of ["projects", "suppliedThoughts", "corpusThoughts", "corpusMessages"]) {
+  for (const field of [
+    "projects",
+    "suppliedThoughts",
+    "normalizedObservations",
+    "graphNodes",
+    "graphEdges",
+    "corpusThoughts",
+    "corpusMessages",
+  ]) {
     validateOptionalCount(prefix, source, field);
   }
   for (const field of ["generator", "model"]) {
@@ -56,6 +79,68 @@ function validateSource(prefix, source) {
       fail(`${prefix}: source.${field} must be a non-empty string when supplied`);
     }
   }
+}
+
+let data;
+try {
+  data = JSON.parse(fs.readFileSync(file, "utf8"));
+} catch (error) {
+  console.error(`Continuity validation failed: could not parse ${file}\n${error.message}`);
+  process.exit(1);
+}
+
+const observationSidecar = readOptionalJson("continuity-observations.json");
+const graphSidecar = readOptionalJson("continuity-graph.json");
+const knownObservationIds = observationSidecar?.observations
+  ? new Set(observationSidecar.observations.map((observation) => observation.id))
+  : null;
+const knownGraphNodeIds = graphSidecar?.nodes
+  ? new Set(graphSidecar.nodes.map((node) => node.id))
+  : null;
+
+function validateReferenceArray(at, value, pattern, knownIds, { requireOne = false } = {}) {
+  if (value == null) {
+    if (requireOne) fail(`${at}: must contain at least one reference`);
+    return;
+  }
+  if (!Array.isArray(value)) {
+    fail(`${at}: must be an array when supplied`);
+    return;
+  }
+  if (requireOne && value.length === 0) fail(`${at}: must contain at least one reference`);
+  const seen = new Set();
+  for (const [index, id] of value.entries()) {
+    if (!pattern.test(id || "")) fail(`${at}[${index}]: invalid reference ${JSON.stringify(id)}`);
+    if (seen.has(id)) fail(`${at}[${index}]: duplicate reference ${id}`);
+    seen.add(id);
+    if (knownIds && !knownIds.has(id)) fail(`${at}[${index}]: reference ${id} is absent from the sidecar source document`);
+  }
+}
+
+function validateEvidence(at, item, index) {
+  const evidenceAt = `${at}: evidence[${index}]`;
+  if (typeof item === "string") {
+    if (!nonEmptyString(item)) fail(`${evidenceAt} must be a non-empty string`);
+    return;
+  }
+  if (!item || typeof item !== "object" || Array.isArray(item)) {
+    fail(`${evidenceAt} must be a string or structured evidence object`);
+    return;
+  }
+  if (!nonEmptyString(item.summary)) fail(`${evidenceAt}.summary must be a non-empty string`);
+  validateReferenceArray(
+    `${evidenceAt}.sourceObservationIds`,
+    item.sourceObservationIds,
+    OBSERVATION_ID,
+    knownObservationIds,
+    { requireOne: true },
+  );
+  validateReferenceArray(
+    `${evidenceAt}.sourceGraphNodeIds`,
+    item.sourceGraphNodeIds,
+    GRAPH_NODE_ID,
+    knownGraphNodeIds,
+  );
 }
 
 function validateConcept(snapshot, name, concept) {
@@ -89,13 +174,27 @@ function validateConcept(snapshot, name, concept) {
   if (concept.parent != null && !nonEmptyString(concept.parent)) {
     fail(`${at}: parent must be a non-empty string when supplied`);
   }
+
+  // Source refs are optional for legacy/manual/synthetic snapshots. Newly
+  // generated LLM projections require them at generation time.
+  validateReferenceArray(
+    `${at}: sourceObservationIds`,
+    concept.sourceObservationIds,
+    OBSERVATION_ID,
+    knownObservationIds,
+  );
+  validateReferenceArray(
+    `${at}: sourceGraphNodeIds`,
+    concept.sourceGraphNodeIds,
+    GRAPH_NODE_ID,
+    knownGraphNodeIds,
+  );
+
   if (concept.evidence != null) {
     if (!Array.isArray(concept.evidence)) {
       fail(`${at}: evidence must be an array when supplied`);
     } else {
-      concept.evidence.forEach((item, index) => {
-        if (!nonEmptyString(item)) fail(`${at}: evidence[${index}] must be a non-empty string`);
-      });
+      concept.evidence.forEach((item, index) => validateEvidence(at, item, index));
     }
   }
 }
@@ -120,14 +219,6 @@ function validateParentGraph(snapshot) {
       cursor = concepts[cursor]?.parent || null;
     }
   }
-}
-
-let data;
-try {
-  data = JSON.parse(fs.readFileSync(file, "utf8"));
-} catch (error) {
-  console.error(`Continuity validation failed: could not parse ${file}\n${error.message}`);
-  process.exit(1);
 }
 
 if (!data || typeof data !== "object" || Array.isArray(data)) {
@@ -188,3 +279,6 @@ if (errors.length) {
 
 console.log(`Continuity data valid: ${file}`);
 console.log(`${data.snapshots.length} snapshots · ${data.snapshots.reduce((sum, snapshot) => sum + Object.keys(snapshot.concepts).length, 0)} persisted concepts`);
+if (knownObservationIds || knownGraphNodeIds) {
+  console.log(`provenance sidecars: ${knownObservationIds?.size || 0} observations · ${knownGraphNodeIds?.size || 0} graph nodes`);
+}
