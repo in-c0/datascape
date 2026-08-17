@@ -96,13 +96,29 @@ Dry-run:
 npm run continuity:observations -- public/sample-data --dry-run
 ```
 
+Validation:
+
+```bash
+npm run validate:continuity:observations -- public/data/continuity-observations.json
+```
+
 The public adapter is intentionally conservative. It does not infer a decision merely because a repository changed or a conversation occurred.
 
-## Private adapters
+## Private `ava-kim` comparison
 
-A private Datascape deployment can add adapters for its own source systems without modifying the public schema.
+The private `in-c0/ava-kim` repository confirms this boundary rather than replacing it with a hidden canonical database.
 
-For the current private `ava-kim` deployment, likely adapters are:
+Its architecture already has heterogeneous authoritative sources and view-specific projections:
+
+- the local Ops Cockpit reads `_hub/portfolio.md`, `_hub/SESSIONS.md`, `_hub/LEDGER.md`, `_hub/ops/LIFE.md`, and `_ship_inbox/exceptions/*` directly;
+- repository evidence and git history are mined deterministically;
+- conversation corpus/provenance is derived separately;
+- navigator/command layers emit declarative view specs rather than mutating source state;
+- narrow append-style decision/event logs already exist for some workflows.
+
+That means the shared Datascape substrate should be **an adapter boundary over those stores**, not a replacement project-management database.
+
+The remaining private work is therefore concrete rather than architectural:
 
 ```text
 _hub/portfolio.md             → state / objective observations
@@ -112,19 +128,21 @@ explicit decision logs        → decision / commitment observations
 local tool/project state      → observed activity/evidence
 ```
 
-Those files remain private. The public Datascape repository only defines the adapter output contract.
+Those source files remain private. The public Datascape repository only defines the adapter output contract.
 
 ## Relationship to Continuity snapshots
 
 Current `continuity.json` snapshots are cached semantic projections. They are not evidence.
 
-During the transition period:
+`build-continuity.mjs` now consumes normalized observations directly. If `continuity-observations.json` exists, that file is used; otherwise the standard Datascape adapter produces the same contract in memory.
 
 ```text
 ordinary Datascape data ─┐
 private source adapters ─┼→ normalized observations → abstraction → continuity.json
 other integrations ──────┘
 ```
+
+Snapshot provenance records how many normalized observations were supplied to an LLM projection. The abstraction prompt is explicitly required to preserve `observed` / `reported` / `inferred` / `projected` distinctions.
 
 Later, the temporal semantic DAG can become the durable interpreted layer between observations and viewport projections. The observation contract should survive that change.
 
