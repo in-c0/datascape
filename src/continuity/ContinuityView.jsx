@@ -78,11 +78,23 @@ function Edge({ x1, y1, x2, y2, live = false, faint = false }) {
 }
 
 function Node({ label, status, x, y, center = false, faint = false, dynamic = false, onClick }) {
+  const interactive = Boolean(onClick);
+
+  function activateFromKeyboard(event) {
+    if (!interactive || (event.key !== "Enter" && event.key !== " ")) return;
+    event.preventDefault();
+    onClick();
+  }
+
   return (
     <g
-      className={`ct-node ct-node--${status || "merged"}${center ? " ct-node--center" : ""}${faint ? " ct-node--faint" : ""}${onClick ? " ct-node--clickable" : ""}`}
+      className={`ct-node ct-node--${status || "merged"}${center ? " ct-node--center" : ""}${faint ? " ct-node--faint" : ""}${interactive ? " ct-node--clickable" : ""}`}
       transform={`translate(${x},${y})`}
       onClick={onClick}
+      onKeyDown={activateFromKeyboard}
+      role={interactive ? "button" : undefined}
+      tabIndex={interactive ? 0 : undefined}
+      aria-label={interactive ? `Recenter on ${label}` : undefined}
     >
       {center && status !== "absent" && <circle className="ct-pulse" r="31" />}
       <circle className="ct-node__circle" r={center ? 24 : 16} />
