@@ -34,6 +34,8 @@
         "projects": { "type": "integer", "minimum": 0 },
         "suppliedThoughts": { "type": "integer", "minimum": 0 },
         "normalizedObservations": { "type": "integer", "minimum": 0 },
+        "graphNodes": { "type": "integer", "minimum": 0 },
+        "graphEdges": { "type": "integer", "minimum": 0 },
         "corpusThoughts": { "type": "integer", "minimum": 0 },
         "corpusMessages": { "type": ["integer", "null"], "minimum": 0 }
       },
