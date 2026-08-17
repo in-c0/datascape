@@ -74,11 +74,9 @@ Generated semantic nodes are a **projection over source material**, not the sour
 synthetic       demonstration data
 manual          human-authored semantic snapshot
 imported        externally produced snapshot
-a llm_projection  generated semantic interpretation
+llm_projection  generated semantic interpretation
 decision_graph  projection from a future canonical temporal decision graph
 ```
-
-(`llm_projection` is the actual machine-readable value; the spaced wording above is explanatory.)
 
 Inspect may expose this provenance, but the sparse default graph should not make users read it unless they ask why a node exists.
 
