@@ -8,6 +8,7 @@
     {
       "id": "5d",
       "label": "5 days ago",
+      "source": { "kind": "synthetic" },
       "largeContext": "QuietInbox is still blocked by product reliability.",
       "dominant": "Product readiness",
       "hiddenCount": 1264,
@@ -42,6 +43,7 @@
     {
       "id": "2d",
       "label": "2 days ago",
+      "source": { "kind": "synthetic" },
       "largeContext": "QuietInbox reliability is acceptable; distribution becomes the main uncertainty.",
       "dominant": "Distribution",
       "hiddenCount": 2418,
@@ -77,6 +79,7 @@
     {
       "id": "yesterday",
       "label": "Yesterday",
+      "source": { "kind": "synthetic" },
       "largeContext": "Distribution is primary; short-form content is becoming the leading hypothesis.",
       "dominant": "Distribution",
       "hiddenCount": 4187,
@@ -113,6 +116,7 @@
     {
       "id": "now",
       "label": "Now",
+      "source": { "kind": "synthetic" },
       "largeContext": "Distribution remains the main uncertainty; short-form leads provisionally.",
       "dominant": "Distribution",
       "hiddenCount": 8412,
