@@ -9,7 +9,10 @@ export function readContinuityLocation(data, href) {
   const url = asUrl(href);
   const requestedTime = url.searchParams.get("t");
   const requestedConcept = url.searchParams.get("concept");
-  const requestedResolution = Number(url.searchParams.get("r"));
+  const resolutionParam = url.searchParams.get("r");
+  const requestedResolution = resolutionParam == null || resolutionParam === ""
+    ? null
+    : Number(resolutionParam);
 
   let timeIndex = requestedTime
     ? snapshots.findIndex((snapshot) => snapshot.id === requestedTime)
@@ -18,7 +21,7 @@ export function readContinuityLocation(data, href) {
 
   const snapshot = snapshots[timeIndex];
   const selected = requestedConcept || snapshot?.dominant || "";
-  const resolution = Number.isFinite(requestedResolution)
+  const resolution = requestedResolution != null && Number.isFinite(requestedResolution)
     ? clamp(requestedResolution, 0, 1)
     : 0.5;
 
@@ -28,12 +31,16 @@ export function readContinuityLocation(data, href) {
 export function buildContinuityUrl(data, state, href) {
   const snapshots = data?.snapshots || [];
   const url = asUrl(href);
+  const numericTimeIndex = Number(state.timeIndex);
   const timeIndex = clamp(
-    Number(state.timeIndex) || 0,
+    Number.isFinite(numericTimeIndex) ? numericTimeIndex : Math.max(0, snapshots.length - 1),
     0,
     Math.max(0, snapshots.length - 1),
   );
-  const resolution = clamp(Number(state.resolution) || 0, 0, 1);
+  const numericResolution = Number(state.resolution);
+  const resolution = Number.isFinite(numericResolution)
+    ? clamp(numericResolution, 0, 1)
+    : 0.5;
 
   url.searchParams.set("view", "continuity");
   if (state.selected) url.searchParams.set("concept", state.selected);
