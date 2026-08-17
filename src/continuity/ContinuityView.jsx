@@ -26,6 +26,21 @@ function positions(count) {
   return [160, 285, 415, 540];
 }
 
+function sourceSummary(source) {
+  if (!source) return null;
+  if (source.kind === "llm_projection") {
+    const parts = ["LLM semantic projection"];
+    if (source.suppliedThoughts != null) parts.push(`${source.suppliedThoughts} supplied thoughts`);
+    if (source.projects != null) parts.push(`${source.projects} projects`);
+    return parts.join(" · ");
+  }
+  if (source.kind === "decision_graph") return "Projection derived from the temporal decision graph";
+  if (source.kind === "synthetic") return "Synthetic demonstration snapshot";
+  if (source.kind === "manual") return "Manually authored semantic snapshot";
+  if (source.kind === "imported") return "Imported semantic snapshot";
+  return `Snapshot source: ${source.kind}`;
+}
+
 function Edge({ x1, y1, x2, y2, live = false, faint = false }) {
   const mid = (x1 + x2) / 2;
   return (
@@ -76,6 +91,7 @@ function ContinuitySurface({ data }) {
 
   const snapshot = viewport.snapshot;
   const ys = positions(viewport.neighbors.length);
+  const snapshotSource = sourceSummary(snapshot.source);
 
   const historyNote = useMemo(() => {
     const missing = viewport.history.filter((point) => !point.exists).length;
@@ -177,6 +193,7 @@ function ContinuitySurface({ data }) {
             <div className="ct-evidence" key={item}>• {item}</div>
           ))}
           {historyNote && <div className="ct-history-note">{historyNote}</div>}
+          {snapshotSource && <div className="ct-history-note">{snapshotSource}</div>}
         </aside>
       )}
 
