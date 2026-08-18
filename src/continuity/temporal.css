@@ -1,0 +1,217 @@
+.ct-root--temporal {
+  background: #050914;
+}
+
+.ct-root--temporal .ct-graph {
+  z-index: 2;
+}
+
+.ct-temporal-field {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.ct-temporal-field__gradient,
+.ct-temporal-field__weather {
+  position: absolute;
+  inset: 0;
+}
+
+.ct-temporal-field__gradient {
+  opacity: 0.82;
+}
+
+.ct-temporal-field__gradient::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at 54% 54%, rgba(236, 192, 150, 0.11), transparent 16%),
+    linear-gradient(180deg, rgba(1, 4, 11, 0.32), rgba(1, 4, 11, 0.12) 48%, rgba(1, 4, 11, 0.38));
+}
+
+.ct-temporal-field__weather {
+  background:
+    radial-gradient(ellipse at 34% 48%, rgba(213, 222, 232, 0.22), transparent 30%),
+    radial-gradient(ellipse at 71% 38%, rgba(180, 195, 215, 0.16), transparent 34%),
+    linear-gradient(180deg, rgba(210, 220, 230, 0.08), transparent 60%);
+  filter: blur(22px);
+  transform: scale(1.06);
+}
+
+.ct-autonomy-window {
+  position: absolute;
+  top: 92px;
+  bottom: 76px;
+  border-left: 1px solid rgba(181, 197, 219, 0.2);
+  border-right: 1px solid rgba(181, 197, 219, 0.14);
+  background: linear-gradient(180deg, rgba(160, 176, 205, 0.045), rgba(160, 176, 205, 0.015));
+}
+
+.ct-autonomy-window__rule {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(199, 211, 229, 0.34), rgba(199, 211, 229, 0.08));
+}
+
+.ct-autonomy-window__label {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: rgba(218, 226, 238, 0.72);
+  font-size: 10.5px;
+  letter-spacing: 0.01em;
+}
+
+.ct-autonomy-window__label strong {
+  color: rgba(238, 243, 248, 0.82);
+  font-size: 11px;
+  font-weight: 560;
+}
+
+.ct-autonomy-window__label span {
+  color: rgba(163, 177, 196, 0.64);
+}
+
+.ct-time-marker {
+  position: absolute;
+  top: 82px;
+  bottom: 60px;
+  width: 1px;
+  border-left: 1px solid rgba(188, 202, 219, 0.1);
+}
+
+.ct-time-marker span {
+  position: absolute;
+  bottom: -24px;
+  left: 0;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  color: rgba(151, 165, 184, 0.58);
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.ct-time-marker--sun {
+  border-left-color: rgba(227, 200, 159, 0.18);
+}
+
+.ct-time-marker--sun span {
+  color: rgba(212, 189, 155, 0.7);
+}
+
+.ct-time-marker--now {
+  z-index: 3;
+  border-left-color: rgba(233, 240, 250, 0.54);
+  box-shadow: 0 0 16px rgba(211, 225, 245, 0.08);
+}
+
+.ct-time-marker--now::before {
+  content: "";
+  position: absolute;
+  top: -4px;
+  left: -3px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: rgba(238, 243, 248, 0.88);
+}
+
+.ct-time-marker--now span {
+  top: -24px;
+  bottom: auto;
+  padding: 3px 6px;
+  border: 1px solid rgba(217, 228, 241, 0.24);
+  border-radius: 7px;
+  background: rgba(8, 13, 22, 0.62);
+  color: rgba(238, 243, 248, 0.9);
+  font-weight: 650;
+  letter-spacing: 0.08em;
+}
+
+.ct-environment-caption {
+  position: absolute;
+  left: 22px;
+  bottom: 54px;
+  display: flex;
+  gap: 8px;
+  color: rgba(144, 159, 179, 0.6);
+  font-size: 9.5px;
+  letter-spacing: 0.02em;
+}
+
+.ct-environment-caption span + span::before {
+  content: "·";
+  margin-right: 8px;
+}
+
+.ct-node--execution-planned {
+  opacity: 0.52;
+}
+
+.ct-node--execution-planned .ct-node__circle {
+  fill: rgba(5, 9, 20, 0.46);
+  stroke-dasharray: 2 6;
+}
+
+.ct-edge--planned {
+  opacity: 0.34;
+  stroke-dasharray: 2 7;
+}
+
+.ct-node--execution-running .ct-node__circle {
+  filter: drop-shadow(0 0 12px rgba(167, 139, 250, 0.44));
+}
+
+.ct-node--supervision-unattended .ct-node__circle {
+  stroke-dasharray: 5 4;
+}
+
+.ct-root--temporal .ct-bottom {
+  z-index: 8;
+}
+
+@media (max-width: 760px) {
+  .ct-autonomy-window {
+    top: 108px;
+    bottom: 72px;
+  }
+
+  .ct-autonomy-window__label {
+    left: 7px;
+    top: 8px;
+    max-width: 130px;
+    font-size: 9px;
+  }
+
+  .ct-autonomy-window__label strong {
+    font-size: 9.5px;
+  }
+
+  .ct-time-marker {
+    top: 104px;
+    bottom: 62px;
+  }
+
+  .ct-environment-caption {
+    left: 12px;
+    bottom: 54px;
+    max-width: calc(100vw - 24px);
+    gap: 5px;
+    font-size: 8.5px;
+  }
+
+  .ct-environment-caption span + span::before {
+    margin-right: 5px;
+  }
+}
