@@ -203,6 +203,10 @@
     bottom: 62px;
   }
 
+  .ct-time-marker--sun span {
+    display: none;
+  }
+
   .ct-environment-caption {
     left: 12px;
     top: 76px;
@@ -213,5 +217,9 @@
 
   .ct-environment-caption span + span::before {
     margin-right: 5px;
+  }
+
+  .ct-root--temporal .ct-node__sub {
+    display: none;
   }
 }
