@@ -226,6 +226,12 @@ function ContinuitySurface({ data }) {
   const centerX = nodeX(centerNode, layout.center.x);
   const parentX = nodeX(viewport.parent, layout.parent.x);
   const parentY = temporalField && !compact ? 245 : layout.parent.y;
+  const neighborLayouts = viewport.neighbors.map((neighbor, index) => ({
+    neighbor,
+    index,
+    x: nodeX(neighbor, layout.neighborX),
+    y: ys[index],
+  }));
 
   const historyNote = useMemo(() => {
     const missing = viewport.history.filter((point) => !point.exists).length;
@@ -290,27 +296,40 @@ function ContinuitySurface({ data }) {
 
       <svg className="ct-graph" viewBox={layout.viewBox} aria-label="Continuity semantic graph">
         {viewport.parent && (
-          <>
-            <Edge
-              x1={parentX}
-              y1={parentY}
-              x2={centerX}
-              y2={layout.center.y}
-              faint
-              planned={viewport.parent.executionState === "planned"}
-            />
-            <Node
-              label={viewport.parent.label}
-              status={viewport.parent.status}
-              x={parentX}
-              y={parentY}
-              faint
-              executionState={viewport.parent.executionState}
-              supervision={viewport.parent.supervision}
-              scheduled={viewport.parent.scheduled}
-              onClick={() => selectConcept(viewport.parent.label)}
-            />
-          </>
+          <Edge
+            x1={parentX}
+            y1={parentY}
+            x2={centerX}
+            y2={layout.center.y}
+            faint
+            planned={viewport.parent.executionState === "planned"}
+          />
+        )}
+        {neighborLayouts.map(({ neighbor, index, x, y }) => (
+          <Edge
+            key={`edge-${viewport.selectedId}-${viewport.level}-${neighbor.label}-${index}`}
+            x1={centerX}
+            y1={layout.center.y}
+            x2={x}
+            y2={y}
+            live={neighbor.status === "live" || neighbor.executionState === "running"}
+            faint={viewport.absent}
+            planned={neighbor.executionState === "planned"}
+          />
+        ))}
+
+        {viewport.parent && (
+          <Node
+            label={viewport.parent.label}
+            status={viewport.parent.status}
+            x={parentX}
+            y={parentY}
+            faint
+            executionState={viewport.parent.executionState}
+            supervision={viewport.parent.supervision}
+            scheduled={viewport.parent.scheduled}
+            onClick={() => selectConcept(viewport.parent.label)}
+          />
         )}
 
         <Node
@@ -324,33 +343,20 @@ function ContinuitySurface({ data }) {
           scheduled={centerNode?.scheduled}
         />
 
-        {viewport.neighbors.map((neighbor, index) => {
-          const neighborX = nodeX(neighbor, layout.neighborX);
-          return (
-            <g key={`${viewport.selectedId}-${viewport.level}-${neighbor.label}`}>
-              <Edge
-                x1={centerX}
-                y1={layout.center.y}
-                x2={neighborX}
-                y2={ys[index]}
-                live={neighbor.status === "live" || neighbor.executionState === "running"}
-                faint={viewport.absent}
-                planned={neighbor.executionState === "planned"}
-              />
-              <Node
-                label={neighbor.label}
-                status={neighbor.status}
-                x={neighborX}
-                y={ys[index]}
-                dynamic={neighbor.dynamic}
-                executionState={neighbor.executionState}
-                supervision={neighbor.supervision}
-                scheduled={neighbor.scheduled}
-                onClick={neighbor.clickable ? () => selectConcept(neighbor.label) : undefined}
-              />
-            </g>
-          );
-        })}
+        {neighborLayouts.map(({ neighbor, index, x, y }) => (
+          <Node
+            key={`node-${viewport.selectedId}-${viewport.level}-${neighbor.label}-${index}`}
+            label={neighbor.label}
+            status={neighbor.status}
+            x={x}
+            y={y}
+            dynamic={neighbor.dynamic}
+            executionState={neighbor.executionState}
+            supervision={neighbor.supervision}
+            scheduled={neighbor.scheduled}
+            onClick={neighbor.clickable ? () => selectConcept(neighbor.label) : undefined}
+          />
+        ))}
       </svg>
 
       {inspectOpen && (
