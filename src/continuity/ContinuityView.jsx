@@ -11,6 +11,11 @@ import {
 } from "./navigation.js";
 import TemporalField from "./TemporalField.jsx";
 import {
+  cacheDeviceEnvironment,
+  fetchDeviceEnvironment,
+  readCachedDeviceEnvironment,
+} from "./device-environment.js";
+import {
   executionLabel,
   supervisionLabel,
   temporalX,
@@ -163,6 +168,10 @@ function ContinuitySurface({ data }) {
   const [selected, setSelected] = useState(initialLocation.selected);
   const [resolution, setResolution] = useState(initialLocation.resolution);
   const [inspectOpen, setInspectOpen] = useState(false);
+  const [deviceTemporalField, setDeviceTemporalField] = useState(
+    () => config.continuityEnvironmentUrl ? readCachedDeviceEnvironment() : null,
+  );
+  const [environmentState, setEnvironmentState] = useState({ status: "idle", message: "" });
   const compact = useCompactLayout();
 
   useEffect(() => {
@@ -183,7 +192,7 @@ function ContinuitySurface({ data }) {
   );
 
   const snapshot = viewport.snapshot;
-  const temporalField = data.temporalField || null;
+  const temporalField = deviceTemporalField || data.temporalField || null;
   const layout = compact
     ? {
         viewBox: "0 0 450 650",
@@ -239,6 +248,25 @@ function ContinuitySurface({ data }) {
     return `${viewport.selectedId} is absent from ${missing} historical semantic snapshot${missing > 1 ? "s" : ""}; the original ontology is preserved.`;
   }, [viewport.history, viewport.selectedId]);
 
+  async function useDeviceEnvironment() {
+    if (!config.continuityEnvironmentUrl || environmentState.status === "loading") return;
+    setEnvironmentState({ status: "loading", message: "Requesting device location…" });
+    try {
+      const { field, accuracyMeters } = await fetchDeviceEnvironment({
+        endpoint: config.continuityEnvironmentUrl,
+        baseField: data.temporalField || null,
+      });
+      setDeviceTemporalField(field);
+      cacheDeviceEnvironment(field);
+      setEnvironmentState({
+        status: "live",
+        message: accuracyMeters ? `Device environment · location accuracy ~${accuracyMeters} m` : "Device environment active",
+      });
+    } catch (error) {
+      setEnvironmentState({ status: "error", message: error.message || "Could not load device environment" });
+    }
+  }
+
   function selectConcept(label) {
     writeContinuityLocation(
       data,
@@ -271,6 +299,14 @@ function ContinuitySurface({ data }) {
     setInspectOpen(false);
   }
 
+  const environmentButtonLabel = environmentState.status === "loading"
+    ? "Locating…"
+    : environmentState.status === "live" || deviceTemporalField
+      ? "Local ✓"
+      : environmentState.status === "error"
+        ? "Location ×"
+        : "Use location";
+
   return (
     <main
       className={`ct-root${temporalField ? " ct-root--temporal" : ""}`}
@@ -289,6 +325,14 @@ function ContinuitySurface({ data }) {
             onClick={() => viewport.parent && selectConcept(viewport.parent.label)}
             disabled={!viewport.parent}
           >← Up</button>
+          {config.continuityEnvironmentUrl && (
+            <button
+              onClick={useDeviceEnvironment}
+              disabled={environmentState.status === "loading"}
+              title={environmentState.message || "Use this device's permissioned location for live weather and daylight"}
+              aria-label="Use device environment"
+            >{environmentButtonLabel}</button>
+          )}
           <button onClick={() => setInspectOpen((value) => !value)}>Inspect</button>
           <a href="?view=landscape">Landscape ↗</a>
         </div>
