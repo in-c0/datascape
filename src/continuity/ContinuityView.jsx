@@ -206,7 +206,10 @@ function ContinuitySurface({ data }) {
   const conceptSource = conceptSourceSummary(viewport.concept);
 
   const nodeX = (node, fallback) => {
-    if (!temporalField || !node) return fallback;
+    // On narrow screens semantic readability wins over literal temporal x.
+    // The environment field and autonomy window remain visible, while nodes
+    // use the established reflow geometry rather than colliding in dense time bands.
+    if (!temporalField || !node || compact) return fallback;
     const time = node.occurredAt || (node.executionState === "running" ? temporalField.now : null);
     return temporalX(time, temporalField, layout.timelineMinX, layout.timelineMaxX) ?? fallback;
   };
