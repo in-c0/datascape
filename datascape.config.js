@@ -32,6 +32,13 @@ export const config = {
   // (see scripts/navigator-server.mjs). Leave null to run on the built-in
   // precomputed answers + local grammar only — never a cloud bill for visitors.
   liveNavigatorUrl: import.meta.env.VITE_NAVIGATOR_URL || null,
+
+  // Optional private/local endpoint used only after the operator explicitly
+  // clicks "Use device environment" in Continuity. The browser obtains its own
+  // permissioned geolocation and POSTs coordinates transiently to this endpoint;
+  // the endpoint returns a sanitized temporalField (weather + sunrise/sunset).
+  // Exact GPS coordinates and provider credentials are never stored by Datascape.
+  continuityEnvironmentUrl: import.meta.env.VITE_CONTINUITY_ENVIRONMENT_URL || null,
 };
 
 export default config;
