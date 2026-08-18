@@ -50,6 +50,11 @@ function literalNode(snapshot, label) {
     summary: concept.summary || "",
     dynamic: false,
     clickable: true,
+    occurredAt: concept.occurredAt || null,
+    endedAt: concept.endedAt || null,
+    executionState: concept.executionState || null,
+    supervision: concept.supervision || null,
+    scheduled: Boolean(concept.scheduled),
   };
 }
 
@@ -100,6 +105,11 @@ export function buildContinuityViewport(data, {
       summary: `${label} is a semantic projection of ${requestedId} at this resolution.`,
       dynamic: true,
       clickable: false,
+      occurredAt: null,
+      endedAt: null,
+      executionState: null,
+      supervision: null,
+      scheduled: false,
     };
   });
 

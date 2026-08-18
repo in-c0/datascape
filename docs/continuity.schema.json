@@ -14,6 +14,7 @@
       },
       "additionalProperties": true
     },
+    "temporalField": { "$ref": "#/$defs/temporalField" },
     "snapshots": {
       "type": "array",
       "minItems": 1,
@@ -29,6 +30,54 @@
     "graphNodeId": {
       "type": "string",
       "pattern": "^(sem|ent)_[a-f0-9]{16}$"
+    },
+    "temporalField": {
+      "type": "object",
+      "required": ["windowStart", "windowEnd", "now"],
+      "properties": {
+        "source": {
+          "type": "object",
+          "properties": {
+            "kind": { "type": "string" },
+            "provider": { "type": "string" }
+          },
+          "additionalProperties": true
+        },
+        "timezone": { "type": "string" },
+        "locationLabel": { "type": "string" },
+        "windowStart": { "type": "string", "format": "date-time" },
+        "windowEnd": { "type": "string", "format": "date-time" },
+        "now": { "type": "string", "format": "date-time" },
+        "sunrise": { "type": "string", "format": "date-time" },
+        "sunset": { "type": "string", "format": "date-time" },
+        "weather": {
+          "type": "object",
+          "properties": {
+            "summary": { "type": "string" },
+            "cloudCover": { "type": "number", "minimum": 0, "maximum": 100 },
+            "precipitation": { "type": "number", "minimum": 0 }
+          },
+          "additionalProperties": true
+        },
+        "autonomyWindows": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/autonomyWindow" }
+        }
+      },
+      "additionalProperties": true
+    },
+    "autonomyWindow": {
+      "type": "object",
+      "required": ["start", "end", "mode"],
+      "properties": {
+        "id": { "type": "string" },
+        "label": { "type": "string" },
+        "start": { "type": "string", "format": "date-time" },
+        "end": { "type": "string", "format": "date-time" },
+        "mode": { "enum": ["attended", "unattended"] },
+        "scheduled": { "type": "boolean" }
+      },
+      "additionalProperties": true
     },
     "snapshotSource": {
       "type": "object",
@@ -104,6 +153,11 @@
             "needs_human"
           ]
         },
+        "occurredAt": { "type": "string", "format": "date-time" },
+        "endedAt": { "type": "string", "format": "date-time" },
+        "executionState": { "enum": ["running", "completed", "planned"] },
+        "supervision": { "enum": ["attended", "unattended"] },
+        "scheduled": { "type": "boolean" },
         "summary": { "type": "string", "minLength": 1 },
         "sourceObservationIds": {
           "type": "array",

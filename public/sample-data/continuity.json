@@ -4,6 +4,31 @@
     "maxNeighbors": 4,
     "targetReadSeconds": 15
   },
+  "temporalField": {
+    "source": { "kind": "synthetic" },
+    "timezone": "Australia/Sydney",
+    "locationLabel": "Sydney · synthetic demo",
+    "windowStart": "2026-08-17T23:00:00+10:00",
+    "windowEnd": "2026-08-18T20:00:00+10:00",
+    "now": "2026-08-18T09:08:00+10:00",
+    "sunrise": "2026-08-18T06:28:00+10:00",
+    "sunset": "2026-08-18T17:27:00+10:00",
+    "weather": {
+      "summary": "light cloud · synthetic",
+      "cloudCover": 34,
+      "precipitation": 0
+    },
+    "autonomyWindows": [
+      {
+        "id": "overnight-1",
+        "label": "Overnight unattended run",
+        "start": "2026-08-17T23:10:00+10:00",
+        "end": "2026-08-18T07:05:00+10:00",
+        "mode": "unattended",
+        "scheduled": true
+      }
+    ]
+  },
   "snapshots": [
     {
       "id": "5d",
@@ -117,17 +142,19 @@
       "id": "now",
       "label": "Now",
       "source": { "kind": "synthetic" },
-      "largeContext": "Distribution remains the main uncertainty; short-form leads provisionally.",
+      "largeContext": "Overnight exploration narrowed distribution to short-form; retention is the next unresolved question.",
       "dominant": "Distribution",
       "hiddenCount": 8412,
       "concepts": {
         "Distribution": {
           "status": "live",
+          "executionState": "running",
+          "supervision": "attended",
           "summary": "A repeatable acquisition path is still unproven; short-form currently leads.",
           "resolutions": [
-            ["Social acquisition", "Community acquisition", "Direct acquisition"],
-            ["Short-form promising", "Communities niche", "Invite loop slow"],
-            ["Short-form experiment", "Community post", "Invite loop", "Launch platform deferred"]
+            ["Acquisition paths", "Retention uncertainty", "Launch timing"],
+            ["Short-form experiment", "Community post", "Invite loop"],
+            ["Algorithmic distribution", "Retention signal", "Product readiness", "Launch platform deferred"]
           ],
           "evidence": [
             "Short-form currently has the strongest acquisition signal.",
@@ -135,9 +162,63 @@
             "Launch-platform exposure was deferred until the acquisition story is clearer."
           ]
         },
+        "Product readiness": {
+          "status": "committed",
+          "executionState": "completed",
+          "supervision": "unattended",
+          "scheduled": true,
+          "occurredAt": "2026-08-17T23:42:00+10:00",
+          "summary": "Core generation and persistence flows remain stable enough for acquisition experiments.",
+          "resolutions": [
+            ["Core flows", "Persistence", "Monitoring"],
+            ["Digest generation", "Saved preferences", "Error watch"],
+            ["Generation pass", "Reload pass", "No blocking errors"]
+          ],
+          "evidence": [
+            "No blocker has reappeared since validation."
+          ]
+        },
+        "Community post": {
+          "parent": "Distribution",
+          "status": "deferred",
+          "executionState": "completed",
+          "supervision": "unattended",
+          "scheduled": true,
+          "occurredAt": "2026-08-18T03:20:00+10:00",
+          "summary": "The community path showed stronger intent but insufficient reach to lead the next allocation.",
+          "resolutions": [
+            ["Intent positive", "Reach limited"],
+            ["Qualified clicks", "Small audience"],
+            ["High-intent cohort", "Distribution ceiling"]
+          ],
+          "evidence": [
+            "Community visitors were more intentional but materially fewer."
+          ]
+        },
+        "Invite loop": {
+          "parent": "Distribution",
+          "status": "deferred",
+          "executionState": "completed",
+          "supervision": "unattended",
+          "scheduled": true,
+          "occurredAt": "2026-08-18T04:45:00+10:00",
+          "summary": "The invite path did not create enough additional activation to justify more overnight work.",
+          "resolutions": [
+            ["Referral response", "Activation"],
+            ["Invite acceptance", "First-use completion"],
+            ["Acceptance rate", "Activated invitees"]
+          ],
+          "evidence": [
+            "Incremental activation remained below the short-form path."
+          ]
+        },
         "Short-form experiment": {
           "parent": "Distribution",
-          "status": "live",
+          "status": "merged",
+          "executionState": "completed",
+          "supervision": "unattended",
+          "scheduled": true,
+          "occurredAt": "2026-08-18T06:40:00+10:00",
           "summary": "Initial acquisition is positive; retention and the repeatable creative pattern remain unresolved.",
           "resolutions": [
             ["Acquisition positive", "Durability unresolved", "Creative pattern unsettled"],
@@ -152,8 +233,12 @@
         },
         "Algorithmic distribution": {
           "parent": "Short-form experiment",
-          "status": "live",
-          "summary": "The system is testing which early signals best explain initial reach.",
+          "status": "merged",
+          "executionState": "completed",
+          "supervision": "unattended",
+          "scheduled": true,
+          "occurredAt": "2026-08-18T02:11:00+10:00",
+          "summary": "Two early-reach explanations were tested; watch depth currently explains intent better than raw views.",
           "resolutions": [
             ["Initial reach", "Signal interpretation", "Alternative explanation"],
             ["Cold-start boost", "Early signals", "Alternative ranking"],
@@ -168,6 +253,9 @@
         "Retention signal": {
           "parent": "Short-form experiment",
           "status": "live",
+          "executionState": "planned",
+          "supervision": "attended",
+          "occurredAt": "2026-08-18T12:30:00+10:00",
           "summary": "Acquisition looks promising, but there is not enough evidence yet to call the intent durable.",
           "resolutions": [
             ["Return behavior", "Signup quality", "Novelty risk"],
@@ -176,18 +264,6 @@
           ],
           "evidence": [
             "The current cohort is too young for a durable-retention commitment."
-          ]
-        },
-        "Product readiness": {
-          "status": "committed",
-          "summary": "Core generation and persistence flows remain stable enough for acquisition experiments.",
-          "resolutions": [
-            ["Core flows", "Persistence", "Monitoring"],
-            ["Digest generation", "Saved preferences", "Error watch"],
-            ["Generation pass", "Reload pass", "No blocking errors"]
-          ],
-          "evidence": [
-            "No blocker has reappeared since validation."
           ]
         }
       }
