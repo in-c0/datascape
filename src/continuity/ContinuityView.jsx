@@ -225,6 +225,7 @@ function ContinuitySurface({ data }) {
     : null;
   const centerX = nodeX(centerNode, layout.center.x);
   const parentX = nodeX(viewport.parent, layout.parent.x);
+  const parentY = temporalField && !compact ? 245 : layout.parent.y;
 
   const historyNote = useMemo(() => {
     const missing = viewport.history.filter((point) => !point.exists).length;
@@ -292,7 +293,7 @@ function ContinuitySurface({ data }) {
           <>
             <Edge
               x1={parentX}
-              y1={layout.parent.y}
+              y1={parentY}
               x2={centerX}
               y2={layout.center.y}
               faint
@@ -302,7 +303,7 @@ function ContinuitySurface({ data }) {
               label={viewport.parent.label}
               status={viewport.parent.status}
               x={parentX}
-              y={layout.parent.y}
+              y={parentY}
               faint
               executionState={viewport.parent.executionState}
               supervision={viewport.parent.supervision}
