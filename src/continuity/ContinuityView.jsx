@@ -9,6 +9,12 @@ import {
   readContinuityLocation,
   writeContinuityLocation,
 } from "./navigation.js";
+import TemporalField from "./TemporalField.jsx";
+import {
+  executionLabel,
+  supervisionLabel,
+  temporalX,
+} from "./temporal.js";
 
 const STATUS = {
   live: "Live",
@@ -84,18 +90,35 @@ function conceptSourceSummary(concept) {
   return parts.join(" · ");
 }
 
-function Edge({ x1, y1, x2, y2, live = false, faint = false }) {
+function Edge({ x1, y1, x2, y2, live = false, faint = false, planned = false }) {
   const mid = (x1 + x2) / 2;
   return (
     <path
-      className={`ct-edge${live ? " ct-edge--live" : ""}${faint ? " ct-edge--faint" : ""}`}
+      className={`ct-edge${live ? " ct-edge--live" : ""}${faint ? " ct-edge--faint" : ""}${planned ? " ct-edge--planned" : ""}`}
       d={`M ${x1} ${y1} C ${mid} ${y1}, ${mid} ${y2}, ${x2} ${y2}`}
     />
   );
 }
 
-function Node({ label, status, x, y, center = false, faint = false, dynamic = false, onClick }) {
+function Node({
+  label,
+  status,
+  x,
+  y,
+  center = false,
+  faint = false,
+  dynamic = false,
+  onClick,
+  executionState,
+  supervision,
+  scheduled = false,
+}) {
   const interactive = Boolean(onClick);
+  const execution = executionLabel({ executionState });
+  const supervisionText = supervisionLabel({ supervision, scheduled });
+  const sub = dynamic
+    ? "dynamic abstraction"
+    : [execution, supervisionText].filter(Boolean).join(" · ") || STATUS[status] || "Context";
 
   function activateFromKeyboard(event) {
     if (!interactive || (event.key !== "Enter" && event.key !== " ")) return;
@@ -105,7 +128,7 @@ function Node({ label, status, x, y, center = false, faint = false, dynamic = fa
 
   return (
     <g
-      className={`ct-node ct-node--${status || "merged"}${center ? " ct-node--center" : ""}${faint ? " ct-node--faint" : ""}${interactive ? " ct-node--clickable" : ""}`}
+      className={`ct-node ct-node--${status || "merged"}${center ? " ct-node--center" : ""}${faint ? " ct-node--faint" : ""}${interactive ? " ct-node--clickable" : ""}${executionState ? ` ct-node--execution-${executionState}` : ""}${supervision ? ` ct-node--supervision-${supervision}` : ""}`}
       transform={`translate(${x},${y})`}
       onClick={onClick}
       onKeyDown={activateFromKeyboard}
@@ -113,12 +136,10 @@ function Node({ label, status, x, y, center = false, faint = false, dynamic = fa
       tabIndex={interactive ? 0 : undefined}
       aria-label={interactive ? `Recenter on ${label}` : undefined}
     >
-      {center && status !== "absent" && <circle className="ct-pulse" r="31" />}
+      {center && status !== "absent" && executionState !== "planned" && <circle className="ct-pulse" r="31" />}
       <circle className="ct-node__circle" r={center ? 24 : 16} />
       <text className="ct-node__label" x="30" y="-2">{label}</text>
-      <text className="ct-node__sub" x="30" y="15">
-        {dynamic ? "dynamic abstraction" : STATUS[status] || "Context"}
-      </text>
+      <text className="ct-node__sub" x="30" y="15">{sub}</text>
     </g>
   );
 }
@@ -162,22 +183,45 @@ function ContinuitySurface({ data }) {
   );
 
   const snapshot = viewport.snapshot;
+  const temporalField = data.temporalField || null;
   const layout = compact
     ? {
         viewBox: "0 0 450 650",
         center: { x: 75, y: 325 },
         parent: { x: 75, y: 150 },
         neighborX: 220,
+        timelineMinX: 42,
+        timelineMaxX: 408,
       }
     : {
         viewBox: "0 0 1200 700",
         center: { x: 600, y: 350 },
         parent: { x: 170, y: 350 },
         neighborX: 910,
+        timelineMinX: 90,
+        timelineMaxX: 1110,
       };
   const ys = positions(viewport.neighbors.length, compact);
   const snapshotSource = sourceSummary(snapshot.source);
   const conceptSource = conceptSourceSummary(viewport.concept);
+
+  const nodeX = (node, fallback) => {
+    if (!temporalField || !node) return fallback;
+    const time = node.occurredAt || (node.executionState === "running" ? temporalField.now : null);
+    return temporalX(time, temporalField, layout.timelineMinX, layout.timelineMaxX) ?? fallback;
+  };
+
+  const centerNode = viewport.concept
+    ? {
+        ...viewport.concept,
+        occurredAt: viewport.concept.occurredAt || null,
+        executionState: viewport.concept.executionState || null,
+        supervision: viewport.concept.supervision || null,
+        scheduled: Boolean(viewport.concept.scheduled),
+      }
+    : null;
+  const centerX = nodeX(centerNode, layout.center.x);
+  const parentX = nodeX(viewport.parent, layout.parent.x);
 
   const historyNote = useMemo(() => {
     const missing = viewport.history.filter((point) => !point.exists).length;
@@ -208,9 +252,6 @@ function ContinuitySurface({ data }) {
   }
 
   function moveTime(index) {
-    // Keep the selected concept even if it did not exist in this snapshot.
-    // The viewport will render its historical absence rather than substitute a
-    // modern concept or silently jump to the dominant project state.
     writeContinuityLocation(
       data,
       { timeIndex: index, selected, resolution },
@@ -222,12 +263,14 @@ function ContinuitySurface({ data }) {
 
   return (
     <main
-      className="ct-root"
+      className={`ct-root${temporalField ? " ct-root--temporal" : ""}`}
       onWheel={(event) => {
         event.preventDefault();
         reabstract(event.deltaY < 0 ? 1 : -1);
       }}
     >
+      <TemporalField field={temporalField} />
+
       <header className="ct-top">
         <div className="ct-brand">{config.siteName} <span>/ Continuity</span></div>
         <div className="ct-context"><b>Large context:</b> {snapshot.largeContext}</div>
@@ -245,18 +288,22 @@ function ContinuitySurface({ data }) {
         {viewport.parent && (
           <>
             <Edge
-              x1={layout.parent.x}
+              x1={parentX}
               y1={layout.parent.y}
-              x2={layout.center.x}
+              x2={centerX}
               y2={layout.center.y}
               faint
+              planned={viewport.parent.executionState === "planned"}
             />
             <Node
               label={viewport.parent.label}
               status={viewport.parent.status}
-              x={layout.parent.x}
+              x={parentX}
               y={layout.parent.y}
               faint
+              executionState={viewport.parent.executionState}
+              supervision={viewport.parent.supervision}
+              scheduled={viewport.parent.scheduled}
               onClick={() => selectConcept(viewport.parent.label)}
             />
           </>
@@ -265,31 +312,41 @@ function ContinuitySurface({ data }) {
         <Node
           label={viewport.selectedId}
           status={viewport.absent ? "absent" : viewport.concept.status}
-          x={layout.center.x}
+          x={centerX}
           y={layout.center.y}
           center
+          executionState={centerNode?.executionState}
+          supervision={centerNode?.supervision}
+          scheduled={centerNode?.scheduled}
         />
 
-        {viewport.neighbors.map((neighbor, index) => (
-          <g key={`${viewport.selectedId}-${viewport.level}-${neighbor.label}`}>
-            <Edge
-              x1={layout.center.x}
-              y1={layout.center.y}
-              x2={layout.neighborX}
-              y2={ys[index]}
-              live={neighbor.status === "live"}
-              faint={viewport.absent}
-            />
-            <Node
-              label={neighbor.label}
-              status={neighbor.status}
-              x={layout.neighborX}
-              y={ys[index]}
-              dynamic={neighbor.dynamic}
-              onClick={neighbor.clickable ? () => selectConcept(neighbor.label) : undefined}
-            />
-          </g>
-        ))}
+        {viewport.neighbors.map((neighbor, index) => {
+          const neighborX = nodeX(neighbor, layout.neighborX);
+          return (
+            <g key={`${viewport.selectedId}-${viewport.level}-${neighbor.label}`}>
+              <Edge
+                x1={centerX}
+                y1={layout.center.y}
+                x2={neighborX}
+                y2={ys[index]}
+                live={neighbor.status === "live" || neighbor.executionState === "running"}
+                faint={viewport.absent}
+                planned={neighbor.executionState === "planned"}
+              />
+              <Node
+                label={neighbor.label}
+                status={neighbor.status}
+                x={neighborX}
+                y={ys[index]}
+                dynamic={neighbor.dynamic}
+                executionState={neighbor.executionState}
+                supervision={neighbor.supervision}
+                scheduled={neighbor.scheduled}
+                onClick={neighbor.clickable ? () => selectConcept(neighbor.label) : undefined}
+              />
+            </g>
+          );
+        })}
       </svg>
 
       {inspectOpen && (
@@ -326,7 +383,7 @@ function ContinuitySurface({ data }) {
             <button onClick={() => reabstract(1)} disabled={viewport.absent}>+</button>
           </div>
           <div className="ct-time">
-            <span>past</span>
+            <span>history</span>
             <input
               type="range"
               min="0"
