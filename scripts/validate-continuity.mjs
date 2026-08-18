@@ -12,6 +12,8 @@ const VALID_STATUS = new Set([
   "blocked",
   "needs_human",
 ]);
+const VALID_EXECUTION_STATE = new Set(["running", "completed", "planned"]);
+const VALID_SUPERVISION = new Set(["attended", "unattended"]);
 
 const VALID_SOURCE_KIND = new Set([
   "synthetic",
@@ -34,6 +36,10 @@ function fail(message) {
 
 function nonEmptyString(value) {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+function validInstant(value) {
+  return typeof value === "string" && Number.isFinite(Date.parse(value));
 }
 
 function readOptionalJson(name) {
@@ -143,6 +149,44 @@ function validateEvidence(at, item, index) {
   );
 }
 
+function validateTemporalField(field) {
+  if (field == null) return;
+  if (!field || typeof field !== "object" || Array.isArray(field)) {
+    fail("temporalField must be an object when supplied");
+    return;
+  }
+  for (const key of ["windowStart", "windowEnd", "now"]) {
+    if (!validInstant(field[key])) fail(`temporalField.${key} must be an ISO-compatible date-time`);
+  }
+  for (const key of ["sunrise", "sunset"]) {
+    if (field[key] != null && !validInstant(field[key])) fail(`temporalField.${key} must be an ISO-compatible date-time when supplied`);
+  }
+  const start = Date.parse(field.windowStart || "");
+  const end = Date.parse(field.windowEnd || "");
+  if (Number.isFinite(start) && Number.isFinite(end) && end <= start) {
+    fail("temporalField.windowEnd must be after windowStart");
+  }
+  if (field.weather?.cloudCover != null) {
+    const value = field.weather.cloudCover;
+    if (typeof value !== "number" || value < 0 || value > 100) {
+      fail("temporalField.weather.cloudCover must be between 0 and 100");
+    }
+  }
+  if (field.autonomyWindows != null && !Array.isArray(field.autonomyWindows)) {
+    fail("temporalField.autonomyWindows must be an array when supplied");
+  }
+  for (const [index, window] of (field.autonomyWindows || []).entries()) {
+    const at = `temporalField.autonomyWindows[${index}]`;
+    if (!validInstant(window?.start) || !validInstant(window?.end)) {
+      fail(`${at}: start/end must be ISO-compatible date-times`);
+      continue;
+    }
+    if (Date.parse(window.end) <= Date.parse(window.start)) fail(`${at}: end must be after start`);
+    if (!VALID_SUPERVISION.has(window.mode)) fail(`${at}: mode must be attended or unattended`);
+    if (window.scheduled != null && typeof window.scheduled !== "boolean") fail(`${at}: scheduled must be boolean when supplied`);
+  }
+}
+
 function validateConcept(snapshot, name, concept) {
   const at = `snapshot ${snapshot.id} / concept ${JSON.stringify(name)}`;
 
@@ -152,6 +196,20 @@ function validateConcept(snapshot, name, concept) {
   }
   if (!VALID_STATUS.has(concept.status)) {
     fail(`${at}: invalid status ${JSON.stringify(concept.status)}`);
+  }
+  if (concept.executionState != null && !VALID_EXECUTION_STATE.has(concept.executionState)) {
+    fail(`${at}: invalid executionState ${JSON.stringify(concept.executionState)}`);
+  }
+  if (concept.supervision != null && !VALID_SUPERVISION.has(concept.supervision)) {
+    fail(`${at}: invalid supervision ${JSON.stringify(concept.supervision)}`);
+  }
+  if (concept.scheduled != null && typeof concept.scheduled !== "boolean") {
+    fail(`${at}: scheduled must be boolean when supplied`);
+  }
+  for (const key of ["occurredAt", "endedAt"]) {
+    if (concept[key] != null && !validInstant(concept[key])) {
+      fail(`${at}: ${key} must be an ISO-compatible date-time when supplied`);
+    }
   }
   if (!nonEmptyString(concept.summary)) {
     fail(`${at}: summary must be a non-empty string`);
@@ -175,8 +233,6 @@ function validateConcept(snapshot, name, concept) {
     fail(`${at}: parent must be a non-empty string when supplied`);
   }
 
-  // Source refs are optional for legacy/manual/synthetic snapshots. Newly
-  // generated LLM projections require them at generation time.
   validateReferenceArray(
     `${at}: sourceObservationIds`,
     concept.sourceObservationIds,
@@ -232,6 +288,8 @@ if (data?.attentionBudget?.maxNeighbors != null) {
   }
 }
 
+validateTemporalField(data?.temporalField);
+
 if (!Array.isArray(data?.snapshots) || data.snapshots.length === 0) {
   fail("snapshots must be a non-empty array");
 } else {
@@ -279,6 +337,9 @@ if (errors.length) {
 
 console.log(`Continuity data valid: ${file}`);
 console.log(`${data.snapshots.length} snapshots · ${data.snapshots.reduce((sum, snapshot) => sum + Object.keys(snapshot.concepts).length, 0)} persisted concepts`);
+if (data.temporalField) {
+  console.log(`temporal field: ${data.temporalField.windowStart} → ${data.temporalField.windowEnd} · ${(data.temporalField.autonomyWindows || []).length} autonomy window(s)`);
+}
 if (knownObservationIds || knownGraphNodeIds) {
   console.log(`provenance sidecars: ${knownObservationIds?.size || 0} observations · ${knownGraphNodeIds?.size || 0} graph nodes`);
 }
