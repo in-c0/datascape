@@ -2,27 +2,25 @@
 
 Status: ACTIVE
 Cadence: hourly at :45 Australia/Sydney
-Allocation: LifeOS Local AI — Phase 0 implementation recovery / verification gate
+Allocation: Sumzup — bounded maintenance / production-verification continuation while Local AI recovery is human-blocked
 Allocation since: 2026-08-19 Australia/Sydney
 Last execution: 2026-08-19 Australia/Sydney
-Last durable artifact: `in-c0/lifeos-local-ai@92d52095` — recorded that GitHub contains the Phase 0 contract README but not the described source/tests/demo/architecture artifacts; established recovery-first gate
-Human blocker: Existing Phase 0 implementation appears local-only. If no connected execution lane can access that worktree, owner must expose/push those files; do not recreate blindly before checking local state.
+Last durable artifact: `in-c0/ai-digest-site@68727cd2` — merged PR #71 after confirming mergeability and green Netlify preview; corrected a mis-aimed KO evidence-quote smoke fixture without runtime changes
+Human blocker: LifeOS Local AI Phase 0 implementation still appears local-only. Owner must expose/push the existing worktree before Phase 0 verification can continue; do not recreate blindly.
 Congestion state: CLEAN
 Forbes deadline last check: 2026-08-18 Australia/Sydney
 Forbes deadline result: Official 2026 nominations page is open; no nomination closing deadline is published on-page. Eligibility remains age <=29 on 2026-12-31; methodology/factors unchanged from current published page.
 
 ## Allocation rule
 
-Research A's Tahoe primary external gate and follow-on novelty/decomposition gate are closed. Executor B has reallocated to the foreground platform predecessor: LifeOS Local AI.
+Foreground predecessor remains LifeOS Local AI, but its existing Phase 0 implementation is inaccessible from connected GitHub. Preserve that blocker and use otherwise-idle capacity on bounded, already-existing runnable work rather than fabricating replacement Local AI code.
 
-Current source-of-truth inspection found `in-c0/lifeos-local-ai/main` contained only `README.md` before this run. The README claims a Phase 0 simulator/tests/demo/architecture contract, but those implementation artifacts were absent from GitHub. A durable recovery gate is now recorded in `docs/PHASE-0-STATE.md`.
-
-Sticky continuation rule for this allocation:
-1. First inspect whether another machine lane or newly pushed commit has recovered the existing Phase 0 implementation.
-2. If recovered, verify from a fresh checkout against the eight README exit criteria and record evidence.
-3. If still absent but a connected execution environment exposes the known local worktree/package, recover it without redesigning the contract.
-4. If the files remain local-only and inaccessible, preserve the blocker and reallocate the next runnable bounded step rather than fabricating a replacement implementation.
-5. Do not advance to Guardian/reliability, commodity-device integration, Wrist Cam, or custom hardware until Phase 0 is actually verifiable.
+Sticky continuation rule:
+1. First inspect whether another machine lane or newly pushed commit has recovered the existing LifeOS Local AI Phase 0 implementation.
+2. If recovered, immediately return allocation to Local AI and verify from a fresh checkout against the eight README exit criteria.
+3. If still blocked, continue one bounded existing Sumzup maintenance/measurement/production-verification gate only when evidence and checks support it; do not start speculative feature work.
+4. Prefer closing validated regressions/tests or production-critical gates over broad architecture/product expansion.
+5. Do not advance Local AI to Guardian/reliability, Wrist Cam, NutriCam, or custom hardware until Phase 0 is actually verifiable.
 
 Do not select:
 - DataScape / Continuity implementation (Executor A owns it);
@@ -40,3 +38,4 @@ Keep this file compact. Update only material fields above plus, when useful, app
 - 2026-08-18 10:42 — MILESTONE — Tahoe primary external confirmation found complete/opened once; Branch C selected under the frozen rule. Integrated the result into `RESULTS.md` at `fda2e6c8`; no rerun/retuning permitted.
 - 2026-08-19 — GATE CLOSED — current novelty memo concludes Research A is useful as rigorous evaluation/external validation but not a convincing standalone new-method novelty; closed this allocation and left Executor B ready to reallocate next tick.
 - 2026-08-19 — REALLOCATED / BLOCKER FOUND — selected LifeOS Local AI under the foreground priority frame. GitHub source-of-truth contains the contract README but not the claimed Phase 0 implementation; recorded recovery-first gate at `in-c0/lifeos-local-ai@92d52095`.
+- 2026-08-19 — REALLOCATED / PROGRESS — Local AI recovery remained inaccessible; used idle capacity on existing Sumzup maintenance gate. Verified PR #71 mergeable + Netlify-green and merged it as `68727cd2`; scripts-only correction removes a false KO evidence-quote regression signal.
