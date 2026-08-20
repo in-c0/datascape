@@ -5,10 +5,10 @@ Cadence: hourly at :45 Australia/Sydney
 Allocation: Sumzup — bounded maintenance / production-verification continuation while Local AI recovery is human-blocked
 Allocation since: 2026-08-19 Australia/Sydney
 Last execution: 2026-08-20 Australia/Sydney
-Last durable artifact: Sumzup PR #75 (`continuity/reconcile-watch-forward-69`) is now mergeable, Netlify deploy-preview green, and marked ready for review after fresh reconciliation of stale PR #69. Next gate: verify the preview behavior/performance evidence, then merge #75 and retire stale #69 only if that validation holds.
+Last durable artifact: Re-inspected Sumzup PR #75 (`continuity/reconcile-watch-forward-69`) at head `754681e2`: still open, mergeable, ready-for-review, with Netlify deploy-preview success. Attempted the required live preview behavior check for roster-hit redirect and unknown-ID fallthrough, but the current execution environment could not resolve/access the Netlify preview URL. No merge/retry was performed. Next gate remains live preview behavior/performance verification; if a later connected runner can reach the preview and it holds, merge #75 then retire stale #69.
 Secondary bounded artifact: `in-c0/hypothesister@e137b2f4` — RQ-003 model-structure gate advanced: separate low-dimensional surface shear/fibre-pullout term is warranted; high-fidelity abrasion remains deferred pending sensitivity impact
 Human blocker: LifeOS Local AI Phase 0 implementation still appears local-only. Owner must expose/push the existing worktree before Phase 0 verification can continue; do not recreate blindly.
-Congestion state: CLEAN
+Congestion state: CLEAN — Netlify preview reachability failure is environment/network-specific, not evidence of Netlify failure or portfolio congestion.
 Forbes deadline last check: 2026-08-18 Australia/Sydney
 Forbes deadline result: Official 2026 nominations page is open; no nomination closing deadline is published on-page. Eligibility remains age <=29 on 2026-12-31; methodology/factors unchanged from current published page.
 
@@ -48,3 +48,4 @@ Keep this file compact. Update only material fields above plus, when useful, app
 - 2026-08-19 — PROGRESS — Reconciliation branch had already gained the edge route/config before this tick. Added `scripts/watch-forward.selftest.mjs` at `e8ebd3d3` rather than replaying stale PR history; next bounded step is the still-missing parallel client lookup, then fresh validation.
 - 2026-08-20 — PROGRESS — Ported the measured parallel client lookup onto the fresh reconciliation branch and preserved the edge fast-path/test. Next tick: run fresh validation and obtain a deploy-preview signal before replacing stale PR #69.
 - 2026-08-20 — PROGRESS — Re-inspected Local AI first; no recovery commit exists beyond `92d52095`. Sumzup fresh reconciliation PR #75 already existed (avoided duplicate after a 422), is mergeable, and its Netlify deploy-preview reports success. Marked #75 ready for review; next tick should verify preview behavior/performance before merge/retiring stale #69.
+- 2026-08-20 — PROGRESS / HOLD — Re-inspected Local AI first: still no recovery beyond `92d52095`. Re-inspected #75 before acting: head unchanged, mergeable, Netlify preview green. Live preview behavior validation was attempted but unavailable from this runner due DNS/safe-open reachability; classified as runner reachability, not Netlify failure. Preserved the merge gate and avoided an evidence-free merge.
