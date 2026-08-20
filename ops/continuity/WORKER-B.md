@@ -5,7 +5,7 @@ Cadence: hourly at :45 Australia/Sydney
 Allocation: Sumzup — bounded maintenance / production-verification continuation while Local AI recovery is human-blocked
 Allocation since: 2026-08-19 Australia/Sydney
 Last execution: 2026-08-20 Australia/Sydney
-Last durable artifact: `in-c0/ai-digest-site@754681e2` on `continuity/reconcile-watch-forward-69` — ported the measured PR #69 parallel roster/instant-digest lookup onto the fresh reconciliation branch while retaining the reconciled edge route/config and hermetic fast-path test. Fresh validation/deploy-preview remains the next gate before replacing stale PR #69.
+Last durable artifact: Sumzup PR #75 (`continuity/reconcile-watch-forward-69`) is now mergeable, Netlify deploy-preview green, and marked ready for review after fresh reconciliation of stale PR #69. Next gate: verify the preview behavior/performance evidence, then merge #75 and retire stale #69 only if that validation holds.
 Secondary bounded artifact: `in-c0/hypothesister@e137b2f4` — RQ-003 model-structure gate advanced: separate low-dimensional surface shear/fibre-pullout term is warranted; high-fidelity abrasion remains deferred pending sensitivity impact
 Human blocker: LifeOS Local AI Phase 0 implementation still appears local-only. Owner must expose/push the existing worktree before Phase 0 verification can continue; do not recreate blindly.
 Congestion state: CLEAN
@@ -47,3 +47,4 @@ Keep this file compact. Update only material fields above plus, when useful, app
 - 2026-08-19 — PROGRESS — Began reconciliation without replaying stale branch history: created `continuity/reconcile-watch-forward-69` from current master and inspected PR #69's exact patch. Next tick should port only applicable changes and validate from the fresh base.
 - 2026-08-19 — PROGRESS — Reconciliation branch had already gained the edge route/config before this tick. Added `scripts/watch-forward.selftest.mjs` at `e8ebd3d3` rather than replaying stale PR history; next bounded step is the still-missing parallel client lookup, then fresh validation.
 - 2026-08-20 — PROGRESS — Ported the measured parallel client lookup onto the fresh reconciliation branch and preserved the edge fast-path/test. Next tick: run fresh validation and obtain a deploy-preview signal before replacing stale PR #69.
+- 2026-08-20 — PROGRESS — Re-inspected Local AI first; no recovery commit exists beyond `92d52095`. Sumzup fresh reconciliation PR #75 already existed (avoided duplicate after a 422), is mergeable, and its Netlify deploy-preview reports success. Marked #75 ready for review; next tick should verify preview behavior/performance before merge/retiring stale #69.
