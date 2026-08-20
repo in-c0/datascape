@@ -4,8 +4,8 @@ Status: ACTIVE
 Cadence: hourly at :45 Australia/Sydney
 Allocation: Sumzup — bounded maintenance / production-verification continuation while Local AI recovery is human-blocked
 Allocation since: 2026-08-19 Australia/Sydney
-Last execution: 2026-08-19 Australia/Sydney
-Last durable artifact: `in-c0/ai-digest-site@e8ebd3d3` on `continuity/reconcile-watch-forward-69` — added a hermetic safety test for the reconciled `/watch` edge fast-path, covering positive forwarding, parameter preservation/drop semantics, conservative fall-through, origin failure, and discriminating controls. The fresh branch is now 3 commits ahead of current master and still needs the parallel client lookup port + fresh validation before replacing stale PR #69.
+Last execution: 2026-08-20 Australia/Sydney
+Last durable artifact: `in-c0/ai-digest-site@754681e2` on `continuity/reconcile-watch-forward-69` — ported the measured PR #69 parallel roster/instant-digest lookup onto the fresh reconciliation branch while retaining the reconciled edge route/config and hermetic fast-path test. Fresh validation/deploy-preview remains the next gate before replacing stale PR #69.
 Secondary bounded artifact: `in-c0/hypothesister@e137b2f4` — RQ-003 model-structure gate advanced: separate low-dimensional surface shear/fibre-pullout term is warranted; high-fidelity abrasion remains deferred pending sensitivity impact
 Human blocker: LifeOS Local AI Phase 0 implementation still appears local-only. Owner must expose/push the existing worktree before Phase 0 verification can continue; do not recreate blindly.
 Congestion state: CLEAN
@@ -46,3 +46,4 @@ Keep this file compact. Update only material fields above plus, when useful, app
 - 2026-08-19 — PROGRESS — Rechecked after master advanced through PR #70. PR #69 is still 5 behind / 3 ahead and non-mergeable, but its intended fix is still absent from master: `/watch` still serializes roster before `instant_digests`, `netlify.toml` has no `/watch` edge function, and `netlify/edge-functions/watch-forward.ts` does not exist on master. Keep #69 alive as a measured performance fix, but require reconciliation and a fresh deploy-preview validation before merge.
 - 2026-08-19 — PROGRESS — Began reconciliation without replaying stale branch history: created `continuity/reconcile-watch-forward-69` from current master and inspected PR #69's exact patch. Next tick should port only applicable changes and validate from the fresh base.
 - 2026-08-19 — PROGRESS — Reconciliation branch had already gained the edge route/config before this tick. Added `scripts/watch-forward.selftest.mjs` at `e8ebd3d3` rather than replaying stale PR history; next bounded step is the still-missing parallel client lookup, then fresh validation.
+- 2026-08-20 — PROGRESS — Ported the measured parallel client lookup onto the fresh reconciliation branch and preserved the edge fast-path/test. Next tick: run fresh validation and obtain a deploy-preview signal before replacing stale PR #69.
