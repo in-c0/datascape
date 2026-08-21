@@ -23,15 +23,17 @@ test("deploy: production deployment guards the real exception store", async () =
   try {
     assert.equal(world.deployed.ok, true, JSON.stringify(world.deployed));
     assert.equal(world.deployed.exception_store.already_guarded, false);
-    assert.ok(world.deployed.exception_store.preimage_hash, "the original bytes are recorded");
+    assert.ok(world.deployed.exception_store.original_preimage_hash, "the pre-Continuity original is recorded");
 
     const installed = fs.readFileSync(path.join(world.live, "exception.mjs"), "utf8");
-    assert.ok(installed.includes("__continuity_owner_gate__"),
-      "copying owner-gate.js beside an unpatched store guards nothing");
+    assert.ok(installed.includes("__continuity_owner_gate_v2__"),
+      "copying a guard module beside an unpatched store guards nothing");
+    assert.ok(!/from\s+["'][^"']*_continuity/.test(installed),
+      "and the installed guard must leave the store relocatable");
 
     const manifest = JSON.parse(fs.readFileSync(path.join(world.state, "deployed.json"), "utf8"));
     assert.equal(manifest.exception_store.guarded_hash, world.deployed.exception_store.guarded_hash);
-    assert.notEqual(manifest.exception_store.preimage_hash, manifest.exception_store.guarded_hash);
+    assert.notEqual(manifest.exception_store.original_preimage_hash, manifest.exception_store.guarded_hash);
   } finally { await world.close(); }
 });
 
@@ -85,7 +87,7 @@ test("deploy: re-deploying over a guarded store keeps the ORIGINAL preimage", as
     const second = await world.deployMod.deploy({ commit: world.commit, dryRun: false, liveDir: world.live });
     assert.equal(second.ok, true);
     assert.equal(second.exception_store.already_guarded, true);
-    assert.equal(second.exception_store.preimage_hash, world.deployed.exception_store.preimage_hash,
+    assert.equal(second.exception_store.original_preimage_hash, world.deployed.exception_store.original_preimage_hash,
       "a rollback after a redeploy must restore the ORIGINAL store, not a patched one");
   } finally { await world.close(); }
 });
@@ -289,14 +291,14 @@ test("deploy: a sabotaged working-tree guard cannot affect a reviewed deploy", a
     const attempt = await world.deployMod.deploy({ commit: world.commit, dryRun: false, liveDir: world.live });
     assert.equal(attempt.ok, false, "an edited security transformation must stop the deploy");
     assert.equal(attempt.dirty_guard, true);
-    assert.ok(!fs.readFileSync(path.join(world.live, "exception.mjs"), "utf8").includes("__continuity_owner_gate__"),
+    assert.ok(!fs.readFileSync(path.join(world.live, "exception.mjs"), "utf8").includes("__continuity_owner_gate_v2__"),
       "a refused deploy must write nothing");
 
     // Restore the tree, and the same commit deploys a genuinely guarded store.
     fs.writeFileSync(guardPath, reviewed);
     const clean = await world.deployMod.deploy({ commit: world.commit, dryRun: false, liveDir: world.live });
     assert.equal(clean.ok, true, JSON.stringify(clean));
-    assert.ok(fs.readFileSync(path.join(world.live, "exception.mjs"), "utf8").includes("__continuity_owner_gate__"));
+    assert.ok(fs.readFileSync(path.join(world.live, "exception.mjs"), "utf8").includes("__continuity_owner_gate_v2__"));
     // And the recorded provenance is the Git blob's hash, not the checkout's.
     assert.equal(clean.exception_store.guarded_hash, world.deployed.exception_store.guarded_hash);
   } finally { await world.close(); }
@@ -344,15 +346,16 @@ test("gate: a REAL ruling ref cannot be replayed through the legacy store", asyn
   } finally { await world.close(); }
 });
 
-test("gate: nothing in the owner gate accepts a credential at all", () => {
-  const source = fs.readFileSync(new URL("../src/continuity/control/owner-gate.js", import.meta.url), "utf8")
-    .replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
-  // The refusal must not be reachable past any argument. A Set of refs, or a
-  // parameter that could hold one, is the verification-handle bug again.
-  assert.ok(!/new Set\(/.test(source), "no registry of refs");
-  assert.ok(!/ownerRuling|ruling_ref|rulingRef/.test(source), "no ref parameter to check");
-  assert.match(source, /checkTransition\(\{\s*from,\s*to\s*\}\)/,
-    "checkTransition takes the transition and nothing else");
+test("gate: the installed guard accepts no credential at all", () => {
+  // The rule now lives inline in the reviewed patch, not in an imported module,
+  // so this reads the bytes that actually get installed.
+  const patch = fs.readFileSync(new URL("../ops/exception-guard-patch.mjs", import.meta.url), "utf8");
+  const body = patch.slice(patch.indexOf("const V2_BODY"), patch.indexOf("const SIGNATURE"));
+  assert.ok(!/new Set\(/.test(body), "no registry of refs");
+  assert.ok(!/ownerRuling|ruling_ref|rulingRef|arguments\[/.test(body), "no credential parameter to check");
+  assert.ok(!/import\s|require\(/.test(body), "and nothing imported, so the store stays relocatable");
+  assert.match(body, /__from === "blocked-on-owner" && status !== "blocked-on-owner"/,
+    "the guard decides on the transition and nothing else");
 });
 
 test("portability: no module hand-builds a file:// URL", () => {
