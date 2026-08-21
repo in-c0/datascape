@@ -18,7 +18,9 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { deployedWorld } from "../ops/prb-deploy-world.mjs";
-import { GUARD_V2_MARKER, classifyGuard, patchExceptionSource } from "../ops/exception-guard-patch.mjs";
+import {
+  GUARD_V2_MARKER, classifyGuard, hasCurrentGuard, patchExceptionSource,
+} from "../ops/exception-guard-patch.mjs";
 
 const STORE = () => fs.readFileSync(path.join(process.cwd(), "ops", "prb-exception-stand-in.mjs"), "utf8");
 
@@ -231,5 +233,111 @@ test("deploy: a V1 store is not treated as guarded by the startup gate", async (
     // And the host refuses to rule on it.
     const started = await world.launch();
     assert.equal(started.mode, "read_only");
+  } finally { await world.close(); }
+});
+
+// ---------------------------------------------------------------------------
+// The rollback the REAL machine will need
+// ---------------------------------------------------------------------------
+
+test("guard: hasCurrentGuard is true for V2 and nothing else", () => {
+  const clean = STORE();
+  // The predecessor answered true for `ambiguous` — the state whose entire
+  // meaning is "refuse rather than guess". That is the same footgun one layer
+  // out, so the boolean is now strict.
+  assert.equal(hasCurrentGuard(clean), false, "unpatched");
+  assert.equal(hasCurrentGuard(installV1(clean)), false, "V1 is not the current guard");
+  assert.equal(hasCurrentGuard(patchExceptionSource(clean).source), true, "V2");
+  const ambiguous = clean.replace("export function setStatus", "// __continuity_owner_gate__\nexport function setStatus");
+  assert.equal(classifyGuard(ambiguous).version, "ambiguous");
+  assert.equal(hasCurrentGuard(ambiguous), false, "an unrecognised guard is not a current guard");
+});
+
+test("deploy: the exact V1 -> V2 -> rollback the live machine will perform", async () => {
+  const world = await deployedWorld();
+  try {
+    // Put the world into the shape the real host is in RIGHT NOW: the merged
+    // 180f66e artifact, a V1-guarded store, and owner-gate.js present. The
+    // earlier rollback test started from an unpatched store, which is not the
+    // transition production will ever make.
+    const v1Store = installV1(world.storeBefore);
+    fs.writeFileSync(path.join(world.live, "exception.mjs"), v1Store);
+    fs.mkdirSync(path.join(world.live, "_continuity"), { recursive: true });
+    const ownerGateBytes = "export function checkTransition({ from, to }) {\n"
+      + "  if (from === \"blocked-on-owner\" && to !== \"blocked-on-owner\") {\n"
+      + "    return { ok: false, failure: \"owner_ruling_required\", reason: \"r\", remedy: \"m\" }\n"
+      + "  }\n  return { ok: true }\n}\n";
+    fs.writeFileSync(path.join(world.live, "_continuity", "owner-gate.js"), ownerGateBytes);
+
+    // Capture every security-relevant pre-deploy byte.
+    const before = new Map();
+    for (const entry of world.deployMod.ARTIFACT) {
+      const bytes = fs.readFileSync(path.join(world.live, entry.dest), "utf8");
+      before.set(entry.dest, bytes);
+    }
+    before.set("exception.mjs", v1Store);
+    before.set("_continuity/owner-gate.js", ownerGateBytes);
+
+    const migration = await world.deployMod.deploy({
+      commit: world.commit, dryRun: false, liveDir: world.live,
+    });
+    assert.equal(migration.ok, true, JSON.stringify(migration));
+    assert.equal(migration.exception_store.migrated_from, "v1");
+    assert.deepEqual(migration.retired, ["_continuity/owner-gate.js"]);
+
+    // Roll back using THAT migration's backup set.
+    const rolled = world.deployMod.rollback({ toBackupSet: migration.backup_set, dryRun: false });
+    assert.equal(rolled.ok, true, JSON.stringify(rolled));
+
+    const store = fs.readFileSync(path.join(world.live, "exception.mjs"), "utf8");
+    assert.equal(store, v1Store, "the V1 store must come back byte for byte");
+    assert.equal(fs.readFileSync(path.join(world.live, "_continuity", "owner-gate.js"), "utf8"),
+      ownerGateBytes, "the retired dependency must come back too, or the restored store cannot load");
+    for (const [dest, bytes] of before) {
+      assert.equal(fs.readFileSync(path.join(world.live, dest), "utf8"), bytes, `${dest} restored`);
+    }
+    assert.ok(!store.includes(GUARD_V2_MARKER), "no V2 marker survives the rollback");
+    assert.equal(classifyGuard(store).version, "v1", "and the V1 guard is back, import and all");
+
+    // Rollback deliberately drops the reviewed-commit claim, so the host must
+    // fail closed until somebody deploys again. A rolled-back host that kept
+    // ruling would be ruling out of unreviewed code.
+    const started = await world.launch();
+    assert.equal(started.mode, "read_only");
+    assert.equal(started.owner_rulings, false);
+    assert.equal(started.security_runtime_imported, false);
+  } finally { await world.close(); }
+});
+
+test("deploy: a guarded store with no manifest history refuses rather than recording null", async () => {
+  const world = await deployedWorld();
+  try {
+    // A guarded store whose manifest history is gone — a restored machine, a
+    // cleared state dir. Persisting null would write "we do not know what this
+    // file originally was" into the release record as though it were a fact.
+    fs.rmSync(path.join(world.state, "deployed.json"));
+
+    // Recoverable: the guard is one the reviewed inverse transform reverses.
+    const recovered = await world.deployMod.deploy({ commit: world.commit, dryRun: false, liveDir: world.live });
+    assert.equal(recovered.ok, true, JSON.stringify(recovered));
+    assert.equal(recovered.exception_store.original_preimage_hash,
+      world.deployed.exception_store.original_preimage_hash,
+      "the original must be re-derived, not invented and not left null");
+
+    // An unrecognised guard with no history is refused too — by the ambiguity
+    // check, which runs first. Asserting a disjunction over "either failure"
+    // would pass on whichever branch happened to fire, so this names the one
+    // that actually does. The `original_preimage_unrecoverable` failure behind
+    // it is defence in depth: unreachable while every classifiable guard is
+    // also reversible, and there so a future guard which is not cannot quietly
+    // record a null original.
+    fs.rmSync(path.join(world.state, "deployed.json"));
+    fs.writeFileSync(path.join(world.live, "exception.mjs"),
+      `// ${GUARD_V2_MARKER} hand-edited\n${world.storeBefore}`);
+    const refused = await world.deployMod.deploy({ commit: world.commit, dryRun: false, liveDir: world.live });
+    assert.equal(refused.ok, false);
+    assert.equal(refused.store_version, "ambiguous", JSON.stringify(refused));
+    assert.equal(fs.existsSync(path.join(world.state, "deployed.json")), false,
+      "a refused deploy records nothing at all, least of all a null provenance");
   } finally { await world.close(); }
 });

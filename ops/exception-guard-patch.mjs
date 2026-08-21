@@ -102,9 +102,20 @@ export function classifyGuard(source) {
   };
 }
 
-/** Kept for callers that only need the yes/no. */
-export function isPatched(source) {
-  return classifyGuard(source).version !== "unpatched";
+/**
+ * Strictly: does this store carry the CURRENT reviewed guard?
+ *
+ * The predecessor, `isPatched()`, was `classification !== "unpatched"`, so it
+ * answered true for V1 and — worse — for `ambiguous`, the state whose whole
+ * meaning is "refuse rather than guess". A helper that calls an unrecognised
+ * guard "patched" is the same footgun this module exists to remove, one layer
+ * further out.
+ *
+ * V2 only. Anything else is a no, and callers that need to know WHICH no should
+ * ask `classifyGuard()`.
+ */
+export function hasCurrentGuard(source) {
+  return classifyGuard(source).version === "v2";
 }
 
 /**

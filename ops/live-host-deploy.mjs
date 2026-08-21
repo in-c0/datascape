@@ -34,7 +34,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { execFileSync } from "node:child_process";
 
-import { GUARD_V2_MARKER, classifyGuard } from "./exception-guard-patch.mjs";
+import { GUARD_V2_MARKER, classifyGuard, stripGuard } from "./exception-guard-patch.mjs";
 
 // Read at CALL time, not at import time. Capturing these when the module first
 // loaded meant whichever caller imported it first fixed the paths for everyone
@@ -422,9 +422,27 @@ export async function deploy({ commit, at = null, dryRun = true, liveDir = liveD
   // already-guarded in the V2 sense, so its bytes would have been recorded as
   // the original and a later rollback would have restored a patched file
   // calling itself untouched.
-  const originalPreimageHash = priorStore.original_preimage_hash
-    ?? priorStore.preimage_hash
-    ?? (currentGuard.version === "unpatched" ? sha(storeRaw) : null);
+  let originalPreimageHash = priorStore.original_preimage_hash ?? priorStore.preimage_hash ?? null;
+  if (!originalPreimageHash) {
+    if (currentGuard.version === "unpatched") {
+      originalPreimageHash = sha(storeRaw);
+    } else {
+      // A guarded store whose manifest history is gone. Persisting null here
+      // would record "we do not know what this file originally was" as though
+      // it were a fact about the release, and every later rollback would
+      // inherit that blank. Derive it with the reviewed inverse transform
+      // instead, and refuse if the guard is not one we can reverse exactly.
+      const clean = stripGuard(storeRaw);
+      if (!clean.ok) {
+        return {
+          ok: false,
+          failure: "original_preimage_unrecoverable",
+          reason: `the store is ${currentGuard.version} and no manifest records its original bytes: ${clean.reason}`,
+        };
+      }
+      originalPreimageHash = sha(clean.source);
+    }
+  }
   const previousReleaseHash = sha(storeRaw);
 
   const backupSet = `${resolved.slice(0, 12)}-${sha(staged.map((f) => f.live_hash).join("|")).slice(0, 8)}`;
