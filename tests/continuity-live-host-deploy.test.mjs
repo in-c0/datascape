@@ -6,7 +6,10 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 
 // Read once, with no env overrides, purely for the artifact list.
-const { ARTIFACT } = await import("../ops/live-host-deploy.mjs");
+const { ARTIFACT, AUTHORITY_ARTIFACT } = await import("../ops/live-host-deploy.mjs");
+// Deployment stages both groups, so a world that seeded only one would fail for
+// the wrong reason.
+const ALL_ARTIFACT = [...ARTIFACT, ...AUTHORITY_ARTIFACT];
 
 /**
  * An isolated world with a REAL git repository.
@@ -39,7 +42,7 @@ function world() {
   // Derived from the module's own artifact set, so adding a file to the
   // security layer cannot leave this world seeding a stale list.
   const sources = Object.fromEntries(
-    ARTIFACT.map((entry, i) => [entry.source, `export const part${i} = 1\n`]),
+    ALL_ARTIFACT.map((entry, i) => [entry.source, `export const part${i} = 1\n`]),
   );
   for (const [rel, text] of Object.entries(sources)) write(rel, text);
   // Deployment patches the host's exception store, so the world needs one — and

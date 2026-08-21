@@ -38,6 +38,8 @@ const STUB_BRIEFING = `export function build() { return { lanes: [], mustReads: 
 const REPO_SOURCES = [
   "ops/live-host/briefing-server.mjs",
   "ops/live-host/briefing-server-core.mjs",
+  "ops/live-host/authority-host.mjs",
+  "src/continuity/control/authority-read-session.js",
   "ops/exception-guard-patch.mjs",
   "src/continuity/control/owner-ruling.js",
   "src/continuity/control/owner-presence.js",

@@ -80,10 +80,13 @@ export const ARTIFACT = [
  * the entry point gates them independently, so "authority is broken" and "the
  * host is broken" stay different sentences.
  *
- * Empty until the authority routes land; the machinery around it is built and
- * tested first so the gate exists before the thing it gates.
+ * The gate was built and tested while this group was empty, deliberately, so
+ * the failure path shipped before the thing it gates.
  */
-export const AUTHORITY_ARTIFACT = [];
+export const AUTHORITY_ARTIFACT = [
+  { dest: "_authority/authority-host.mjs", source: "ops/live-host/authority-host.mjs" },
+  { dest: "_authority/authority-read-session.js", source: "src/continuity/control/authority-read-session.js" },
+];
 
 /**
  * Host dependencies: not ours to version, but they decide whether an owner
@@ -425,7 +428,7 @@ export async function deploy({ commit, at = null, dryRun = true, liveDir = liveD
   if (!resolved) return { ok: false, reason: `not a commit in this repository: ${commit}` };
 
   const staged = [];
-  for (const entry of ARTIFACT) {
+  for (const entry of [...ARTIFACT, ...AUTHORITY_ARTIFACT]) {
     const bytes = gitBlob(resolved, entry.source);
     if (bytes === null) return { ok: false, reason: `${entry.source} does not exist at ${resolved.slice(0, 12)}` };
     const target = path.join(liveDir, entry.dest);
@@ -439,7 +442,10 @@ export async function deploy({ commit, at = null, dryRun = true, liveDir = liveD
     if (!dryGuard.ok) return { ok: false, dry_run: true, reason: dryGuard.reason, dirty_guard: Boolean(dryGuard.dirty) };
     return {
       ok: true, dry_run: true, commit: resolved, changes,
-      files: staged.map((f) => ({ dest: f.dest, hash: f.hash, live_hash: f.live_hash, would_write: f.target })),
+      files: staged.filter((f) => !f.dest.startsWith("_authority/"))
+        .map((f) => ({ dest: f.dest, hash: f.hash, live_hash: f.live_hash, would_write: f.target })),
+      authority_files: staged.filter((f) => f.dest.startsWith("_authority/"))
+        .map((f) => ({ dest: f.dest, hash: f.hash, live_hash: f.live_hash, would_write: f.target })),
       would_guard_exception_store: !guardedStoreState({ liveDir }).patched,
       working_tree_drift: workingTreeDrift(resolved),
     };
@@ -537,7 +543,11 @@ export async function deploy({ commit, at = null, dryRun = true, liveDir = liveD
   fs.writeFileSync(MANIFEST(), JSON.stringify({
     commit: resolved,
     deployed_at: at,
-    files: staged.map((f) => ({ dest: f.dest, source: f.source, hash: f.hash })),
+    files: staged.filter((f) => !f.dest.startsWith("_authority/"))
+      .map((f) => ({ dest: f.dest, source: f.source, hash: f.hash })),
+    // Recorded separately so the authority subsystem can be gated on its own.
+    authority_files: staged.filter((f) => f.dest.startsWith("_authority/"))
+      .map((f) => ({ dest: f.dest, source: f.source, hash: f.hash })),
     previous: { backup_set: backupSet, files: staged.map((f) => ({ dest: f.dest, hash: f.live_hash })) },
     // The guard is part of the release record: what it was, what transformed
     // it, and what it must hash to for the preflight to let the host serve.
@@ -564,7 +574,11 @@ export async function deploy({ commit, at = null, dryRun = true, liveDir = liveD
 
   return {
     ok: true, dry_run: false, commit: resolved, backup_set: backupSet, retired,
-    files: staged.map((f) => ({ dest: f.dest, hash: f.hash })),
+    // Split the same way the manifest splits them: "authority is broken" and
+    // "the host is broken" have to stay different sentences everywhere, not
+    // only in the file we wrote.
+    files: staged.filter((f) => !f.dest.startsWith("_authority/")).map((f) => ({ dest: f.dest, hash: f.hash })),
+    authority_files: staged.filter((f) => f.dest.startsWith("_authority/")).map((f) => ({ dest: f.dest, hash: f.hash })),
     exception_store: {
       original_preimage_hash: originalPreimageHash,
       previous_release_hash: previousReleaseHash,

@@ -11,6 +11,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { spawn } from "node:child_process";
+import { pathToFileURL } from "node:url";
 
 import { deployedWorld } from "../ops/prb-deploy-world.mjs";
 
@@ -481,13 +482,15 @@ test("presence: the deployed artifact ships the coordinator", async () => {
 // The authority subsystem is gated independently of the host
 // ---------------------------------------------------------------------------
 
-test("authority: an absent subsystem returns 503 and leaves /api/act live", async () => {
-  const world = await deployedWorld();
+test("authority: a BROKEN subsystem returns 503 and leaves /api/act live", async () => {
+  // Deployment now ships the authority group, so "absent" has to be created:
+  // this is the shape a corrupt or interrupted authority install leaves.
+  const world = await deployedWorld({ damage: { remove: "_authority/authority-read-session.js" } });
   try {
     const started = await world.launch();
     assert.equal(started.mode, "owner_rulings", "the base host is unaffected");
     assert.equal(started.authority_available, false);
-    assert.match(started.authority_reason, /no reviewed authority subsystem/);
+    assert.ok(started.authority_reason, "and it says why");
 
     for (const route of ["/__continuity/authority", "/__continuity/authority/unlock_read"]) {
       const response = await fetch(`http://127.0.0.1:${started.port}${route}`, {
@@ -516,4 +519,94 @@ test("authority: the base core never references an authority module", () => {
   assert.deepEqual(imports.filter((line) => /_authority|authority-host/.test(line)), []);
   assert.ok(!/_authority\//.test(core.replace(/^\s*\/\/.*$/gm, "")),
     "the core knows a URL prefix, not a module");
+});
+
+// ---------------------------------------------------------------------------
+// The authority host, from deployed bytes
+// ---------------------------------------------------------------------------
+
+test("authority: unlock requires verified presence and hands back no token", async () => {
+  const world = await deployedWorld();
+  try {
+    // Imported from the LIVE host, where authority-host.mjs sits beside its
+    // session module. In the repo they live in different directories, so a
+    // repo-path import would be testing a layout production never has.
+    const mod = await import(pathToFileURL(
+      path.join(world.live, "_authority", "authority-host.mjs")).href);
+
+    let outcome = "verified";
+    const calls = [];
+    const verification = { outcome: "verified", operation_ref: "authority:unlock_read" };
+    const presence = {
+      forSubsystem: (name) => ({
+        name,
+        verifier: {
+          verify: async ({ purpose, operationRef }) => {
+            calls.push({ purpose, operationRef });
+            return outcome === "verified" ? verification : { outcome, reason: `device said ${outcome}` };
+          },
+          authorizes: () => ({ ok: true }),
+        },
+        budget: { mayPrompt: () => ({ ok: true }), recordOutcome: () => {} },
+        now: () => 1_000_000,
+      }),
+    };
+    const host = mod.createAuthorityHost({ presence, now: () => 1_000_000 });
+
+    const drive = async () => {
+      const headers = [];
+      let payload = null;
+      const res = { setHeader: (k, v) => headers.push([k, v]) };
+      const ctx = { origin: null, send: (r, code, body) => { payload = { code, body }; return true; } };
+      const req = {
+        method: "POST", headers: { "content-type": "application/json" },
+        on(event, fn) { if (event === "end") fn(); return req; },
+      };
+      await host.handle(req, res, new URL("http://127.0.0.1/__continuity/authority/unlock_read"), ctx);
+      return { headers, payload };
+    };
+
+    const ok = await drive();
+    const cookie = ok.headers.find(([k]) => k === "Set-Cookie")?.[1];
+    assert.ok(cookie, "the session is handed over as a cookie");
+    assert.equal(ok.payload.code, 200);
+    assert.equal(ok.payload.body.unlocked, true);
+    assert.ok(ok.payload.body.expires_at, "the surface is told when its window closes");
+
+    const token = cookie.split(";")[0].split("=")[1];
+    assert.ok(!JSON.stringify(ok.payload.body).includes(token),
+      "the browser is never trusted with the token itself");
+    assert.match(calls[0].purpose, /Unlock DataScape owner controls/);
+
+    // A refused verification unlocks nothing.
+    outcome = "cancelled";
+    const refused = await drive();
+    assert.equal(refused.payload.code, 403);
+    assert.equal(refused.payload.body.unlocked, false);
+    assert.equal(refused.headers.length, 0, "and sets no cookie");
+  } finally { await world.close(); }
+});
+
+test("authority: an unauthenticated request reaches no authority operation", async () => {
+  const world = await deployedWorld();
+  try {
+    const started = await world.launch();
+    assert.equal(started.authority_available, true, "the subsystem is deployed and gated open");
+
+    // No cookie: every route beyond unlock/status is 401, not a 501 that would
+    // tell an unauthenticated caller what exists.
+    const response = await fetch(`http://127.0.0.1:${started.port}/__continuity/authority/context`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+    });
+    assert.equal(response.status, 401);
+    assert.equal((await response.json()).error, "no_read_session");
+    assert.equal(world.broker.calls.length, 0, "and it costs her no prompt");
+
+    // Status is readable and tells nobody anything secret.
+    const status = await fetch(`http://127.0.0.1:${started.port}/__continuity/authority/status`);
+    assert.equal(status.status, 200);
+    const body = await status.json();
+    assert.equal(body.open, false);
+    assert.ok(!JSON.stringify(body).includes("session"), "no session material in a public status");
+  } finally { await world.close(); }
 });
