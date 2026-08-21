@@ -47,17 +47,19 @@ function Block({ node, index }) {
  * On any parse failure it falls back to the exact plain text rather than
  * rendering nothing: the content must never disappear (ruling 2, rule 10).
  */
-export default function Authored({ text, className = "bf-verbatim" }) {
+export default function Authored({ text, nodes, className = "bf-verbatim" }) {
   const source = String(text ?? "");
-  if (!source.trim()) return null;
+  // `nodes` is a pre-parsed tree — used by the bounded excerpt, which must
+  // truncate the TREE rather than the raw Markdown.
+  if (!nodes && !source.trim()) return null;
 
-  let blocks;
+  let blocks = nodes;
   try {
-    blocks = parseAuthored(source);
+    if (!blocks) blocks = parseAuthored(source);
   } catch {
     return <p className={className} style={{ whiteSpace: "pre-wrap" }}>{source}</p>;
   }
-  if (!blocks.length) {
+  if (!blocks || !blocks.length) {
     return <p className={className} style={{ whiteSpace: "pre-wrap" }}>{source}</p>;
   }
 

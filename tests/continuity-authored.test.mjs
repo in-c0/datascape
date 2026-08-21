@@ -125,3 +125,77 @@ test("an unterminated fence does not swallow the document silently", () => {
   // Content is preserved even though the author forgot the closing fence.
   assert.match(visibleText(tree), /not closed/);
 });
+
+// ---------------------------------------------------------------------------
+// Fragment-safe excerpting (visual review R3)
+//
+// The invariant: truncation may shorten authored content, but it may never
+// manufacture malformed Markdown presentation.
+// ---------------------------------------------------------------------------
+
+import { excerptAuthored } from "../src/continuity/authored.js";
+
+// The exact fixture the governing lane required.
+const R3_FIXTURE =
+  "**Evidence shipped.** Its ruling: **accept this compatibility pass**, but do not call it canonical.";
+
+test("R3 fixture: an excerpt never strands a delimiter", () => {
+  // Sweep every budget, because the bug only appeared at the cut points that
+  // happened to land inside a styled span.
+  for (let budget = 5; budget <= R3_FIXTURE.length + 10; budget += 1) {
+    const { blocks } = excerptAuthored(R3_FIXTURE, budget);
+    const words = visibleText(blocks);
+    assert.doesNotMatch(words, /\*\*/, `budget ${budget} stranded a ** in: ${JSON.stringify(words)}`);
+    assert.doesNotMatch(words, /^\s*\*|\*\s*$/, `budget ${budget} stranded a * in: ${JSON.stringify(words)}`);
+    assert.doesNotMatch(words, /`/, `budget ${budget} stranded a backtick`);
+    // Every word shown must be a real prefix of the authored words — nothing
+    // invented, nothing reordered.
+    assert.ok(
+      visibleText(parseAuthored(R3_FIXTURE)).startsWith(words.trimEnd()),
+      `budget ${budget} produced text that is not an authored prefix: ${JSON.stringify(words)}`,
+    );
+  }
+});
+
+test("R3 fixture: a styled span is included whole or not at all", () => {
+  const full = parseAuthored(R3_FIXTURE);
+  const strongs = find(full, "strong").map((n) => visibleText(n.children));
+  assert.deepEqual(strongs, ["Evidence shipped.", "accept this compatibility pass"]);
+
+  for (let budget = 5; budget <= R3_FIXTURE.length; budget += 1) {
+    const { blocks } = excerptAuthored(R3_FIXTURE, budget);
+    for (const node of find(blocks, "strong")) {
+      // Any surviving strong must match one of the originals exactly — a
+      // partial one is what produced the stranded delimiter.
+      assert.ok(strongs.includes(visibleText(node.children)), `budget ${budget} cut a strong span in half`);
+    }
+  }
+});
+
+test("a fenced code block is all-or-nothing", () => {
+  const source = "before\n\n```\nnpm run verify:browser\n```";
+  // Too small for the block: it must be dropped, never half-opened.
+  const tight = excerptAuthored(source, 10);
+  assert.equal(find(tight.blocks, "code_block").length, 0);
+  assert.equal(tight.truncated, true);
+  // Large enough: it appears complete.
+  const roomy = excerptAuthored(source, 500);
+  assert.equal(find(roomy.blocks, "code_block")[0].value, "npm run verify:browser");
+});
+
+test("a link is never half-included", () => {
+  const source = "see [the full write-up](https://example.test/a-fairly-long-path) for detail";
+  for (let budget = 3; budget <= source.length; budget += 1) {
+    const { blocks } = excerptAuthored(source, budget);
+    for (const link of find(blocks, "link")) {
+      assert.equal(link.href, "https://example.test/a-fairly-long-path");
+      assert.equal(visibleText(link.children), "the full write-up");
+    }
+  }
+});
+
+test("an excerpt that fits is not marked truncated", () => {
+  const { blocks, truncated } = excerptAuthored("short and complete.", 500);
+  assert.equal(truncated, false);
+  assert.equal(visibleText(blocks), "short and complete.");
+});

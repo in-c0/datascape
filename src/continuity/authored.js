@@ -145,3 +145,127 @@ export function visibleText(nodes) {
   }).join("");
   return walk(nodes);
 }
+
+// ---------------------------------------------------------------------------
+// Fragment-safe excerpting (governing lane, visual review R3)
+//
+// The first implementation sliced the RAW Markdown and parsed the slice, which
+// could cut through an inline span and leave a stranded `**` in the rendered
+// prose — manufacturing exactly the delimiter noise the presentation pass
+// existed to remove.
+//
+// The invariant:
+//
+//   Semantic truncation may shorten authored content, but it may never
+//   manufacture malformed Markdown presentation.
+//
+// So the order is parse → truncate the TREE → render, never slice → parse.
+//
+// Cutting inside a `text` node is safe: text carries no delimiters. Every other
+// inline node (strong, em, code, link) is all-or-nothing — include it whole or
+// stop before it. That is what guarantees balanced presentation without ever
+// regex-stripping a delimiter, which would corrupt valid authored syntax.
+// ---------------------------------------------------------------------------
+
+const visibleLength = (nodes) => nodes.reduce((sum, n) => {
+  if (n.type === "text" || n.type === "code") return sum + String(n.value).length;
+  if (n.children) return sum + visibleLength(n.children);
+  return sum;
+}, 0);
+
+/** Cut a run of inline nodes at a word boundary, never inside a styled span. */
+function truncateInline(nodes, budget) {
+  const out = [];
+  let used = 0;
+  let truncated = false;
+
+  for (const node of nodes) {
+    const remaining = budget - used;
+    if (remaining <= 0) { truncated = true; break; }
+
+    if (node.type === "text") {
+      if (node.value.length <= remaining) {
+        out.push(node);
+        used += node.value.length;
+        continue;
+      }
+      // Text is safe to cut. Prefer a sentence, then a word boundary, so the
+      // excerpt reads as prose rather than as a truncation artefact.
+      const window_ = node.value.slice(0, remaining);
+      const sentence = window_.lastIndexOf(". ");
+      const word = window_.lastIndexOf(" ");
+      const cut = sentence > remaining * 0.5 ? sentence + 1 : (word > 0 ? word : remaining);
+      const value = node.value.slice(0, cut).trimEnd();
+      if (value) out.push({ type: "text", value });
+      truncated = true;
+      break;
+    }
+
+    // Styled spans are indivisible: taking half of one is what produced the
+    // stranded delimiter.
+    const len = visibleLength([node]);
+    if (len <= remaining) {
+      out.push(node);
+      used += len;
+    } else {
+      truncated = true;
+      break;
+    }
+  }
+
+  return { nodes: out, truncated };
+}
+
+/**
+ * A bounded excerpt of an authored record, as a parsed tree.
+ *
+ * Returns whole blocks until the budget is reached; the last block may be
+ * shortened at a safe boundary. Never returns a partial styled span.
+ */
+export function excerptAuthored(source, budget = 320) {
+  const blocks = parseAuthored(source);
+  const out = [];
+  let used = 0;
+  let truncated = false;
+
+  for (const block of blocks) {
+    const remaining = budget - used;
+    if (remaining <= 0) { truncated = true; break; }
+
+    if (block.type === "code_block") {
+      // A fenced block is all-or-nothing: a half-open fence is malformed.
+      const len = block.value.length;
+      if (len <= remaining) { out.push(block); used += len; continue; }
+      truncated = true;
+      break;
+    }
+
+    if (block.type === "ul" || block.type === "ol") {
+      const items = [];
+      for (const item of block.items) {
+        const left = budget - used;
+        if (left <= 0) { truncated = true; break; }
+        const len = visibleLength(item);
+        if (len <= left) { items.push(item); used += len; }
+        else { truncated = true; break; }
+      }
+      if (items.length) out.push({ ...block, items });
+      if (truncated) break;
+      continue;
+    }
+
+    const children = block.children || [];
+    const len = visibleLength(children);
+    if (len <= remaining) {
+      out.push(block);
+      used += len;
+      continue;
+    }
+    const cut = truncateInline(children, remaining);
+    if (cut.nodes.length) out.push({ ...block, children: cut.nodes });
+    truncated = true;
+    break;
+  }
+
+  return { blocks: out, truncated: truncated || out.length < blocks.length };
+}

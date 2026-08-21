@@ -3,6 +3,7 @@ import { store } from "../store.js";
 import { config } from "../../datascape.config.js";
 import { actionsAvailable, recordAction } from "./actions.js";
 import Authored from "./authored.jsx";
+import { excerptAuthored, parseAuthored } from "./authored.js";
 import {
   agoLabel,
   awayLabel,
@@ -319,12 +320,17 @@ function OwnerCard({ action, onDone, api }) {
 // but one node reintroduced the same overload inside its card. The full text is
 // one semantic level deeper — still verbatim, never summarised.
 function RecordCard({ item, full, onOpenFull }) {
-  const body = full ? { text: item.detail, truncated: false } : excerpt(item.detail);
+  // Parse first, then truncate the TREE. Slicing the raw Markdown and parsing
+  // the slice could cut through an inline span and strand a `**` in the prose —
+  // manufacturing the very delimiter noise the presentation pass removes.
+  const body = full
+    ? { blocks: parseAuthored(item.detail), truncated: false }
+    : excerptAuthored(item.detail);
   return (
     <div className="bf-card">
       <div className="bf-card__eyebrow">{item.facet}<span>{agoLabel(item.at)}</span>{full && <span>full record</span>}</div>
       <h2 className="bf-card__title">{item.title}</h2>
-      {body.text && <Authored text={body.truncated ? body.text + "…" : body.text} />}
+      {body.blocks.length > 0 && <Authored nodes={body.blocks} />}
       {body.truncated && (
         <button type="button" className="bf-readfull" onClick={onOpenFull}>
           Read full authored record →
