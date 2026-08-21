@@ -221,22 +221,31 @@ test("A.2.1: the same verification cannot authorize the same operation twice", a
   assert.equal(v.unspentCount(), 0);
 });
 
-test("A.2.1: a copied or serialized verification is not usable proof", async () => {
+test("A.2.1.1: no copy of a verification is usable proof", async () => {
   const { verifier: v } = verifier();
   const verified = await v.verify({ purpose: "Authorize", operationRef: "op-1" });
 
-  // Round-tripped through JSON, exactly as it would be if it had travelled.
-  const copied = JSON.parse(JSON.stringify(verified));
-  assert.equal(v.authorizes(copied, "op-1").ok, true, "a faithful copy spends the one handle");
-  // ...and neither the copy nor the original works again.
-  assert.equal(v.authorizes(copied, "op-1").ok, false);
-  assert.equal(v.authorizes(verified, "op-1").ok, false);
+  // The capability is the OBJECT, by identity. A serializable handle was still
+  // a bearer value: anything that obtained the string could build another
+  // object carrying it. Every copy below is a different object.
+  const copies = {
+    json_roundtrip: JSON.parse(JSON.stringify(verified)),
+    spread: { ...verified },
+    structured_clone: structuredClone(verified),
+    fabricated: { outcome: "verified", operation_ref: "op-1", verified_at: 0 },
+  };
+  for (const [kind, copy] of Object.entries(copies)) {
+    assert.equal(v.authorizes(copy, "op-1").ok, false, `${kind} copy must be refused`);
+  }
 
-  // A fabricated handle from outside this process authorizes nothing.
-  const forged = { outcome: "verified", operation_ref: "op-2", verification_handle: "chal_forged" };
-  assert.equal(v.authorizes(forged, "op-2").ok, false);
-  // And so does one with no handle at all.
-  assert.equal(v.authorizes({ outcome: "verified", operation_ref: "op-2" }, "op-2").ok, false);
+  // The verification carries nothing copyable that could ever make a copy work.
+  for (const bearer of ["verification_handle", "token", "nonce", "proof", "signature"]) {
+    assert.equal(verified[bearer], undefined, `${bearer} must not exist on a verification`);
+  }
+
+  // And the ORIGINAL object still works, exactly once.
+  assert.equal(v.authorizes(verified, "op-1").ok, true, "the original object is the capability");
+  assert.equal(v.authorizes(verified, "op-1").ok, false, "and only once");
 });
 
 test("A.2.1: one-shot consumption does not weaken cross-operation refusal", async () => {
@@ -245,6 +254,6 @@ test("A.2.1: one-shot consumption does not weaken cross-operation refusal", asyn
 
   // Spending it on the wrong operation must not spend it at all.
   assert.equal(v.authorizes(verified, "op-b").ok, false);
-  assert.equal(v.unspentCount(), 1, "a refused cross-operation attempt must not burn the handle");
+  assert.equal(v.unspentCount(), 1, "a refused cross-operation attempt must not burn the verification");
   assert.equal(v.authorizes(verified, "op-a").ok, true);
 });

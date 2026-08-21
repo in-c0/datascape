@@ -85,11 +85,18 @@ export function createOwnerPresenceVerifier({
   let cooldownUntil = 0;
   const consumed = new Set();
   /**
-   * Handles issued and not yet spent.
+   * Verification OBJECTS issued and not yet spent, held by identity.
    *
-   * Membership here IS the authorization. Nothing outside this process can add
-   * to it, so a serialized verification object is a name for something that is
-   * no longer there.
+   * The first attempt used a random string handle, which was still a bearer
+   * value: anything that obtained the string could build another object
+   * carrying it, and a JSON round trip produced a working copy. That is exactly
+   * the transferable capability this design exists to avoid — the Set being
+   * process-local did not help, because the NAME of the capability was
+   * serializable.
+   *
+   * Identity is not serializable. `structuredClone`, a spread, and a JSON round
+   * trip all produce a different object, and a different object is simply not
+   * in this Set.
    */
   const unspent = new Set();
 
@@ -151,22 +158,18 @@ export function createOwnerPresenceVerifier({
         }
 
         consumed.add(challenge);
-        // A one-shot HANDLE, not a reusable capability. The verified object
-        // itself is inert: `authorizes` looks the handle up in this process and
-        // burns it, so a copied or serialized result proves nothing. Previously
-        // the same verified object could authorize the same operation
-        // repeatedly, which made it exactly the transferable proof this design
-        // exists to avoid.
-        const handle = randomChallenge();
-        unspent.add(handle);
-        return {
+        // The returned object IS the one-shot capability, by identity. It
+        // deliberately carries no handle, token, nonce, proof or signature —
+        // there is nothing in it to copy that would make a copy work.
+        const verification = {
           outcome: "verified",
           // Bound to the exact operation. A verification for one ruling can
           // never be carried to another.
           operation_ref: operationRef,
-          verification_handle: handle,
           verified_at: now(),
         };
+        unspent.add(verification);
+        return verification;
       } finally {
         outstanding = null;
       }
@@ -190,12 +193,13 @@ export function createOwnerPresenceVerifier({
       if (verification.operation_ref !== operationRef) {
         return { ok: false, reason: "this verification was for a different operation" };
       }
-      const handle = verification.verification_handle;
-      if (!handle || !unspent.has(handle)) {
-        // Either already spent, or a copy fabricated outside this process.
+      if (!unspent.has(verification)) {
+        // Already spent, a copy, or an object fabricated elsewhere. All three
+        // are the same answer, and identity is what distinguishes them from the
+        // one object this process issued.
         return { ok: false, reason: "this owner verification has already been used or did not originate here" };
       }
-      unspent.delete(handle);
+      unspent.delete(verification);
       return { ok: true };
     },
 
