@@ -24,6 +24,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { deployedWorld } from "./prb-deploy-world.mjs";
 import { commitAuthority } from "../src/continuity/control/authority-commit.js";
@@ -142,21 +143,47 @@ function surfaceHash(target) {
  * `execFile` and `execFileSync` are wrapped before anything else runs, so any
  * code path anywhere in this process — however deeply imported — is counted.
  */
-const deviceCalls = { powershell: 0, commands: [] };
-{
-  const wrap = (name) => {
-    const original = childProcess[name];
-    if (typeof original !== "function") return;
-    childProcess[name] = function counted(command, ...rest) {
-      if (/powershell(\.exe)?$/i.test(String(command))) {
-        deviceCalls.powershell += 1;
-        deviceCalls.commands.push(String(command));
-      }
-      return original.call(this, command, ...rest);
-    };
+/**
+ * A Windows measurement that CAN FAIL.
+ *
+ * The first attempt reassigned `childProcess.execFile`; the second used
+ * `mock.method` on the same object. Both read 0 for the same reason, and the
+ * positive control caught it: the broker reaches the device through an ESM
+ * named import, and Node's builtin named exports do not follow mutation of the
+ * CommonJS export object. The row could not have reported a real call.
+ *
+ * So the count now lives at the device boundary itself — inside the broker,
+ * where the named import actually resolves — and this reads it. The positive
+ * control drives the REAL broker through an injected runner and proves both
+ * halves: that a device attempt is counted, and that no PowerShell was
+ * launched to prove it.
+ */
+async function windowsMeasurement() {
+  const device = await import("../src/continuity/control/owner-presence-windows.js");
+  const before = device.deviceInvocationCount();
+
+  // The control's runner holds no process API at all, so it CANNOT launch
+  // anything — it records the attempt and refuses. A reporter that proved
+  // "nothing prompts her" by prompting her would be self-defeating.
+  const attempts = [];
+  const broker = device.createWindowsOwnerPresenceBroker({
+    allowInteractive: true,
+    runner: (command, args, options, callback) => {
+      attempts.push(String(command));
+      callback(new Error("the delta reporter refuses to invoke the real device"), "");
+    },
+  });
+  const outcome = await broker.verify({ challenge: "probe", purpose: "delta positive control" });
+
+  const counted = device.deviceInvocationCount() - before;
+  return {
+    intercepted: counted > 0 && attempts.some((c) => /powershell/i.test(c)),
+    // OBSERVED, not asserted: the refusal has to come back as a failed
+    // verification. If this said "verified", the runner had been bypassed and
+    // something else answered — which is the case the control exists to catch.
+    refused: outcome?.outcome !== "verified",
+    real: before,
   };
-  wrap("execFile");
-  wrap("execFileSync");
 }
 
 const before = Object.fromEntries(
@@ -617,8 +644,12 @@ const after = Object.fromEntries(
 row("REAL", "authority writes", before.authority_state === after.authority_state ? "0" : "1", "0");
 row("REAL", "blocker resolutions", before.exceptions === after.exceptions ? "0" : "1", "0");
 row("REAL", "CLAUDE.md writes", before.claude_md === after.claude_md ? "0" : "1", "0");
-row("WINDOWS", "real Windows broker verify calls", deviceCalls.powershell, "0");
-row("WINDOWS", "real Windows prompts shown", deviceCalls.powershell, "0");
+const windows = await windowsMeasurement();
+row("WINDOWS MEASUREMENT", "named-import PowerShell positive control detected",
+  windows.intercepted ? "yes" : "NO", "yes");
+row("WINDOWS MEASUREMENT", "positive control's device attempt was refused",
+  windows.refused ? "yes" : "NO", "yes");
+row("WINDOWS MEASUREMENT", "real harness PowerShell calls", windows.real, "0");
 const stores = canonicalAuthorityStores();
 row("PERSISTENCE", "number of canonical authority stores", stores.length, "1");
 row("PERSISTENCE", "reporter hashes candidate host's actual journal",

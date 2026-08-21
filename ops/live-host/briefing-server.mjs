@@ -278,6 +278,7 @@ export async function startLiveHost({
   // gate passes — and the core never references it at all.
   let authority = null;
   let authorityReason = null;
+  let transaction = null;
   const authorityGate = manifestAuthorityGate({ liveDir, stateDir });
   if (authorityGate.ok) {
     try {
@@ -290,7 +291,6 @@ export async function startLiveHost({
       // in `_authority/`. Importing across those directories from either side
       // is how a module ends up resolvable in the repo and absent in the
       // release, so the composition happens at the one point that can see both.
-      let transaction = null;
       try {
         const txMod = await import(pathToFileURL(
           path.resolve(liveDir, "_authority", "authority-transaction.mjs")).href);
@@ -346,6 +346,17 @@ export async function startLiveHost({
     authorityReason = authorityGate.reason;
   }
 
+  // Resolved once at startup, from the same code the routes use.
+  const domainState = (() => {
+    try {
+      const found = transaction?.domain?.();
+      if (!found) return { ok: false, reason: authorityReason || "no authority transaction is composed" };
+      return { ok: Boolean(found.ok), reason: found.reason ?? null };
+    } catch (error) {
+      return { ok: false, reason: `the authority domain could not be resolved: ${error.message}` };
+    }
+  })();
+
   const server = core.createServer(deps, {
     authority, authorityReason,
     ownerControlsOrigin: process.env.CONTINUITY_OWNER_CONTROLS_ORIGIN || null,
@@ -362,6 +373,13 @@ export async function startLiveHost({
     authority_transaction: Boolean(authority?.operations?.includes("commit")),
     // Stated as data so it can be asserted against rather than described.
     authority_operations: authority?.operations ?? [],
+    // A THIRD fact, distinct from the other two. The subsystem can be served
+    // and the transaction composed while the host is acting for no authority
+    // domain at all — with no loop configured, every read and every prepare
+    // refuses. Collapsing that into "available" made an unusable surface look
+    // ready.
+    authority_domain_ready: domainState.ok,
+    authority_domain_reason: domainState.ok ? null : domainState.reason,
     authority_reason: authorityReason,
     close: () => new Promise((resolve) => server.close(resolve)),
   };

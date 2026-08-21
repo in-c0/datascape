@@ -83,25 +83,30 @@ test("the blocker view exposes named fields and the two sections, not the file",
   assert.ok(!JSON.stringify(view).includes("Owner steps"));
 });
 
-test("the catalogue is derived from the loops that actually exist", () => {
-  const entries = [
-    entry("a", { loop: "sumzup/publish" }),
-    entry("b", { loop: "sumzup/publish", status: "resolved" }),
-    entry("c", { loop: LOOP }),
-  ];
-  const catalogue = scopeCatalogue(entries);
-  assert.deepEqual(catalogue.map((c) => c.ref), [`scope:${LOOP}`, "scope:sumzup/publish"]);
-  assert.equal(catalogue.find((c) => c.label === "sumzup/publish").open_blockers, 1);
+test("the catalogue is EMPTY and says why, rather than inventing scopes", () => {
+  // This test asserted the opposite until the governing review pointed out two
+  // problems with a loop-derived catalogue. The shape was incompatible — the
+  // authoring surface reads `entry.labels` — so a non-empty catalogue would
+  // have broken the screen it was meant to fill. And an exception loop is not
+  // an authority scope: V6 resolution works on repo / semantic-centre / topic
+  // refs the admission machinery can compare, so loop names would have offered
+  // boundaries nothing downstream could enforce.
+  const result = scopeCatalogue();
+  assert.deepEqual(result.catalogue, []);
+  assert.equal(result.scope_catalogue_ready, false);
+  assert.match(result.reason, /not authority scope references/);
 });
 
-test("one unreadable exception does not blank the surface", () => {
-  // Reading a storage fault as "no exceptions exist" is the most dangerous
-  // misreading available here, so a bad file is skipped and the rest survive.
+test("an unreadable exception makes the domain UNRESOLVABLE, not unique", () => {
+  // The dangerous shape: one readable candidate plus one file we cannot read.
+  // Skipping the unreadable one silently turns "I cannot tell whether this is
+  // unique" into "this is unique", and selects an authority domain on the
+  // strength of not having been able to check.
   const fs = {
     readdirSync: () => ["good.md", "broken.md"],
     readFileSync: (file) => {
-      if (String(file).includes("broken")) throw new Error("EIO");
-      return "---\nid: exc-a\nloop: x\nstatus: new\n---\n\nbody\n";
+      if (String(file).includes("broken")) throw Object.assign(new Error("EIO"), { code: "EIO" });
+      return "---\nid: exc-a\nloop: target\nstatus: blocked-on-owner\n---\n\nbody\n";
     },
   };
   const parseException = (raw) => {
@@ -112,7 +117,19 @@ test("one unreadable exception does not blank the surface", () => {
     }
     return { meta, body: raw };
   };
-  const entries = readExceptionIndex({ fs, inbox: "/x", parseException });
-  assert.equal(entries.length, 1);
-  assert.equal(entries[0].meta.id, "exc-a");
+
+  const { entries, unreadable } = readExceptionIndex({ fs, inbox: "/x", parseException });
+  assert.equal(entries.length, 1, "the readable one is still available for display");
+  assert.deepEqual(unreadable.map((u) => u.file), ["broken.md"]);
+
+  // Display may degrade. Authority selection may not.
+  const resolved = resolveAuthorityDomain({ entries, unreadable, loop: "target" });
+  assert.equal(resolved.ok, false);
+  assert.equal(resolved.failure, "authority_index_incomplete");
+  assert.equal(resolved.domain, undefined);
+
+  // NEGATIVE CONTROL: with every file readable, the same index resolves.
+  const clean = resolveAuthorityDomain({ entries, unreadable: [], loop: "target" });
+  assert.equal(clean.ok, true);
+  assert.equal(clean.domain, "exc-a");
 });

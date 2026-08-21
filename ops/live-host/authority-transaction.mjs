@@ -85,13 +85,16 @@ export function createAuthorityTransaction({
    * go on describing a world that no longer exists.
    */
   function domain() {
-    const entries = readExceptionIndex({ fs, inbox, parseException: atomic.parseException });
+    const { entries, unreadable } = readExceptionIndex({
+      fs, inbox, parseException: atomic.parseException,
+    });
     const resolved = resolveAuthorityDomain({
       entries,
+      unreadable,
       loop: authorityLoop,
       hasLineage: (id) => Boolean(journal.currentForDomain(id)),
     });
-    return { ...resolved, entries };
+    return { ...resolved, entries, unreadable };
   }
 
   /** The revision a receipt's domain is currently at. Absence stays absence. */
@@ -150,7 +153,7 @@ export function createAuthorityTransaction({
         // Found by originating exception, so it keeps resolving AFTER the grant
         // has resolved that blocker.
         current: journal.currentForDomain(found.domain),
-        catalogue: scopeCatalogue(found.entries),
+        ...scopeCatalogue(),
         // Deliberately empty rather than invented. Owner-authored suggestions
         // are hers; this host has none to offer and says so.
         suggestions: [],
@@ -171,9 +174,7 @@ export function createAuthorityTransaction({
     },
 
     catalogue() {
-      const found = domain();
-      const entries = found.entries ?? readExceptionIndex({ fs, inbox, parseException: atomic.parseException });
-      return { ok: true, catalogue: scopeCatalogue(entries) };
+      return { ok: true, ...scopeCatalogue() };
     },
 
     suggestions() {

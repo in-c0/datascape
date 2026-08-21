@@ -1208,10 +1208,14 @@ test("reads: the surface serves REAL exception data for a stable domain", async 
     assert.equal(context.body.blocker.evidence, "five lanes have no authoritative goal");
     assert.equal(context.body.current, null, "no authority has been granted yet");
 
-    // The catalogue is DERIVED from the loops that exist, not a fixture list.
-    const refs = context.body.catalogue.map((c) => c.ref);
-    assert.ok(refs.includes(`scope:${LOOP}`));
-    assert.ok(refs.includes("scope:sumzup/publish"));
+    // The catalogue is EMPTY and says so. It used to synthesize a scope ref per
+    // exception loop, which was both the wrong shape for the authoring surface
+    // and the wrong vocabulary — a loop is not something V6 admission can
+    // enforce, so offering it as grantable scope would have been a boundary
+    // that stops nothing.
+    assert.deepEqual(context.body.catalogue, []);
+    assert.equal(context.body.scope_catalogue_ready, false);
+    assert.match(context.body.reason, /not authority scope references/);
 
     // Suggestions are empty and SAY they are empty. An invented suggestion on
     // an authority screen is a machine proposing its own autonomy.
@@ -1275,6 +1279,32 @@ test("reads: two candidates in one loop REFUSE rather than picking by file order
     });
     assert.equal(prepared.status, 409);
     assert.equal((await prepared.json()).failure, "ambiguous_authority_domain");
+  } finally { await world.close(); }
+});
+
+test("readiness: a host with no authority loop is NOT domain-ready", async () => {
+  // Availability checked topology and composition, so a host with no configured
+  // loop reported the subsystem and the transaction as available while every
+  // read and every prepare answered `no_authority_loop`. Three separate facts
+  // were collapsed into two flags, and the missing one was the one that decides
+  // whether the surface is usable at all.
+  const world = await deployedWorld();
+  try {
+    world.fixture("2026-08-22-readiness", { loop: "datascape/readiness" });
+
+    const unset = await world.launch({ authorityLoop: null });
+    assert.equal(unset.authority_available, true, "the subsystem is served");
+    assert.equal(unset.authority_transaction, true, "and composed");
+    assert.equal(unset.authority_domain_ready, false, "but it is acting for nothing");
+    assert.match(unset.authority_domain_reason, /not configured for an authority loop/);
+    // Her inbox controls are unaffected either way.
+    const decisions = await fetch(`http://127.0.0.1:${unset.port}/api/decisions`);
+    assert.equal(decisions.status, 200);
+    await unset.close();
+
+    const configured = await world.launch({ authorityLoop: "datascape/readiness" });
+    assert.equal(configured.authority_domain_ready, true);
+    assert.equal(configured.authority_domain_reason, null);
   } finally { await world.close(); }
 });
 

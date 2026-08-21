@@ -25,30 +25,47 @@ export function readExceptionIndex({ fs, inbox, parseException }) {
   let names;
   try {
     names = fs.readdirSync(inbox).filter((n) => n.endsWith(".md")).sort();
-  } catch {
-    return [];
+  } catch (error) {
+    return { entries: [], unreadable: [{ file: inbox, failure: error.code || "unreadable" }] };
   }
   const entries = [];
+  const unreadable = [];
   for (const name of names) {
     try {
       const raw = fs.readFileSync(`${inbox}/${name}`, "utf8");
       const { meta, body } = parseException(raw);
-      if (!meta.id) continue;
+      if (!meta.id) { unreadable.push({ file: name, failure: "no_id" }); continue; }
       entries.push({ meta, body });
-    } catch {
-      // A single unreadable or malformed file must not blank the surface. It is
-      // skipped, not treated as "no exceptions exist" — reading a storage fault
-      // as an empty world is the most dangerous misreading available here.
+    } catch (error) {
+      // SKIPPED, AND REPORTED. Silently dropping it was safe enough for display
+      // and unsafe for an authority decision: an unreadable file whose loop we
+      // cannot read might be a second candidate for this domain, and the host
+      // has no way to know it is not. Dropping it turned "I cannot tell whether
+      // this is unique" into "this is unique".
+      unreadable.push({ file: name, failure: error.code || "unreadable" });
     }
   }
-  return entries;
+  return { entries, unreadable };
 }
 
 /**
  * @param loop  the configured authority loop, e.g. "datascape/v6-execution-authority"
  * @param hasLineage  (exceptionId) -> does the journal hold authority for it?
  */
-export function resolveAuthorityDomain({ entries, loop, hasLineage = () => false }) {
+export function resolveAuthorityDomain({ entries, loop, hasLineage = () => false, unreadable = [] }) {
+  // UNIQUENESS CANNOT BE PROVED OVER A PARTIAL INDEX.
+  //
+  // This refuses before it looks at anything else, because every branch below
+  // is a statement about how many candidates exist — and a file we could not
+  // read may be one of them. Guessing here would select an authority domain on
+  // the strength of not having been able to check.
+  if (unreadable.length) {
+    return {
+      ok: false, failure: "authority_index_incomplete",
+      reason: `${unreadable.length} exception file(s) could not be read, so the domain cannot be proved unique`,
+      unreadable: unreadable.map((u) => u.file),
+    };
+  }
   if (!loop) {
     return { ok: false, failure: "no_authority_loop", reason: "this host is not configured for an authority loop" };
   }
@@ -115,24 +132,30 @@ function section(body, heading) {
   return (end === -1 ? rest : rest.slice(0, end)).join("\n").trim() || null;
 }
 
-/**
- * The scope catalogue, derived from the loops that actually exist.
- *
- * REAL DATA, not a fixture list. The lanes in her inbox are the things autonomy
- * could be scoped to, so the catalogue is exactly those, deduplicated and
- * sorted — deterministic, and it grows as the portfolio does without anyone
- * maintaining a parallel list that drifts.
- */
-export function scopeCatalogue(entries) {
-  const loops = new Set();
-  for (const entry of entries) {
-    if (entry.meta.loop) loops.add(entry.meta.loop);
-  }
-  return [...loops].sort().map((loop) => ({
-    ref: `scope:${loop}`,
-    label: loop,
-    open_blockers: entries.filter(
-      (e) => e.meta.loop === loop && e.meta.status === "blocked-on-owner",
-    ).length,
-  }));
+/** The scope catalogue this host can honestly offer. */
+export function scopeCatalogue() {
+  // EMPTY, DELIBERATELY, WITH A REASON.
+  //
+  // This used to synthesize `scope:<exception loop>` entries. Two things were
+  // wrong with that, and the second is the serious one.
+  //
+  // The shape was incompatible: the authoring surface expects entries carrying
+  // `labels` and `refs` and calls `entry.labels.some(...)`, so a non-empty real
+  // catalogue would have broken the very screen it was meant to fill.
+  //
+  // And an exception loop is not an authority scope. A loop is the exception
+  // layer's <lane>/<topic> label; V6 scope resolution works on explicit
+  // references — repo, semantic-centre, topic, source, dependency — that the
+  // admission machinery can later compare against. Manufacturing grantable
+  // scope out of loop names would have offered her boundaries that nothing
+  // downstream could enforce, which is worse than offering none.
+  //
+  // The real corpus does not currently establish that catalogue. Saying so is
+  // the honest answer; inventing scopes to make a form usable is not.
+  return {
+    catalogue: [],
+    scope_catalogue_ready: false,
+    reason: "no authoritative scope catalogue is established for this host yet; "
+      + "exception loops are not authority scope references",
+  };
 }

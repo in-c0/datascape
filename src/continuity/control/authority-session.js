@@ -81,6 +81,31 @@ function unwrap(key) {
  * payload, so there is no way for the exception linkage to be a pending
  * Promise at the moment the request is built.
  */
+/**
+ * A unique id for ONE attempt.
+ *
+ * It carries no authority — the host binds every authoritative field into the
+ * receipt — so its only job is to be unique per attempt and stable across a
+ * retry of that same attempt.
+ *
+ * `Date.now()` was not good enough, and the failure was live rather than
+ * theoretical: two grants prepared inside the same millisecond produced the
+ * same id, and the second REPLAYED the first instead of being evaluated. The
+ * test that caught it did so intermittently, which is exactly how a
+ * clock-derived identifier fails — it works until the machine is fast enough.
+ *
+ * Randomness, not time. `randomUUID` where the browser has it, and a
+ * random-plus-counter fallback that cannot repeat within a page either.
+ */
+let attemptCounter = 0;
+export function attemptId(prefix) {
+  attemptCounter += 1;
+  const random = globalThis.crypto?.randomUUID
+    ? globalThis.crypto.randomUUID()
+    : `${Math.random().toString(36).slice(2)}${attemptCounter}`;
+  return `${prefix}:${random}`;
+}
+
 export async function authorizeFromContext({ adapter, context, draft, policyIdentity, action }) {
   if (!context?.ready) {
     return {
@@ -92,10 +117,7 @@ export async function authorizeFromContext({ adapter, context, draft, policyIden
   return prepareThenCommit({
     adapter,
     request: { authorization_action: action, draft },
-    // The operation id identifies THIS attempt. It carries no authority — the
-    // host binds every authoritative field into the receipt — so it only needs
-    // to be stable across a retry of the same confirmed review.
-    operationId: `auth:${policyIdentity}:${Date.now()}`,
+    operationId: attemptId("auth"),
   });
 }
 
@@ -113,7 +135,7 @@ export async function amendAuthority({ adapter, goalId, expectedRevision, action
       authorization_action: action,
       ...(scopeRefs ? { scope_refs: scopeRefs } : {}),
     },
-    operationId: `amend:${action}:${expectedRevision}:${Date.now()}`,
+    operationId: attemptId(`amend:${action}`),
   });
 }
 

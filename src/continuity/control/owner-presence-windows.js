@@ -40,8 +40,35 @@ $asTask = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
 })[0]
 `;
 
-const run = (script, timeoutMs) => new Promise((resolve) => {
-  execFile(
+/**
+ * How many times this process has actually reached the device.
+ *
+ * Counted HERE because here is the only place it can be counted honestly. An
+ * external harness cannot do it: this module reaches PowerShell through an ESM
+ * named import, and Node's builtin named exports do not follow mutation of the
+ * CommonJS export object — so a reporter that patched `childProcess.execFile`
+ * read zero whether or not anything called the device. A measurement that
+ * cannot fail is not a measurement.
+ *
+ * It is a plain counter, not a policy. Nothing reads it to decide anything;
+ * governance reporting reads it to state a fact it would otherwise be guessing.
+ */
+let deviceInvocations = 0;
+export function deviceInvocationCount() { return deviceInvocations; }
+
+/**
+ * The process runner, injectable ONLY for measurement.
+ *
+ * Production passes nothing and gets `execFile`. A test may pass a counting or
+ * refusing runner to prove the boundary works without putting a dialog on her
+ * screen.
+ */
+const defaultRunner = (command, args, options, callback) =>
+  execFile(command, args, options, callback);
+
+const run = (script, timeoutMs, runner = defaultRunner) => new Promise((resolve) => {
+  deviceInvocations += 1;
+  runner(
     "powershell.exe",
     ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
     { timeout: timeoutMs, windowsHide: true },
@@ -57,7 +84,7 @@ const run = (script, timeoutMs) => new Promise((resolve) => {
  * CI cannot prompt anyone. A caller that genuinely has an owner in front of it
  * opts in explicitly.
  */
-export function createWindowsOwnerPresenceBroker({ allowInteractive = false, timeoutMs = 60000 } = {}) {
+export function createWindowsOwnerPresenceBroker({ allowInteractive = false, timeoutMs = 60000, runner = defaultRunner } = {}) {
   return {
     platform: "windows",
     // Structural: this object exposes nothing but the two calls below.
@@ -72,7 +99,7 @@ try {
   $task = $asTask.MakeGenericMethod([Windows.Security.Credentials.UI.UserConsentVerifierAvailability]).Invoke($null, @($op))
   $null = $task.Wait(10000)
   Write-Output $task.Result
-} catch { Write-Output "Error" }`, 20000);
+} catch { Write-Output "Error" }`, 20000, runner);
 
       if (error) return "error";
       return AVAILABILITY_MAP[stdout] ?? "error";
@@ -101,7 +128,7 @@ try {
   $task = $asTask.MakeGenericMethod([Windows.Security.Credentials.UI.UserConsentVerificationResult]).Invoke($null, @($op))
   $null = $task.Wait(${timeoutMs})
   Write-Output $task.Result
-} catch { Write-Output "Error" }`, timeoutMs + 10000);
+} catch { Write-Output "Error" }`, timeoutMs + 10000, runner);
 
       if (error) return { challenge, outcome: "failed", reason: "the verifier broker did not complete" };
       const outcome = {
