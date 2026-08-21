@@ -7,6 +7,7 @@ import { excerptAuthored, parseAuthored } from "./authored.js";
 import {
   agoLabel,
   awayLabel,
+  spansNight,
   buildScene,
   buildUrl,
   effortLabel,
@@ -108,7 +109,17 @@ function Node({ node, onSelect, refCallback, focal, keyboard }) {
   };
   return (
     <div
-      className={`bf-node bf-node--${node.kind}${node.dim ? " bf-node--dim" : ""}${focal ? " bf-node--focal" : ""}${keyboard ? " bf-node--kb" : ""}`}
+      className={
+        `bf-node bf-node--${node.kind}` +
+        (node.dim ? " bf-node--dim" : "") +
+        (focal ? " bf-node--focal" : "") +
+        (keyboard ? " bf-node--kb" : "") +
+        // Orthogonal visual state (spec v2 §2): execution animates, supervision
+        // encloses. Neither ever recolours the semantic status ring, which keeps
+        // meaning Needs you / Finding / Progress / State.
+        (node.execution ? ` bf-exec--${node.execution}` : "") +
+        (node.supervision === "unattended" ? " bf-unattended" : "")
+      }
       role={interactive ? "button" : undefined}
       tabIndex={interactive ? 0 : undefined}
       onClick={onSelect}
@@ -129,6 +140,7 @@ function Node({ node, onSelect, refCallback, focal, keyboard }) {
             {node.severity && <em className={`bf-sev bf-sev--${node.severity}`}>{SEVERITY_LABEL[node.severity]}</em>}
             {node.sub}
             {node.at ? `${node.sub ? " · " : ""}${agoLabel(node.at)}` : ""}
+            {node.run && spansNight(node.run) && <span className="bf-overnight">overnight</span>}
           </span>
         )}
       </span>
@@ -525,17 +537,20 @@ function BriefingSurface({ data }) {
 
   return (
     <main className="bf-root">
+      {/* Background context, not content: the local phase of day under the
+          decision space. No geolocation — the spec forbids exposing precise
+          location in rendered Continuity state. */}
+      <div className={`bf-temporal bf-temporal--${scene.phase}`} aria-hidden="true" />
       <Stars />
 
       <header className="bf-top">
         <div className="bf-brand"><span className="bf-brand__dot" />{config.siteName} <span>/ Continuity</span></div>
         <div className="bf-away">
           {away ? <>You were away for <b>{away}</b></> : "Catch-up"}
-          <small>
-            {" "}· {counts.dueNow} need you now
-            {counts.deferred ? ` · ${counts.deferred} deferred` : ""}
-            {" "}· {counts.lanes} lanes changed · {counts.records.toLocaleString()} source records hidden
-          </small>
+          {/* Only clauses with a non-zero count appear, so the line says nothing
+              about unattended work on a day when none happened (spec v2 §5). */}
+          {scene.away.clauses.length > 0 && <small> · {scene.away.clauses.join(" · ")}</small>}
+          {counts.deferred > 0 && <small> · {counts.deferred} deferred</small>}
         </div>
         <div className="bf-top__actions">
           <div className="bf-briefsel" role="group" aria-label="Brief me in">
