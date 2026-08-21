@@ -101,6 +101,29 @@ export function roots(graph) {
 }
 
 /**
+ * The top-level return aperture (spec v3 §16).
+ *
+ * Only concepts, never stray source atoms. A record that no projection reaches
+ * is either deliberately hidden by the abstraction or a hole in the graph, and
+ * either way it does not belong in the answer to "what materially changed
+ * while I was gone".
+ */
+export function conceptRoots(graph) {
+  return roots(graph).filter((n) => isProjection(n));
+}
+
+/**
+ * Material source records that no projection reaches.
+ *
+ * A hole, not a feature: routine filler is meant to be unreachable, but a
+ * material observation nothing abstracts over is invisible at every altitude.
+ */
+export function orphanedMaterial(graph) {
+  return (graph?.nodes || []).filter((n) =>
+    isAuthoredSource(n) && n.materiality === "material" && parentsOf(graph, n.id).length === 0);
+}
+
+/**
  * How much is hidden underneath a concept.
  *
  * Deliberately NOT part of any label. "PersonalOS reliability converging" is
@@ -357,6 +380,12 @@ export function projectionExecution(graph, id, seen = new Set()) {
     return node.execution === "live" && node.materiality !== "immaterial" ? "live" : "completed";
   }
   for (const child of childrenOf(graph, id)) {
+    // A live BOUNDARY absorbs the activity beneath it. Some ongoing work is
+    // simply what a branch normally does — a fourth clip still collecting, a
+    // lint agent running — and letting it climb turns every ancestor live,
+    // which is the mechanical propagation §13 forbids. The boundary node may
+    // itself read live; its parents do not inherit that.
+    if (child.liveBoundary === true) continue;
     if (projectionExecution(graph, child.id, seen) === "live") return "live";
   }
   return "completed";
