@@ -557,7 +557,10 @@ test("authority: unlock requires verified presence and hands back no token", asy
         now: () => 1_000_000,
       }),
     };
-    const host = mod.createAuthorityHost({ presence, now: () => 1_000_000 });
+    const host = mod.createAuthorityHost({
+      presence, now: () => 1_000_000,
+      ownerControlsOrigin: "http://127.0.0.1:5313", apiOrigin: "http://127.0.0.1:5319",
+    });
 
     const drive = async () => {
       const headers = [];
@@ -765,7 +768,10 @@ async function authorityWorld(outcomeRef = { value: "verified" }, consumeRef = {
       now: () => 1_000_000,
     }),
   };
-  const host = mod.createAuthorityHost({ presence, now: () => 1_000_000 });
+  const host = mod.createAuthorityHost({
+      presence, now: () => 1_000_000,
+      ownerControlsOrigin: "http://127.0.0.1:5313", apiOrigin: "http://127.0.0.1:5319",
+    });
 
   const drive = async (route, { method = "POST", cookie = null } = {}) => {
     const headers = [];
@@ -903,29 +909,79 @@ test("preflight provenance: a dirty checkout cannot change the deployed verdict"
   } finally { await world.close(); }
 });
 
-test("cookie transport: a specific origin gets credentials, and never a wildcard", async () => {
+test("cookie transport: only the owner-controls origin is credentialed", async () => {
   const world = await deployedWorld();
   try {
     const started = await world.launch();
-    const origin = "http://127.0.0.1:5313";
-    const response = await fetch(`http://127.0.0.1:${started.port}/api/decisions`, {
-      headers: { Origin: origin },
-    });
-    assert.equal(response.status, 200);
-    assert.equal(response.headers.get("access-control-allow-origin"), origin);
-    // Without this the browser drops the Set-Cookie on a cross-origin fetch and
-    // never sends it back, so the authority surface would authenticate nobody.
-    assert.equal(response.headers.get("access-control-allow-credentials"), "true");
-    assert.notEqual(response.headers.get("access-control-allow-origin"), "*",
-      "credentials and a wildcard origin are mutually exclusive, and for good reason");
-    assert.match(response.headers.get("vary") ?? "", /Origin/);
+    const owner = "http://127.0.0.1:5313";
+    const authority = `http://127.0.0.1:${started.port}/__continuity/authority/status`;
 
-    // A foreign origin never gets that far: the loopback check refuses first,
-    // so there is no echoed origin to attach credentials to.
-    const foreign = await fetch(`http://127.0.0.1:${started.port}/api/decisions`, {
-      headers: { Origin: "https://evil.example" },
+    // The configured owner-controls origin: credentialed, so the cookie can
+    // travel at all.
+    const mine = await fetch(authority, { headers: { Origin: owner } });
+    assert.equal(mine.status, 200);
+    assert.equal(mine.headers.get("access-control-allow-origin"), owner);
+    assert.equal(mine.headers.get("access-control-allow-credentials"), "true");
+    assert.notEqual(mine.headers.get("access-control-allow-origin"), "*",
+      "credentials and a wildcard origin are mutually exclusive, and for good reason");
+
+    // The case adding that header created: another loopback PORT is same-site
+    // for cookie purposes, so credentialing every loopback origin would have
+    // let a page there fetch with credentials:include and have the browser
+    // attach her cookie. The authority routes refuse it outright, and send it
+    // no CORS headers at all — a refusal that echoed the origin would still
+    // tell a hostile page it had reached a real endpoint.
+    const neighbour = await fetch(authority, { headers: { Origin: "http://127.0.0.1:7777" } });
+    assert.equal(neighbour.status, 403);
+    assert.equal((await neighbour.json()).error, "authority_origin_refused");
+    assert.equal(neighbour.headers.get("access-control-allow-credentials"), null);
+    assert.equal(neighbour.headers.get("access-control-allow-origin"), null);
+
+    // localhost is a different HOST, so it is not the owner-controls origin
+    // either, however loopback it looks.
+    const localhost = await fetch(authority, { headers: { Origin: "http://localhost:5313" } });
+    assert.equal(localhost.status, 403);
+
+    // Legacy non-credentialed loopback reads are untouched.
+    const legacy = await fetch(`http://127.0.0.1:${started.port}/api/decisions`, {
+      headers: { Origin: "http://127.0.0.1:7777" },
     });
-    assert.equal(foreign.status, 403);
-    assert.equal(foreign.headers.get("access-control-allow-credentials"), null);
+    assert.equal(legacy.status, 200);
+    assert.equal(legacy.headers.get("access-control-allow-credentials"), null);
   } finally { await world.close(); }
 });
+
+test("topology: an incompatible owner-controls origin fails closed", async () => {
+  const world = await deployedWorld();
+  try {
+    const mod = await import(pathToFileURL(
+      path.join(world.live, "_authority", "authority-host.mjs")).href);
+    const presence = { forSubsystem: () => ({ verifier: {}, budget: {}, now: () => 0 }) };
+
+    // The topology the launcher actually produces today.
+    const mismatched = mod.createAuthorityHost({
+      presence, now: () => 0,
+      ownerControlsOrigin: "http://localhost:5313", apiOrigin: "http://127.0.0.1:5319",
+    });
+    assert.equal(mismatched.topology.ok, false);
+    assert.match(mismatched.topology.reason, /not same-site/);
+
+    // And an unconfigured host does not quietly start an authority route it
+    // cannot keep a session for.
+    const unset = mod.createAuthorityHost({
+      presence, now: () => 0, ownerControlsOrigin: null, apiOrigin: "http://127.0.0.1:5319",
+    });
+    assert.equal(unset.topology.ok, false);
+    assert.match(unset.topology.reason, /no owner-controls origin is configured/);
+
+    // A host that starts happily and then cannot authenticate is worse than one
+    // that says so, so every authority route answers 503 by name.
+    let payload = null;
+    const ctx = { origin: null, send: (r, code, body) => { payload = { code, body }; return true; } };
+    await mismatched.handle({ method: "GET", headers: {} }, {},
+      new URL("http://127.0.0.1/__continuity/authority/status"), ctx);
+    assert.equal(payload.code, 503);
+    assert.equal(payload.body.error, "owner_controls_origin_incompatible");
+  } finally { await world.close(); }
+});
+

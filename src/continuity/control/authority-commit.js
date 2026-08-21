@@ -83,6 +83,34 @@ export function promptForReceipt(receipt) {
 }
 
 /**
+ * Prepare a review, in the production HTTP path.
+ *
+ * REQUIRES a live read session and binds it into the receipt. The receipt store
+ * tolerates an unbound receipt so the generic substrate stays usable by
+ * non-browser tests — but the browser path must not rely on every future caller
+ * remembering an optional argument, so issuing an unbound receipt is impossible
+ * from here rather than merely discouraged.
+ */
+export function prepareAuthority({ authenticate, receipts, issue }) {
+  const auth = authenticate();
+  if (!auth.ok) {
+    return { ok: false, failure: auth.failure, reason: auth.reason };
+  }
+  const session = auth.context.read_session_id;
+  if (!session) {
+    return { ok: false, failure: "no_read_session", reason: "owner controls are locked" };
+  }
+
+  const receipt = receipts.issue({ ...issue, readSessionId: session });
+  if (receipt.read_session_id !== session) {
+    // Defence in depth: a store that silently dropped the binding would give
+    // back a portable receipt, and the whole of part 5 would be decoration.
+    return { ok: false, failure: "receipt_not_bound", reason: "the prepared review was not bound to this session" };
+  }
+  return { ok: true, receipt };
+}
+
+/**
  * Perform one authority mutation.
  *
  * Every dependency is injected so the ordering can be driven and inspected

@@ -327,24 +327,24 @@ export function createOwnerRulingDeps({
 // Server
 // ---------------------------------------------------------------------------
 
-function send(res, code, body, origin) {
+function send(res, code, body, origin, credentialedOrigin = null) {
   const json = JSON.stringify(body)
   res.writeHead(code, {
     "Content-Type": "application/json",
     "Content-Length": Buffer.byteLength(json),
     "Cache-Control": "no-store",
     // A SPECIFIC origin, echoed only after it passed the loopback check above —
-    // never `*`. Credentials and a wildcard origin are mutually exclusive in
-    // every browser, and for good reason: the pair would let any page send the
-    // owner's cookie here.
-    ...(origin ? {
-      "Access-Control-Allow-Origin": origin,
-      // Required for the owner-read cookie to travel at all on a cross-origin
-      // fetch. Without it the browser drops the Set-Cookie and never sends it
-      // back, so the authority surface would authenticate nobody.
-      "Access-Control-Allow-Credentials": "true",
-      "Vary": "Origin",
-    } : {}),
+    // never `*`.
+    ...(origin ? { "Access-Control-Allow-Origin": origin, "Vary": "Origin" } : {}),
+    // CREDENTIALS ONLY FOR THE EXACT OWNER-CONTROLS ORIGIN.
+    //
+    // Credentialing every loopback origin was a hole I opened by adding this
+    // header globally. Ports do not separate sites, so once she has unlocked,
+    // a page on any other loopback port could fetch with credentials:include,
+    // the browser would attach the HttpOnly cookie, and this server would
+    // gladly echo that origin back with credentials enabled.
+    ...(origin && credentialedOrigin && origin === credentialedOrigin
+      ? { "Access-Control-Allow-Credentials": "true" } : {}),
     "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
   })
@@ -397,7 +397,12 @@ export const AUTHORITY_PREFIX = "/__continuity/authority"
  *   down with a subsystem she was not even using. The entry point composes the
  *   two dynamically, after each has passed its own preflight.
  */
-export function createServer(deps = null, { ownerRulings = true, unverifiedReason = null, authority = null, authorityReason = null } = {}) {
+export function createServer(deps = null, {
+  ownerRulings = true, unverifiedReason = null, authority = null, authorityReason = null,
+  // The ONE origin allowed to send the owner-read cookie. Everything else
+  // keeps the old non-credentialed loopback CORS.
+  ownerControlsOrigin = process.env.CONTINUITY_OWNER_CONTROLS_ORIGIN || null,
+} = {}) {
   // Built once per server, not per request: the prompt budget and the
   // one-outstanding-prompt rule are only meaningful if they are shared.
   //
@@ -427,6 +432,19 @@ export function createServer(deps = null, { ownerRulings = true, unverifiedReaso
       }
 
       if (url.pathname === AUTHORITY_PREFIX || url.pathname.startsWith(`${AUTHORITY_PREFIX}/`)) {
+        // SAME-ORIGIN, or the exact configured owner-controls origin. Nothing
+        // else, and nothing else gets CORS headers either — a refusal that
+        // echoed the origin would still tell a hostile page it had reached a
+        // real endpoint.
+        const sameOrigin = !origin
+        const isOwnerControls = Boolean(ownerControlsOrigin) && origin === ownerControlsOrigin
+        if (!sameOrigin && !isOwnerControls) {
+          return send(res, 403, {
+            error: "authority_origin_refused",
+            detail: "owner controls are served from one origin, and this is not it.",
+          })
+        }
+
         if (!authority) {
           // Independently gated: the exception route above is unaffected.
           return send(res, 503, {
@@ -436,7 +454,10 @@ export function createServer(deps = null, { ownerRulings = true, unverifiedReaso
               || "The authority subsystem is not available on this host. Owner rulings are unaffected.",
           }, origin)
         }
-        const handled = await authority.handle(req, res, url, { origin, send })
+        const handled = await authority.handle(req, res, url, {
+          origin,
+          send: (r, code, body) => send(r, code, body, origin, ownerControlsOrigin),
+        })
         if (handled) return undefined
         return send(res, 404, { error: "not found" }, origin)
       }

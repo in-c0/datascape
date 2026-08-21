@@ -140,6 +140,10 @@ export async function deployedWorld({ damage = null } = {}) {
   // production default is now interactive-capable, so deleting this variable
   // would leave a suite able to raise a real Windows dialog on this machine.
   process.env.OWNER_PRESENCE_INTERACTIVE = "0";
+  // A COMPATIBLE owner-controls origin: same host as the API, differing only by
+  // port, which is not part of a site. Without this the authority routes fail
+  // closed, which is the intended production behaviour and a separate test.
+  process.env.CONTINUITY_OWNER_CONTROLS_ORIGIN = "http://127.0.0.1:5313";
 
   const fresh = () => Math.random().toString(36).slice(2);
   const deployMod = await import(`./live-host-deploy.mjs?w=${fresh()}`);

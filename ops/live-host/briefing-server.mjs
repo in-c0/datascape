@@ -282,7 +282,13 @@ export async function startLiveHost({
   if (authorityGate.ok) {
     try {
       const mod = await import(pathToFileURL(path.resolve(liveDir, authorityGate.entry)).href);
-      authority = mod.createAuthorityHost({ presence: deps.presence, now: deps.now });
+      authority = mod.createAuthorityHost({
+        presence: deps.presence,
+        now: deps.now,
+        ownerControlsOrigin: process.env.CONTINUITY_OWNER_CONTROLS_ORIGIN || null,
+        apiOrigin: `http://${host}:${port || PORT}`,
+      });
+      if (!authority.topology.ok) authorityReason = authority.topology.reason;
     } catch (error) {
       authority = null;
       authorityReason = `the authority subsystem failed to load: ${error.message}`;
@@ -291,7 +297,10 @@ export async function startLiveHost({
     authorityReason = authorityGate.reason;
   }
 
-  const server = core.createServer(deps, { authority, authorityReason });
+  const server = core.createServer(deps, {
+    authority, authorityReason,
+    ownerControlsOrigin: process.env.CONTINUITY_OWNER_CONTROLS_ORIGIN || null,
+  });
   await new Promise((resolve) => server.listen(port, host, resolve));
 
   return {

@@ -9,7 +9,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  COMMIT_FIELDS, FORBIDDEN_COMMIT_FIELDS, commitAuthority, promptForReceipt, validateCommitWire,
+  COMMIT_FIELDS, FORBIDDEN_COMMIT_FIELDS, commitAuthority, prepareAuthority, promptForReceipt,
+  validateCommitWire,
 } from "../src/continuity/control/authority-commit.js";
 import { createReceiptStore } from "../src/continuity/control/authority-receipt.js";
 import { createAuthorityDraft } from "../src/continuity/control/authority-draft.js";
@@ -253,4 +254,53 @@ test("replay: the ledger records aborts rather than silently forgetting them", a
   assert.equal(h.ledger.get("op-1").phase, "aborted");
   assert.equal(h.ledger.get("op-1").reason, "cancelled");
   assert.equal(h.deps.operations.completed("op-1"), null, "an aborted operation is not replayable");
+});
+
+// ---------------------------------------------------------------------------
+// The production path cannot issue an unbound receipt
+// ---------------------------------------------------------------------------
+
+test("prepare: the HTTP path REQUIRES a live read session", () => {
+  const h = harness();
+  const issue = {
+    draft: createAuthorityDraft({
+      draft_id: "draft:prepare", kind: "bounded_canary", statement: "t",
+      scope_refs: ["scope:x"], allowed_capabilities: ["read"], stop_conditions: ["done"],
+    }),
+    action: "authorize_bounded_task",
+    sourceExceptionId: "2026-08-21-datascape-v6-execution-authority-b4e2",
+    goalId: "goal:1",
+    baseRevision: 1,
+  };
+
+  // Locked: nothing is prepared at all.
+  h.state.session = null;
+  const locked = prepareAuthority({ authenticate: h.deps.authenticate, receipts: h.deps.receipts, issue });
+  assert.equal(locked.ok, false);
+  assert.equal(locked.failure, "read_session_invalid");
+
+  // Unlocked: bound, without the caller having to remember an argument. The
+  // store tolerates unbound receipts so the generic substrate stays usable, so
+  // the browser path has to make the omission impossible rather than unlikely.
+  h.state.session = SESSION;
+  const prepared = prepareAuthority({ authenticate: h.deps.authenticate, receipts: h.deps.receipts, issue });
+  assert.equal(prepared.ok, true);
+  assert.equal(prepared.receipt.read_session_id, SESSION);
+
+  // And that receipt is only committable from the session that prepared it.
+  assert.equal(h.deps.receipts.verify(prepared.receipt.receipt_id, {}, { readSessionId: "session-S2" }).failure,
+    "receipt_session_mismatch");
+});
+
+test("prepare: a store that dropped the binding is caught, not trusted", () => {
+  const h = harness();
+  const forgetful = {
+    issue: (args) => ({ ...h.receipt, read_session_id: null, receipt_id: "r-unbound" }),
+  };
+  const result = prepareAuthority({
+    authenticate: h.deps.authenticate, receipts: forgetful, issue: {},
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.failure, "receipt_not_bound",
+    "a silently portable receipt would make part 5 decoration");
 });

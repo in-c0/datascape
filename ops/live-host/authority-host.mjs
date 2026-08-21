@@ -18,7 +18,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const session = await import(pathToFileURL(path.join(HERE, "authority-read-session.js")).href);
 const {
   MUTATION_OPERATIONS, READ_OPERATIONS, authenticateRequest, clearedCookie,
-  createReadSessionStore, sessionCookie,
+  createReadSessionStore, sameSiteWith, sessionCookie,
 } = session;
 
 /** Read a JSON body with a hard size cap. A body is never a reason to prompt. */
@@ -46,12 +46,37 @@ function readJsonBody(req, limit = 64 * 1024) {
  * verifier here would give the machine a second device, and two subsystems each
  * honouring "one outstanding prompt" can still show two dialogs at once.
  */
-export function createAuthorityHost({ presence, now = () => Date.now(), store = null } = {}) {
+export function createAuthorityHost({
+  presence, now = () => Date.now(), store = null,
+  ownerControlsOrigin = process.env.CONTINUITY_OWNER_CONTROLS_ORIGIN || null,
+  apiOrigin = null,
+} = {}) {
   if (!presence || typeof presence.forSubsystem !== "function") {
     throw new Error("the authority host requires the host's owner-presence coordinator");
   }
   const mine = presence.forSubsystem("authority");
   const sessions = store ?? createReadSessionStore({ now });
+
+  // TOPOLOGY, DECIDED AT STARTUP AND FAILING CLOSED.
+  //
+  // Detecting that localhost-UI plus 127.0.0.1-API cannot carry a Strict cookie
+  // is not enough on its own: a host that starts happily and then cannot retain
+  // authentication is worse than one that says so. If the owner-controls origin
+  // is unset, or is not same-site with this API, the authority routes are
+  // unavailable and /api/act is untouched.
+  const topology = (() => {
+    if (!ownerControlsOrigin) {
+      return { ok: false, reason: "no owner-controls origin is configured for this host" };
+    }
+    if (apiOrigin && !sameSiteWith(ownerControlsOrigin, apiOrigin)) {
+      return {
+        ok: false,
+        reason: `owner controls at ${ownerControlsOrigin} are not same-site with this API at ${apiOrigin}, `
+          + "so the owner-read cookie would be set and never sent",
+      };
+    }
+    return { ok: true };
+  })();
 
   async function unlockRead(req, res, { origin, send }) {
     const type = String(req.headers["content-type"] || "").split(";")[0].trim();
@@ -137,7 +162,17 @@ export function createAuthorityHost({ presence, now = () => Date.now(), store = 
     /** The request-scoped principal, or a named refusal. */
     authenticate: (req) => authenticateRequest({ store: sessions, cookieHeader: req.headers.cookie }),
 
+    topology,
+
     async handle(req, res, url, ctx) {
+      if (!topology.ok) {
+        // Never an authority host that starts successfully and cannot keep a
+        // session. /api/act is unaffected.
+        return ctx.send(res, 503, {
+          error: "owner_controls_origin_incompatible",
+          detail: topology.reason,
+        }, ctx.origin), true;
+      }
       const route = url.pathname.replace(/^\/__continuity\/authority\/?/, "");
 
       if (req.method === "POST" && route === "unlock_read") {
