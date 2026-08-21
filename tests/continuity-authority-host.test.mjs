@@ -320,3 +320,36 @@ test("V6.1.6: the host reaches no execution transport", async () => {
   assert.equal(reachesAny(graph, ["control/dispatch.js", "control/simulate.js", "control/lease.js"]), false,
     "an owner may grant authority in a build with no executable transport installed");
 });
+
+// ---- V6.1.6 PR B §2: no browser-selectable endpoint remains --------------------
+
+test("V6.1.6: no browser mechanism can select the authority endpoint", async () => {
+  const fs = await import("node:fs");
+  // Comments STRIPPED first: this must assert on code, not on prose that
+  // explains the removed hook. A test that greps a comment fails on its own
+  // documentation.
+  const source = fs.readFileSync("src/continuity/LiveAuthorityView.jsx", "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .split(String.fromCharCode(10))
+    .filter((line) => !line.trim().startsWith("//"))
+    .join(String.fromCharCode(10));
+
+  // The last page-selectable hook. A page that could set this global could
+  // return fabricated authority state, or receive her drafts.
+  assert.equal(/__continuityAuthorityEndpoint/.test(source), false,
+    "the live route must not read an endpoint from a browser global");
+  for (const mechanism of [/localStorage/, /sessionStorage/, /searchParams\.get\(\s*["']endpoint/, /window\.__/]) {
+    assert.equal(mechanism.test(source), false, `${mechanism} must not select an endpoint`);
+  }
+  // The client is constructed with NO endpoint argument.
+  assert.match(source, /createAuthorityEndpointClient\(\)/);
+
+  // And the client itself refuses a foreign endpoint against the real transport.
+  const realFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => ({ ok: true, json: async () => ({}) });
+    assert.throws(() => createAuthorityEndpointClient({ endpoint: "https://evil.example/x" }), /fixed/);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
