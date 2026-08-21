@@ -215,8 +215,12 @@ test("startup: the real spawned command gates before it can rule", async () => {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id, action: "dismiss", operation_id: "op-spawned" }),
     });
-    assert.notEqual(response.status, 503, "a healthy host must not be fail-closed");
     const body = await response.json();
+    // Two different 503s live here and they must not be confused: a fail-closed
+    // host answers `deployment_unverified`, while a healthy host with no
+    // presence device answers `unavailable`. On Linux CI there is no Windows
+    // Hello, so the healthy host legitimately reports the latter.
+    assert.notEqual(body.error, "deployment_unverified", "a healthy host must not be fail-closed");
     assert.equal(body.mutation_performed, false, "no presence, no ruling");
     assert.equal(world.amendments(id), 0);
   } finally { proc.stop(); await world.close(); }
