@@ -120,6 +120,69 @@ export function composeEnvelope(selected) {
 }
 
 /**
+ * A deterministic identity over everything the owner is agreeing to (§3).
+ *
+ * Lives HERE, in the pure authoring module, so the presentational shell can
+ * compute it without importing the authority store — putting the store in the
+ * review route's import graph would defeat the whole separation.
+ */
+/**
+ * The single normalized object the owner authorizes.
+ *
+ * The preview and the policy identity MUST be derived from this same value.
+ * They were not: the identity hashed `success_condition` and `operation` while
+ * the rendered preview came from a different object, so the backend could
+ * cryptographically bind a field the final screen never showed her. The
+ * invariant is stronger than "hash everything that matters" — every field
+ * included because it can materially alter the authorized operation must also
+ * be INTELLIGIBLE in the final preview.
+ */
+export function normalizeDraft(draft) {
+  return {
+    statement: draft.statement,
+    scope_refs: [...draft.scope_refs],
+    scope_label: draft.scope_label ?? null,
+    allowed_capabilities: [...draft.allowed_capabilities],
+    max_cost: draft.max_cost,
+    max_wall_time_ms: draft.max_wall_time_ms,
+    stop_conditions: [...draft.stop_conditions],
+    kind: draft.kind,
+    credential_policy: draft.credential_policy,
+    success_condition: draft.success_condition ?? null,
+    operation: draft.operation ?? null,
+  };
+}
+
+export function policyIdentityOf(draft) {
+  const normalized = normalizeDraft(draft);
+  const canonical = JSON.stringify({
+    statement: normalized.statement,
+    scope_refs: [...normalized.scope_refs].sort(),
+    allowed: [...normalized.allowed_capabilities].sort(),
+    max_cost: normalized.max_cost,
+    max_wall_time_ms: normalized.max_wall_time_ms,
+    stop_conditions: [...normalized.stop_conditions].sort(),
+    kind: normalized.kind,
+    credential_policy: normalized.credential_policy,
+    // The bounded-canary fields. They flow straight into the WorkDeclaration
+    // and therefore into admission, so leaving them out reintroduced exactly
+    // the TOCTOU this identity exists to prevent: the owner reads "zero console
+    // errors", the success condition becomes "page opened once", and the
+    // identity still matches.
+    success_condition: normalized.success_condition,
+    operation: normalized.operation,
+  });
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193;
+  for (let i = 0; i < canonical.length; i++) {
+    const c = canonical.charCodeAt(i);
+    h1 = Math.imul(h1 ^ c, 0x01000193) >>> 0;
+    h2 = Math.imul(h2 + c, 0x85ebca6b) >>> 0;
+  }
+  return `pol_${h1.toString(16).padStart(8, "0")}${h2.toString(16).padStart(8, "0")}`;
+}
+
+/**
  * A candidate suggestion drawn from owner-authored evidence (§3).
  *
  * Copy-into-draft, never pre-authorized. And never derived from behaviour:
@@ -170,7 +233,10 @@ export function resolveScopeSelection(selection, catalogue) {
  * the envelope this preview represents, so it must be derivable from the policy
  * alone and identical every time for identical input.
  */
-export function renderPreview(draft, envelope) {
+export function renderPreview(rawDraft, envelope) {
+  // Normalized FIRST, so what is displayed and what is hashed are the same
+  // object by construction rather than by two call sites agreeing.
+  const draft = normalizeDraft(rawDraft);
   const may = envelope.allowed_capabilities
     .map((op) => Object.values(CAPABILITIES).find((c) => c.operations.includes(op))?.label)
     .filter(Boolean);
@@ -190,6 +256,15 @@ export function renderPreview(draft, envelope) {
     // understand what is being granted, so a partial rendering there is worse
     // than no rendering at all.
     scope_boundary: draft.scope_label || describeScope(draft.scope_refs),
+    // Canary consent, shown because it is hashed. A field that can alter the
+    // authorized operation must be legible on the screen that authorizes it.
+    is_bounded_task: draft.kind === "bounded_canary",
+    task: draft.kind === "bounded_canary" ? draft.statement : null,
+    done_when: draft.success_condition,
+    operation: draft.operation,
+    // The exact value the identity is computed over, so a caller can prove the
+    // preview and the hash describe one object.
+    normalized: draft,
     max_cost: draft.max_cost,
     max_iteration_minutes: Math.round(draft.max_wall_time_ms / 60000),
     stop_conditions: [...draft.stop_conditions],

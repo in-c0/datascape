@@ -1,61 +1,87 @@
-// The authority declaration surface — spec V6.1.4 PR B.
+// The authority declaration surface — spec V6.1.4 PR B, re-composed for
+// V6.1.5 PR B §1.
 //
-// REVIEW MODE IS INCAPABLE OF GRANTING AUTHORITY. The Authorize action is bound
-// to fixture state and never to owner state; there is no write path in this
-// file, and `authorize()` is called with a synthetic actor so its own owner
-// check is not the only thing standing between a click and a ruling.
+// PRESENTATIONAL ONLY, and now genuinely data-injected as well as
+// capability-injected. It imports no authority store, no client, no owner
+// boundary AND no fixtures; every piece of state — the seed draft, the scope
+// catalogue, the owner-authored suggestions, the current authority — arrives
+// through `adapter`.
 //
-// The visual question this has to answer: does autonomous authority become
+// The earlier version still read `fixtureStates()` and interpreted a `?state=`
+// query control, so a future write-capable adapter would have removed the
+// review warning while the screen kept rendering fixture-derived "authorized"
+// state — and Authorize advanced a React step instead of calling the adapter.
+// That is not a live binding; it is a mock wearing one.
+//
+// The visual question it answers: does autonomous authority become
 // comprehensible enough that a person can deliberately grant it, without having
 // read the control plane underneath?
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   CAPABILITIES, NEVER_AUTONOMOUS, authorize, composeEnvelope,
-  createAuthorityDraft, renderPreview, resolveScopeSelection, suggestFromEvidence,
+  createAuthorityDraft, policyIdentityOf, renderPreview, resolveScopeSelection,
 } from "./control/authority-draft.js";
-import { SCOPE_CATALOGUE, fixtureStates } from "./control/authority-fixture.js";
+import {
+  REVOKE_CONFIRMATION, amendAuthority, authorizeFromContext, availableControls, loadAuthorityContext,
+} from "./control/authority-session.js";
 import "./authority.css";
 
 const GRANTABLE = Object.keys(CAPABILITIES).filter((k) => !NEVER_AUTONOMOUS.includes(k));
 
-// Owner-authored evidence, from the fixture. A suggestion may only be seeded by
-// something the owner actually wrote.
-const EVIDENCE = [{
-  authored_by: "owner", ref: "brief 2026-08-09",
-  text: "Keep the portfolio's surfaces working while I am not looking at them.",
-}];
+export default function AuthorityShell({ adapter }) {
+  // The only capability distinction between the two routes. A review adapter
+  // reports false because it HAS no writer, not because it was told to behave.
+  const canWrite = Boolean(adapter?.canWriteAuthority);
 
-const STEPS = ["choose", "goal", "capabilities", "limits", "review", "authorized"];
-
-export default function AuthorityView() {
-  const params = new URLSearchParams(window.location.search);
-  const fixtures = fixtureStates();
-  const initial = params.get("state") || "F1";
-  const forcedStep = params.get("step");
-
-  const [path, setPath] = useState(initial === "F4" || initial === "F5" ? "canary" : initial === "F1" ? null : "goal");
-  const [step, setStep] = useState(() => {
-    if (forcedStep && STEPS.includes(forcedStep)) return forcedStep;
-    if (initial === "F3" || initial === "F5" || initial === "F6" || initial === "F7") return "authorized";
-    if (initial === "F2" || initial === "F4") return "goal";
-    return "choose";
-  });
-
-  const seed = fixtures[Object.keys(fixtures).find((k) => k.startsWith(initial))] || fixtures.F1_no_authority;
-  const [draft, setDraft] = useState(() => seed.draft || createAuthorityDraft({
-    draft_id: "review", kind: "persistent_goal", statement: "", scope_refs: [],
+  // Everything comes from the adapter, and the LIVE adapter is ASYNCHRONOUS, so
+  // it is hydrated ONCE before the surface is usable. Calling these from render
+  // produced Promise objects against a real endpoint — and, worse, resolved the
+  // blocker id to undefined inside the transaction payload, so a live grant
+  // could have been built without its exception linkage.
+  const [context, setContext] = useState(null);
+  const [draft, setDraft] = useState(() => createAuthorityDraft({
+    draft_id: "new", kind: "persistent_goal", statement: "", scope_refs: [],
   }));
-  const [scopeText, setScopeText] = useState(seed.draft ? "DataScape / Continuity" : "");
-  const [successCondition, setSuccessCondition] = useState(seed.draft?.success_condition || "");
-  const [revoked, setRevoked] = useState(Boolean(seed.revoked));
-  const [narrowed, setNarrowed] = useState(Boolean(seed.narrowed_to));
+  const [path, setPath] = useState(null);
+  const [step, setStep] = useState("loading");
+  const [scopeText, setScopeText] = useState("");
+  const [successCondition, setSuccessCondition] = useState("");
+  const [authority, setAuthority] = useState(null);
+  const [pending, setPending] = useState(false);
+  const [failure, setFailure] = useState(null);
   const [paused, setPaused] = useState(false);
+  // A pending authority mutation awaiting explicit confirmation. Narrowing
+  // and revoking are both authority revisions, so neither happens on the
+  // first click.
+  const [confirming, setConfirming] = useState(null);
+
+  useEffect(() => {
+    let live = true;
+    loadAuthorityContext(adapter).then((loaded) => {
+      if (!live) return;
+      setContext(loaded);
+      if (loaded.seedDraft) {
+        setDraft(loaded.seedDraft);
+        setScopeText(loaded.seedDraft.scope_label || "");
+        setSuccessCondition(loaded.seedDraft.success_condition || "");
+      }
+      setAuthority(loaded.currentAuthority);
+      setPath(adapter?.initialPath?.() ?? null);
+      setStep(adapter?.initialStep?.() ?? (loaded.currentAuthority ? "authorized" : "choose"));
+    });
+    return () => { live = false; };
+  }, [adapter]);
+
+  const catalogue = context?.catalogue ?? [];
+  const suggestions = context?.suggestions ?? [];
+  const controls = availableControls({ canWrite, pausePersisted: false });
+
+  const revoked = authority?.state === "revoked";
+  const narrowed = authority?.state === "narrowed";
 
   const envelope = useMemo(() => composeEnvelope(draft.allowed_capabilities), [draft.allowed_capabilities]);
-  const preview = useMemo(() => renderPreview(draft, envelope), [draft, envelope]);
-  const scope = useMemo(() => resolveScopeSelection(scopeText, SCOPE_CATALOGUE), [scopeText]);
-  const suggestions = useMemo(() => suggestFromEvidence(EVIDENCE), []);
+  const scope = useMemo(() => resolveScopeSelection(scopeText, catalogue), [scopeText, catalogue]);
 
   // Called only to display whether the draft WOULD be accepted. The actor is
   // deliberately "review", so this can never produce a ruling.
@@ -72,6 +98,103 @@ export default function AuthorityView() {
       : [...draft.allowed_capabilities, name],
   });
 
+  /**
+   * The ONE authority-creating control.
+   *
+   * It sends the EXACT policy identity the owner just read, waits for a
+   * committed result, then re-reads the persisted authority. It never
+   * optimistically shows "Active", and it never advances a React step in place
+   * of a transaction — that was the defect that made the previous build a mock
+   * wearing a live binding.
+   */
+  /** The exact object the owner is agreeing to, canary fields included. */
+  const reviewedDraft = useMemo(() => ({
+    ...draft,
+    scope_refs: scope.resolved ? scope.scope_refs : [],
+    scope_label: scope.resolved ? scope.scope_label : null,
+    ...(path === "canary"
+      ? { success_condition: successCondition, operation: draft.operation ?? "run_verification" }
+      : {}),
+  }), [draft, scope, path, successCondition]);
+
+  // The preview is rendered from the SAME object the identity is computed over.
+  const preview = useMemo(() => renderPreview(reviewedDraft, envelope), [reviewedDraft, envelope]);
+
+  async function onAuthorize() {
+    setFailure(null);
+    if (!canWrite) {
+      // The review route simulates, and says so on screen. It has no
+      // `authorize` to call.
+      setAuthority(adapter?.simulate?.("authorize") ?? { state: "authorized", revision: 1 });
+      setStep("authorized");
+      return;
+    }
+    setPending(true);
+    try {
+      const result = await authorizeFromContext({
+        adapter, context, draft: reviewedDraft,
+        policyIdentity: policyIdentityOf(reviewedDraft),
+        action: path === "canary" ? "authorize_bounded_task" : "authorize_goal",
+      });
+      if (!result?.ok) {
+        setFailure(result?.failure === "stale_preview"
+          ? "This changed since you reviewed it. Review the updated authority before authorizing."
+          : result?.reason || "the transaction did not complete");
+        if (result?.failure === "stale_preview") setStep("review");
+        return;
+      }
+      setAuthority(result.persisted);
+      setStep("authorized");
+    } finally {
+      setPending(false);
+    }
+  }
+
+  /**
+   * Propose an authority change. NOTHING is written here.
+   *
+   * Narrowing previously wrote a hard-coded narrower scope on the first click,
+   * and revoking revoked immediately. Both are authority revisions, and
+   * governance requires the owner to see the resulting envelope — or the
+   * consequence — before the mutation.
+   */
+  function onProposeAmend(action, scopeRefs = null) {
+    setFailure(null);
+    setConfirming({ action, scopeRefs });
+  }
+
+  /** Narrow and revoke are REAL transactions on the live route. */
+  async function onAmend(action, scopeRefs = null) {
+    setFailure(null);
+    setConfirming(null);
+    if (!canWrite) {
+      setAuthority(adapter?.simulate?.(action === "revoke_authority" ? "revoke" : "narrow"));
+      return;
+    }
+    setPending(true);
+    try {
+      const result = await amendAuthority({
+        adapter,
+        goalId: authority?.goal?.goal_id ?? authority?.record?.goal?.goal_id,
+        expectedRevision: authority?.revision,
+        action, scopeRefs,
+      });
+      if (!result?.ok) {
+        setFailure(result?.failure === "stale_revision"
+          ? "This authority changed elsewhere. Reloading the current version."
+          : result?.reason || "the change did not complete");
+        if (result?.failure === "stale_revision") {
+          const reloaded = await loadAuthorityContext(adapter);
+          setAuthority(reloaded.currentAuthority);
+        }
+        return;
+      }
+      setAuthority(result.persisted);
+    } finally {
+      setPending(false);
+    }
+  }
+
   const ready = Boolean(draft.statement.trim().length >= 8)
     && scope.resolved
     && draft.allowed_capabilities.length > 0
@@ -84,6 +207,10 @@ export default function AuthorityView() {
           <div className="au__brand">Datascape <span>/ Autonomy</span></div>
           <a className="au__back" href="?view=briefing">Back to briefing</a>
         </header>
+
+        {step === "loading" && (
+          <div className="au__ask"><h1>Loading…</h1><p>Reading the current authority.</p></div>
+        )}
 
         {step === "choose" && (
           <Choose onPick={(p) => { setPath(p); setStep("goal"); }} />
@@ -141,7 +268,7 @@ export default function AuthorityView() {
                   setScopeText(e.target.value);
                   // The preview must reflect what she actually typed, not the
                   // scope the fixture happened to start with.
-                  const next = resolveScopeSelection(e.target.value, SCOPE_CATALOGUE);
+                  const next = resolveScopeSelection(e.target.value, catalogue);
                   set({
                     scope_refs: next.resolved ? next.scope_refs : [],
                     scope_label: next.resolved ? next.scope_label : null,
@@ -256,25 +383,40 @@ export default function AuthorityView() {
             <Ask title="This is what you would be granting." hint="Read it once. Nothing has been granted yet." />
             <Preview preview={preview} />
             <div className="au__acts">
-              <button className="au-btn au-btn--go" type="button" disabled={!ready} onClick={() => setStep("authorized")}>
-                {path === "canary" ? "Authorize this one task" : "Authorize"}
+              <button
+                className="au-btn au-btn--go" type="button" disabled={!ready || pending}
+                onClick={onAuthorize}
+              >
+                {pending ? "Authorizing…" : path === "canary" ? "Authorize this one task" : "Authorize"}
               </button>
-              <button className="au-btn au-btn--ghost" type="button" onClick={() => setStep("limits")}>Back</button>
+              <button className="au-btn au-btn--ghost" type="button" onClick={() => setStep("limits")} disabled={pending}>Back</button>
             </div>
-            <p className="au__reviewnote">
-              Review mode. This screen is bound to fixture state and cannot grant real authority —
-              the button advances the mock, it does not write a ruling.
-              {wouldAuthorize.reason ? ` Draft check: ${wouldAuthorize.reason}.` : ""}
-            </p>
+            {failure && (
+              <p className="au__failure">
+                <b>Nothing was authorized.</b> {failure}
+                {failure.includes("changed since you reviewed") ? "" : " Try again."}
+              </p>
+            )}
+            {!canWrite && (
+              <p className="au__reviewnote">
+                Review mode. This screen is bound to fixture state and cannot grant real authority —
+                the button advances the mock, it does not write a ruling.
+                {wouldAuthorize.reason ? ` Draft check: ${wouldAuthorize.reason}.` : ""}
+              </p>
+            )}
           </>
         )}
 
         {step === "authorized" && (
           <Authorized
             preview={preview} revoked={revoked} narrowed={narrowed} paused={paused}
+            canWrite={canWrite} controls={controls} pending={pending} failure={failure}
+            confirming={confirming} envelope={envelope}
             onPause={() => setPaused((p) => !p)}
-            onNarrow={() => setNarrowed(true)}
-            onRevoke={() => setRevoked(true)}
+            onNarrow={() => onProposeAmend("narrow_authority", ["semantic-centre:continuity"])}
+            onRevoke={() => onProposeAmend("revoke_authority")}
+            onConfirm={() => onAmend(confirming.action, confirming.scopeRefs)}
+            onCancelConfirm={() => setConfirming(null)}
             onEdit={() => setStep("goal")}
           />
         )}
@@ -326,6 +468,16 @@ function Preview({ preview }) {
   return (
     <div className="au-card au-prev">
       <p className="au-prev__t">{preview.statement || "—"}</p>
+      {/* Shown because it is hashed. A field that can alter the authorized
+          operation must be legible on the screen that authorizes it. */}
+      {preview.is_bounded_task && (
+        <div className="au-prev__grp">
+          <div className="au-prev__k">Done when</div>
+          <p className="au-prev__line">{preview.done_when || "— not stated —"}</p>
+          <div className="au-prev__k">Operation</div>
+          <p className="au-prev__line">{preview.operation || "— not stated —"}</p>
+        </div>
+      )}
       <div className="au-prev__grp">
         <div className="au-prev__k au-prev__k--may">DataScape may, on its own</div>
         <ul>{preview.may_autonomously.map((m) => <li key={m}>{m}</li>)}</ul>
@@ -346,7 +498,7 @@ function Preview({ preview }) {
   );
 }
 
-function Authorized({ preview, revoked, narrowed, paused, onPause, onNarrow, onRevoke, onEdit }) {
+function Authorized({ preview, revoked, narrowed, paused, canWrite, controls, pending, failure, confirming, envelope, onPause, onNarrow, onRevoke, onConfirm, onCancelConfirm, onEdit }) {
   const state = revoked ? "off" : paused ? "paused" : "on";
   const label = revoked ? "Revoked — no new work will start"
     : paused ? "Paused — running work stops at its next safe point"
@@ -374,16 +526,56 @@ function Authorized({ preview, revoked, narrowed, paused, onPause, onNarrow, onR
         </div>
       </div>
       {!revoked && (
+        <>
+        {confirming && (
+          <div className="au-card au-prev au-confirm">
+            {confirming.action === "revoke_authority" ? (
+              <>
+                <p className="au-prev__t">{REVOKE_CONFIRMATION.question}</p>
+                <p className="au-card__h">{REVOKE_CONFIRMATION.detail}</p>
+              </>
+            ) : (
+              <>
+                <p className="au-prev__t">Narrow this authority?</p>
+                <p className="au-card__h">
+                  After this, DataScape may act only within{" "}
+                  {(confirming.scopeRefs || []).map((r) => r.split(":").pop()).join(" / ")} —
+                  everything else needs you again.
+                </p>
+              </>
+            )}
+            <div className="au__acts">
+              <button className="au-btn au-btn--go" type="button" onClick={onConfirm} disabled={pending}>
+                {pending ? "Saving…" : confirming.action === "revoke_authority" ? "Stop autonomous work" : "Narrow it"}
+              </button>
+              <button className="au-btn au-btn--ghost" type="button" onClick={onCancelConfirm} disabled={pending}>Keep it as it is</button>
+            </div>
+          </div>
+        )}
+
         <div className="au__acts">
-          <button className="au-btn au-btn--ghost" type="button" onClick={onPause}>
-            {paused ? "Resume autonomous work" : "Pause autonomous work"}
-          </button>
-          <button className="au-btn au-btn--ghost" type="button" onClick={onEdit}>Change what it may do</button>
-          {!narrowed && <button className="au-btn au-btn--ghost" type="button" onClick={onNarrow}>Narrow scope</button>}
-          <button className="au-btn au-btn--danger" type="button" onClick={onRevoke}>Stop entirely</button>
+          {/* Pause has no persistence yet, so the live route HIDES it rather
+              than offering a control that could only pretend. */}
+          {controls?.pause && (
+            <button className="au-btn au-btn--ghost" type="button" onClick={onPause} disabled={pending}>
+              {paused ? "Resume autonomous work" : "Pause autonomous work"}
+            </button>
+          )}
+          {/* Widening ends in a grant, which would start a SECOND revision 1 on
+              the same lineage rather than editing it. Hidden live until an
+              explicit widen transaction exists. */}
+          {controls?.widen && (
+            <button className="au-btn au-btn--ghost" type="button" onClick={onEdit} disabled={pending}>Change what it may do</button>
+          )}
+          {!narrowed && <button className="au-btn au-btn--ghost" type="button" onClick={onNarrow} disabled={pending || Boolean(confirming)}>Narrow scope</button>}
+          <button className="au-btn au-btn--danger" type="button" onClick={onRevoke} disabled={pending || Boolean(confirming)}>Stop entirely</button>
         </div>
+        </>
       )}
-      <p className="au__reviewnote">Review mode — fixture state only. No real authority exists or is created here.</p>
+      {failure && <p className="au__failure"><b>Nothing changed.</b> {failure}</p>}
+      {!canWrite && (
+        <p className="au__reviewnote">Review mode — fixture state only. No real authority exists or is created here.</p>
+      )}
     </>
   );
 }
