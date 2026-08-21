@@ -66,6 +66,21 @@ export function createReceiptStore({ now, ttlMs = DEFAULT_RECEIPT_TTL_MS, random
         // The browser identifies the prepared authorization. It does not
         // reconstruct its semantics at commit time.
         action,
+        // THE CANONICAL PREPARED DRAFT, retained verbatim.
+        //
+        // `normalized_policy` is not sufficient to rebuild the record:
+        // `normalizeDraft()` deliberately drops `draft_id`, and the durable goal
+        // and ruling identities are constructed from it (`goal:<draft_id>`,
+        // `owner-ruling:<draft_id>:rev<n>`). Binding only the normalized policy
+        // left the commit path passing `draft: null` to the record builder,
+        // which refuses a missing draft — so an initial grant could not succeed
+        // at all through the wired host.
+        //
+        // The draft stored here is the one the HOST authored at prepare time,
+        // including a host-minted `draft_id`. The browser's own `draft_id` — the
+        // React form sends the literal string "new" — must never become the
+        // durable identity of an authorization.
+        prepared_draft: draft ? JSON.parse(JSON.stringify(draft)) : null,
         normalized_policy: normalized,
         policy_identity: draft ? policyIdentityOf(draft) : null,
         authority_kind: normalized?.kind ?? null,

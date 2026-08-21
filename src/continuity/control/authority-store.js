@@ -138,7 +138,21 @@ export function createAuthorityStore({ boundary, exceptions, now, verifier = ver
   }
 
   function buildAmend(request, at) {
-    const existing = journal.current(request.goal_id);
+    // `request.existing` is the CURRENT RECORD FROM THE OUTER JOURNAL, supplied
+    // by the caller that owns the transaction.
+    //
+    // This store is constructed over its own journal, and in the deployed
+    // composition that journal is a dummy — the durable one lives outside, held
+    // by the commit path so there is exactly one transaction per mutation. So
+    // `journal.current()` here always saw nothing, and narrow and revoke could
+    // never build at all: they would refuse with "no authority to amend" for an
+    // authority that plainly existed.
+    //
+    // Falling back to the internal journal keeps the older in-process path
+    // working unchanged.
+    const existing = request.existing !== undefined
+      ? request.existing
+      : journal.current(request.goal_id);
     if (!existing) return { ok: false, outcome: "transaction_failed", reason: "no authority to amend" };
 
     // §6: compare-and-swap against the CURRENT committed revision.

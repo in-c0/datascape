@@ -1111,6 +1111,68 @@ test("transaction: the private exception adapter is not addressable", async () =
   } finally { await world.close(); }
 });
 
+test("consent: prepare returns the host's own preview and prompt, and no session id", async () => {
+  const world = await deployedWorld();
+  try {
+    const LOOP = "datascape/consent-under-test";
+    world.fixture("2026-08-22-consent-domain", { loop: LOOP, evidence: "e" });
+    const started = await world.launch({ authorityLoop: LOOP });
+    const base = `http://127.0.0.1:${started.port}/__continuity/authority`;
+    const unlock = await fetch(`${base}/unlock_read`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+    });
+    const cookie = unlock.headers.getSetCookie().join("; ");
+
+    const response = await fetch(`${base}/prepare`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Cookie: cookie },
+      body: JSON.stringify({
+        authorization_action: "authorize_goal",
+        draft: {
+          // The React form's literal value. It must not survive as identity.
+          draft_id: "new",
+          kind: "persistent_goal",
+          statement: "keep the briefing surface green",
+          scope_refs: ["scope:datascape/briefing"],
+          allowed_capabilities: ["run_tests", "inspect_repository"],
+          stop_conditions: ["reviewed"],
+          max_cost: 0,
+        },
+      }),
+    });
+    assert.equal(response.status, 200, await response.clone().text());
+    const prepared = await response.json();
+
+    // The host describes the review. The browser composes nothing.
+    assert.ok(prepared.preview, "the host must return its own normalized preview");
+    assert.ok(prepared.prompt_preview, "the surface refuses to draw a review without this");
+    assert.match(prepared.prompt_preview, /^Authorize DataScape autonomous work/);
+
+    // Presentation, not authority — and never the host-private session id.
+    const serialised = JSON.stringify(prepared);
+    assert.ok(!serialised.includes("read_session_id"));
+    assert.ok(!serialised.includes(cookie.split("=")[1] ?? " "));
+
+    // THE CONSENT INVARIANT: what she reads here and what Windows will show are
+    // the same string. Asserted against the verification the host actually
+    // performs, not against a second implementation of the wording.
+    const before = world.broker.calls.length;
+    const committed = await fetch(`${base}/commit`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Cookie: cookie },
+      body: JSON.stringify({
+        operation_id: "op-consent-1",
+        preview_receipt: prepared.preview_receipt,
+      }),
+    });
+    assert.ok(world.broker.calls.length > before, "the commit must have asked her");
+    const purpose = world.broker.calls[world.broker.calls.length - 1].purpose;
+    assert.equal(purpose, prepared.prompt_preview,
+      "the prepared prompt and the verifier purpose must be one string");
+    assert.ok([200, 409].includes(committed.status), await committed.clone().text());
+  } finally { await world.close(); }
+});
+
 test("reads: the surface serves REAL exception data for a stable domain", async () => {
   const world = await deployedWorld();
   try {

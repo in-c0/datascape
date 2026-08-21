@@ -15,6 +15,7 @@
 //    INJECTED by the composing host rather than imported here. The repo and the
 //    deployed tree have different layouts, and an import that only resolves in
 //    one of them is how a security module silently becomes unreachable.
+import crypto from "node:crypto";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { fileURLToPath } from "node:url";
@@ -28,6 +29,9 @@ const { createAuthorityStore } = await load("authority-store.js");
 const { createAuthorityExceptionAdapter } = await load("authority-exception-adapter.js");
 const { createCommitJournalPort, createJournalExceptionPort } = await load("authority-exception-port.js");
 const { revisionOf } = await load("authority-operation.js");
+const draftMod = await load("authority-draft.js");
+const { composeEnvelope, createAuthorityDraft, renderPreview } = draftMod;
+const { promptForReceipt } = await load("authority-commit.js");
 const domainMod = await load("authority-domain.js");
 const { publicBlocker, readExceptionIndex, resolveAuthorityDomain, scopeCatalogue } = domainMod;
 
@@ -44,6 +48,11 @@ export function createAuthorityTransaction({
   authorityLoop = process.env.CONTINUITY_AUTHORITY_LOOP || null,
 }) {
   const receipts = createReceiptStore({ now });
+
+  // Host-minted draft ids. Random rather than derived from the browser's input,
+  // so two separately prepared grants of the SAME text still get distinct
+  // durable identities — they are two authorizations, not one.
+  const mintId = () => crypto.randomBytes(12).toString("base64url");
 
   const adapter = createAuthorityExceptionAdapter({ inbox, now, atomic });
   const exceptions = createJournalExceptionPort(adapter);
@@ -99,12 +108,20 @@ export function createAuthorityTransaction({
       // same rule as the Windows prompt text: what she reviewed and what gets
       // written have to be one object.
       action: receipt.action,
-      draft: receipt.draft ?? null,
+      // The HOST-AUTHORED draft, carrying the host-minted `draft_id` the
+      // durable goal and ruling identities are built from. `receipt.draft` did
+      // not exist, so this used to pass null and every initial grant was
+      // refused by the record builder before it could be written.
+      draft: receipt.prepared_draft ?? null,
       policy_identity: receipt.policy_identity ?? null,
       goal_id: receipt.goal_id ?? null,
       expected_revision: receipt.base_authority_revision ?? null,
       source_exception_id: receipt.source_exception_id ?? null,
       scope_refs: receipt.resulting_scope_refs ?? null,
+      // THE REAL CURRENT RECORD, from the durable outer journal. The store's own
+      // journal is a dummy in this composition, so without this narrow and
+      // revoke would look up an authority that is never there.
+      existing: receipt.goal_id ? journal.current(receipt.goal_id) : null,
     }, now()),
   });
 
@@ -188,7 +205,12 @@ export function createAuthorityTransaction({
       const readSessionId = auth.context.read_session_id;
 
       const found = domain();
-      if (!found.ok) return { ok: false, failure: found.failure, reason: found.reason };
+      if (!found.ok) {
+        return {
+          ok: false, failure: found.failure, reason: found.reason,
+          candidates: found.candidates ?? null,
+        };
+      }
       const domainId = found.domain;
 
       const action = typeof body?.authorization_action === "string"
@@ -199,8 +221,30 @@ export function createAuthorityTransaction({
         return { ok: false, failure: "no_current_authority", reason: "there is no authority here to amend" };
       }
 
+      // THE DURABLE IDENTITY IS MINTED HERE, by the host.
+      //
+      // `goal:<draft_id>` and `owner-ruling:<draft_id>:rev<n>` are built from
+      // the draft id, and the React form sends the literal string "new". Left
+      // alone, every authorization this machine ever granted would share one
+      // durable goal identity. Whatever the browser sends is overwritten, so
+      // there is nothing to trust and nothing to validate.
+      let preparedDraft = null;
+      if (!amending) {
+        if (!body?.draft) {
+          return { ok: false, failure: "no_draft", reason: "an initial grant needs a draft to review" };
+        }
+        try {
+          preparedDraft = createAuthorityDraft({
+            ...body.draft,
+            draft_id: `prepared:${mintId()}`,
+          });
+        } catch (error) {
+          return { ok: false, failure: "invalid_draft", reason: error.message };
+        }
+      }
+
       const receipt = receipts.issue({
-        draft: body?.draft ?? null,
+        draft: preparedDraft,
         action,
         authorityDomain: domainId,
         // Bound HOST-side. A browser cannot point a review at another domain.
@@ -216,6 +260,13 @@ export function createAuthorityTransaction({
         return { ok: false, failure: "receipt_not_bound", reason: "the prepared review was not bound to this session" };
       }
 
+      // THE HOST'S OWN PRESENTATION, and the host's own prompt text.
+      //
+      // `prompt_preview` is produced by the SAME function the commit path hands
+      // to the verifier, so the words she reads here and the words Windows shows
+      // are one string by construction rather than by two implementations
+      // agreeing. The surface refuses to draw a prepared review without it.
+      const envelope = composeEnvelope(receipt.normalized_policy?.allowed_capabilities ?? []);
       return {
         ok: true,
         preview_receipt: receipt.receipt_id,
@@ -223,6 +274,13 @@ export function createAuthorityTransaction({
         action: receipt.action,
         base_authority_revision: receipt.base_authority_revision,
         resulting_scope_refs: receipt.resulting_scope_refs,
+        // Presentation, not authority: everything needed to render the review
+        // and nothing the browser could act on. `read_session_id` is host-
+        // private and never appears here.
+        preview: receipt.normalized_policy
+          ? { ...renderPreview(receipt.normalized_policy, envelope) }
+          : null,
+        prompt_preview: promptForReceipt(receipt),
       };
     },
   };

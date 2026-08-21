@@ -19,8 +19,10 @@
 //     failure and still succeed.
 //
 // Every row now declares its expected value and any mismatch fails the run.
+import childProcess from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import { deployedWorld } from "./prb-deploy-world.mjs";
@@ -45,11 +47,61 @@ const row = (group, label, value, expected) => rows.push({
 // Real-world baseline: hash her surfaces BEFORE anything runs.
 // ---------------------------------------------------------------------------
 
+/**
+ * The state directory the LIVE HOST actually uses, resolved exactly the way it
+ * resolves it. Restating the path here is how the two drift apart.
+ */
+const HOST_STATE_DIR = process.env.LIVE_HOST_STATE
+  || path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), ".local", "state"),
+    "datascape", "live-host");
+
+/**
+ * THE CANONICAL AUTHORITY STORE, and there is exactly one.
+ *
+ * The reporter used to watch `_ship_inbox/ops/continuity-authority.json`, which
+ * the wired host does not write. Worse than a mismatch: that file does not
+ * exist and never has, so the row hashed an absent file before and after and
+ * compared equal — structurally incapable of detecting a write, which is the
+ * one thing it claimed to prove.
+ *
+ * The repository establishes no other production authority persistence: this
+ * journal is the only concrete path, and `canonicalAuthorityStores()` below
+ * asserts that rather than asking anyone to take it on faith.
+ */
 const REAL_SURFACES = {
   claude_md: "D:/Projects/CLAUDE.md",
   exceptions: "D:/Projects/_ship_inbox/exceptions",
-  authority_state: "D:/Projects/_ship_inbox/ops/continuity-authority.json",
+  authority_state: path.join(HOST_STATE_DIR, "authority-journal.json"),
 };
+
+/** Source with comments removed, so no assertion here can read prose as code. */
+function code(file) {
+  return fs.readFileSync(file, "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .split(/\r?\n/)
+    .map((line) => line.replace(/(^|\s)\/\/.*$/, "$1"))
+    .join("\n");
+}
+
+/** Every production path that opens durable authority storage. */
+function canonicalAuthorityStores() {
+  const roots = ["ops/live-host", "src/continuity/control"];
+  const found = [];
+  for (const root of roots) {
+    const dir = path.resolve(process.cwd(), root);
+    for (const name of fs.readdirSync(dir)) {
+      if (!/\.(mjs|js)$/.test(name)) continue;
+      // The DEFINITION does not count; only a CALL that opens a file does.
+      // Removing the declaration first is the difference — the naive pattern
+      // matched `export function createFileStorage({ fs, path: file })` and
+      // reported the module that defines the storage as a second store.
+      const text = code(path.join(dir, name))
+        .replace(/export\s+function\s+createFileStorage\s*\([^)]*\)/g, "");
+      if (/createFileStorage\s*\(\s*\{/.test(text)) found.push(`${root}/${name}`);
+    }
+  }
+  return found;
+}
 
 /** EXACT BYTES, recursively, keyed by exact relative path. */
 function surfaceHash(target) {
@@ -75,35 +127,36 @@ function surfaceHash(target) {
 }
 
 /**
- * Does anything in this harness IMPORT the real Windows device module?
+ * DID ANYTHING ACTUALLY REACH THE DEVICE?
  *
- * Every verification in this run goes to a fixture broker inside a temp world.
- * This is the property that makes that checkable, and adding such an import
- * flips it to 1.
+ * The previous row asked whether this harness IMPORTS
+ * `owner-presence-windows.js`, and that was the wrong invariant. The deployed
+ * world loads the real briefing core, and the core statically includes the
+ * Windows presence module in its security artifact graph — so the import is
+ * always there. What protects the run is that every world injects a fake
+ * verifier and sets OWNER_PRESENCE_INTERACTIVE=0, which an import audit cannot
+ * see either way.
  *
- * Two refinements, both from getting it wrong first:
- *
- * - Comments are stripped. The first version scanned raw text and matched this
- *   file's own prose about not importing the device module — the third time in
- *   this branch an assertion has read a comment instead of code.
- * - It matches an IMPORT, not the bare name. `prb-deploy-world.mjs` names
- *   `owner-presence-windows.js` as a file to DEPLOY, which is a path string in
- *   a list, not a call into the device. Counting that read as 2 and was
- *   correct about the text while being wrong about the claim.
+ * So this is measured at RUNTIME, transitively, at the only place the real
+ * broker can touch the device: it shells out to `powershell.exe`. Both
+ * `execFile` and `execFileSync` are wrapped before anything else runs, so any
+ * code path anywhere in this process — however deeply imported — is counted.
  */
-function importsRealDevice() {
-  const strip = (text) => text
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .split(/\r?\n/)
-    .map((line) => line.replace(/(^|\s)\/\/.*$/, "$1"))
-    .join("\n");
-  const IMPORTS_DEVICE = /(?:^|\s)(?:import\b[^\n]*|await\s+import\s*\()[^\n]*owner-presence-windows/;
-  return ["ops/v616-parts08-delta.mjs", "ops/prb-deploy-world.mjs"]
-    .map((f) => path.resolve(process.cwd(), f))
-    .filter((f) => {
-      try { return IMPORTS_DEVICE.test(strip(fs.readFileSync(f, "utf8"))); }
-      catch { return false; }
-    }).length;
+const deviceCalls = { powershell: 0, commands: [] };
+{
+  const wrap = (name) => {
+    const original = childProcess[name];
+    if (typeof original !== "function") return;
+    childProcess[name] = function counted(command, ...rest) {
+      if (/powershell(\.exe)?$/i.test(String(command))) {
+        deviceCalls.powershell += 1;
+        deviceCalls.commands.push(String(command));
+      }
+      return original.call(this, command, ...rest);
+    };
+  };
+  wrap("execFile");
+  wrap("execFileSync");
 }
 
 const before = Object.fromEntries(
@@ -531,7 +584,23 @@ const after = Object.fromEntries(
 row("REAL", "authority writes", before.authority_state === after.authority_state ? "0" : "1", "0");
 row("REAL", "blocker resolutions", before.exceptions === after.exceptions ? "0" : "1", "0");
 row("REAL", "CLAUDE.md writes", before.claude_md === after.claude_md ? "0" : "1", "0");
-row("REAL", "harness imports the Windows device module", importsRealDevice(), "0");
+row("WINDOWS", "real Windows broker verify calls", deviceCalls.powershell, "0");
+row("WINDOWS", "real Windows prompts shown", deviceCalls.powershell, "0");
+const stores = canonicalAuthorityStores();
+row("PERSISTENCE", "number of canonical authority stores", stores.length, "1");
+row("PERSISTENCE", "reporter hashes candidate host's actual journal",
+  REAL_SURFACES.authority_state === path.join(HOST_STATE_DIR, "authority-journal.json") ? "yes" : "NO", "yes");
+// A write the reporter could not see is the failure this row exists for, so
+// it is proved against a temp file rather than asserted: hash, write, hash.
+row("PERSISTENCE", "candidate write invisible to reporter", (() => {
+  const probe = path.join(os.tmpdir(), `delta-probe-${process.pid}.json`);
+  fs.writeFileSync(probe, JSON.stringify([{ phase: "committed" }]));
+  const first = surfaceHash(probe);
+  fs.writeFileSync(probe, JSON.stringify([{ phase: "committed" }, { phase: "committed" }]));
+  const second = surfaceHash(probe);
+  fs.rmSync(probe, { force: true });
+  return first === second ? "1" : "0";
+})(), "0");
 
 let group = null;
 const width = Math.max(...rows.map((r) => r.label.length)) + 2;
