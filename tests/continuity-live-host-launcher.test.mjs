@@ -731,3 +731,139 @@ test("authority: rollback deletes authority files that had no predecessor", asyn
     assert.equal(started.authority_available, false);
   } finally { await world.close(); }
 });
+
+// ---------------------------------------------------------------------------
+// Read-unlock boundaries
+// ---------------------------------------------------------------------------
+
+async function authorityWorld(outcomeRef = { value: "verified" }, consumeRef = { ok: true }) {
+  const world = await deployedWorld();
+  const mod = await import(pathToFileURL(
+    path.join(world.live, "_authority", "authority-host.mjs")).href);
+  const calls = [];
+  const presence = {
+    forSubsystem: (name) => ({
+      name,
+      verifier: {
+        verify: async ({ operationRef }) => {
+          calls.push(operationRef);
+          return outcomeRef.value === "verified"
+            ? { outcome: "verified", operation_ref: operationRef }
+            : { outcome: outcomeRef.value, reason: `device said ${outcomeRef.value}` };
+        },
+        // The load-bearing half: it refuses a spent, copied, fabricated or
+        // wrong-operation verification.
+        authorizes: () => consumeRef,
+      },
+      budget: { mayPrompt: () => ({ ok: true }), recordOutcome: () => {} },
+      now: () => 1_000_000,
+    }),
+  };
+  const host = mod.createAuthorityHost({ presence, now: () => 1_000_000 });
+
+  const drive = async (route, { method = "POST", cookie = null } = {}) => {
+    const headers = [];
+    let payload = null;
+    const res = { setHeader: (k, v) => headers.push([k, v]) };
+    const ctx = { origin: null, send: (r, code, body) => { payload = { code, body }; return true; } };
+    const req = {
+      method,
+      headers: { "content-type": "application/json", ...(cookie ? { cookie } : {}) },
+      on(event, fn) { if (event === "end") fn(); return req; },
+    };
+    await host.handle(req, res, new URL(`http://127.0.0.1/__continuity/authority/${route}`), ctx);
+    const set = headers.find(([k]) => k === "Set-Cookie")?.[1] ?? null;
+    return { payload, cookie: set, token: set ? set.split(";")[0] : null };
+  };
+  return { world, host, drive, calls };
+}
+
+test("unlock: a verified presence that cannot be CONSUMED opens no session", async () => {
+  const consume = { ok: false, reason: "already used or did not originate here" };
+  const { world, drive } = await authorityWorld({ value: "verified" }, consume);
+  try {
+    const attempt = await drive("unlock_read");
+    assert.equal(attempt.payload.code, 403);
+    assert.equal(attempt.payload.body.error, "presence_not_valid");
+    assert.equal(attempt.payload.body.unlocked, false);
+    assert.equal(attempt.cookie, null, "no session cookie is handed out");
+
+    // And the session really is not open — status agrees.
+    const status = await drive("status", { method: "GET" });
+    assert.equal(status.payload.body.open, false);
+  } finally { await world.close(); }
+});
+
+test("lock_read: unauthenticated callers cannot kill her window", async () => {
+  const { world, drive } = await authorityWorld();
+  try {
+    const opened = await drive("unlock_read");
+    assert.equal(opened.payload.body.unlocked, true);
+
+    // Any local process could previously clear this. Once mutations exist that
+    // is a prompt-habituation path, not a nuisance.
+    const uninvited = await drive("lock_read");
+    assert.equal(uninvited.payload.code, 401);
+    assert.equal((await drive("status", { method: "GET", cookie: opened.token })).payload.body.open, true,
+      "her session survived");
+
+    // A rotated-away session must not be able to clear the one that replaced it.
+    const rotated = await drive("unlock_read");
+    const stale = await drive("lock_read", { cookie: opened.token });
+    assert.equal(stale.payload.code, 401, "S1 cannot clear S2");
+    assert.equal((await drive("status", { method: "GET", cookie: rotated.token })).payload.body.open, true);
+
+    // The holder can.
+    const mine = await drive("lock_read", { cookie: rotated.token });
+    assert.equal(mine.payload.code, 200);
+    assert.equal((await drive("status", { method: "GET", cookie: rotated.token })).payload.body.open, false);
+  } finally { await world.close(); }
+});
+
+test("status: one browser's unlock is not disclosed to the machine", async () => {
+  const { world, drive } = await authorityWorld();
+  try {
+    const opened = await drive("unlock_read");
+
+    // With the cookie: her own window, and only the expiry.
+    const mine = await drive("status", { method: "GET", cookie: opened.token });
+    assert.equal(mine.payload.body.open, true);
+    assert.ok(mine.payload.body.expires_at);
+    assert.ok(!JSON.stringify(mine.payload.body).includes(opened.token.split("=")[1]),
+      "never the id");
+
+    // Without it: nothing. Reporting the host-global session told every local
+    // process whether owner controls were unlocked and when that window closed.
+    const stranger = await drive("status", { method: "GET" });
+    assert.equal(stranger.payload.body.open, false);
+    assert.equal(stranger.payload.body.expires_at, undefined,
+      "another browser's expiry must not be disclosed");
+  } finally { await world.close(); }
+});
+
+test("authority preflight: the operator gate and the runtime gate agree", async () => {
+  for (const damage of [
+    { extra: "_authority/left-over.mjs" },
+    { omit: "_authority/authority-read-session.js" },
+  ]) {
+    const world = await deployedWorld();
+    try {
+      if (damage.extra) fs.writeFileSync(path.join(world.live, damage.extra), "export const x = 1\n");
+      if (damage.omit) {
+        const manifestPath = path.join(world.state, "deployed.json");
+        const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+        manifest.authority_files = manifest.authority_files.filter((f) => f.dest !== damage.omit);
+        fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+      }
+
+      // Two things called "authority preflight" that can disagree is how a
+      // governance report says PASS while production says FAIL.
+      const operator = await world.deployMod.authorityPreflight({ liveDir: world.live, stateDir: world.state });
+      const started = await world.launch();
+      assert.equal(operator.ok, false, JSON.stringify(damage));
+      assert.equal(started.authority_available, false, JSON.stringify(damage));
+      assert.equal(operator.ok, started.authority_available, "the two gates must return one verdict");
+      assert.equal(started.mode, "owner_rulings", "/api/act unaffected either way");
+    } finally { await world.close(); }
+  }
+});

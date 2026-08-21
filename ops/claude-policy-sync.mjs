@@ -49,7 +49,14 @@ export const CLAUDE_MD = process.env.CLAUDE_MD_PATH || "D:/Projects/CLAUDE.md";
 export const FIRST_INSTALL_ANCHOR =
   "hides it from the only list she reads.";
 
-const sha = (text) => crypto.createHash("sha256").update(String(text).replace(/\r\n/g, "\n")).digest("hex");
+// EXACT bytes, with no newline normalisation.
+//
+// Normalising CRLF to LF is right for comparing source across platforms and
+// wrong here: on Windows a previous LF backup and the current CRLF file hash
+// identically, so the backup path already exists and the current exact bytes
+// are never written. "Exact prior bytes backed up" would be false precisely on
+// the platform this file lives on.
+const sha = (text) => crypto.createHash("sha256").update(Buffer.from(String(text), "utf8")).digest("hex");
 
 export function canonicalText() {
   return fs.readFileSync(POLICY_SOURCE, "utf8").trim();
@@ -203,6 +210,21 @@ export function sync({ file = CLAUDE_MD, text = canonicalText(), dryRun = true, 
     return { ok: false, failure: "unmanaged_write", reason: "the plan would change bytes outside the managed block", ...result };
   }
   if (dryRun || !plan.changed) return result;
+
+  // This tool must not delete her hand-authored paragraph, so the only honest
+  // thing left is to refuse to add a SECOND copy of the rule beside it. A dry
+  // run reports the count; a write enforces it. Two statements of one security
+  // rule are free to drift apart, and the drift would be silent.
+  if (result.rule_occurrences_after > 1) {
+    return {
+      ...result,
+      ok: false,
+      failure: "duplicate_rule",
+      reason: `the result would state this rule ${result.rule_occurrences_after} times. `
+        + "Remove the older unmarked paragraph by hand, re-run the dry run until "
+        + "rule_occurrences_after is 1, and only then write.",
+    };
+  }
 
   // The exact previous bytes, before anything is replaced.
   const backups = backupDir ?? path.join(

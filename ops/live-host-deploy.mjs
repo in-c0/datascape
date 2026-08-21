@@ -359,36 +359,20 @@ export function verifyAgainstCommit({ commit, liveDir = liveDir_(), only = null 
  * the base gate has already passed, and a "no" here disables one route rather
  * than the host.
  */
-export function authorityPreflight({ liveDir = liveDir_() } = {}) {
-  const manifest = JSON.parse(read(MANIFEST()) || "null");
-  const recorded = manifest?.authority_files ?? null;
-
-  if (!AUTHORITY_ARTIFACT.length) {
-    return { ok: false, reason: "no authority artifact is part of this release yet", files: [], expected: 0 };
-  }
-  if (!recorded) {
-    return { ok: false, reason: "this deployment recorded no authority artifact", files: [], expected: AUTHORITY_ARTIFACT.length };
-  }
-
-  const files = AUTHORITY_ARTIFACT.map((entry) => {
-    const live = read(path.join(liveDir, entry.dest));
-    const expected = recorded.find((f) => f.dest === entry.dest);
-    return {
-      dest: entry.dest,
-      present: live !== null,
-      matches: live !== null && Boolean(expected) && sha(live) === expected.hash,
-    };
-  });
-  const missing = files.filter((f) => !f.present).map((f) => f.dest);
-  const drifted = files.filter((f) => f.present && !f.matches).map((f) => f.dest);
-
-  return {
-    ok: missing.length === 0 && drifted.length === 0,
-    files, missing, drifted, expected: AUTHORITY_ARTIFACT.length,
-    reason: missing.length ? `authority artifact incomplete: missing ${missing.join(", ")}`
-      : drifted.length ? `authority artifact does not match this deployment: ${drifted.join(", ")}`
-      : null,
-  };
+export async function authorityPreflight({ liveDir = liveDir_(), stateDir: sd = stateDir() } = {}) {
+  // ONE semantic implementation, shared with the runtime.
+  //
+  // This used to check only the declared AUTHORITY_ARTIFACT files against
+  // recorded hashes, while the runtime gate enforced exact live-vs-recorded
+  // closure, stale-file rejection and import containment. Two things called
+  // "authority preflight" that could disagree is how governance reporting
+  // outruns production reality — the operator gate says PASS, the host says
+  // FAIL, and only one of them is in the report.
+  //
+  // The entry point is the authority on this question, so ask it.
+  const entry = await import(pathToFileURL(path.join(repoDir(), "ops", "live-host", "briefing-server.mjs")).href);
+  const verdict = entry.manifestAuthorityGate({ liveDir, stateDir: sd });
+  return { ...verdict, expected: AUTHORITY_ARTIFACT.length };
 }
 
 /**

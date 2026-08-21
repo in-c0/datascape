@@ -77,9 +77,16 @@ export function createAuthorityHost({ presence, now = () => Date.now(), store = 
     if (verification.outcome !== "verified") {
       return send(res, 403, { error: verification.outcome, reason: verification.reason, unlocked: false }, origin);
     }
-    // Spend the one-shot presence on this unlock so it cannot also authorise
-    // something else.
-    mine.verifier.authorizes(verification, "authority:unlock_read");
+    // CONSUME the one-shot presence, and honour the answer. `authorizes()` is
+    // the load-bearing half of this verifier: it refuses an already-spent
+    // verification, a copy, a fabricated object, or one issued for a different
+    // operation. Calling it and discarding the result meant a verified-but-
+    // unconsumable presence still opened a session — most of the protection
+    // thrown away one line after asking for it.
+    const consumed = mine.verifier.authorizes(verification, "authority:unlock_read");
+    if (!consumed.ok) {
+      return send(res, 403, { error: "presence_not_valid", reason: consumed.reason, unlocked: false }, origin);
+    }
 
     const opened = sessions.open();
     res.setHeader("Set-Cookie", sessionCookie(opened.session_id));
@@ -95,14 +102,34 @@ export function createAuthorityHost({ presence, now = () => Date.now(), store = 
   }
 
   function lockRead(req, res, { origin, send }) {
+    // AUTHENTICATED, though it needs no fresh prompt. Unauthenticated, this was
+    // a kill switch: any local process could repeatedly invalidate her
+    // five-minute window, and once mutations exist that is worse than a
+    // nuisance — she reviews, something clears the session, her authorize
+    // refuses, and she unlocks and verifies all over again. That is a
+    // prompt-habituation path, not a DoS footnote.
+    //
+    // Requiring the CURRENT cookie also stops a rotated-away S1 from clearing
+    // the S2 that replaced it.
+    const auth = authenticateRequest({ store: sessions, cookieHeader: req.headers.cookie });
+    if (!auth.ok) {
+      return send(res, 401, { error: auth.failure, detail: auth.reason, unlocked: false }, origin);
+    }
     sessions.clear();
     res.setHeader("Set-Cookie", clearedCookie());
     return send(res, 200, { unlocked: false }, origin);
   }
 
   function status(req, res, { origin, send }) {
-    // Never includes the id, and never extends anything by being asked.
-    return send(res, 200, { ...sessions.state(), permits: READ_OPERATIONS }, origin);
+    // REQUEST-SCOPED. Reporting the host-global session told any local caller
+    // whether she currently had owner controls unlocked and when that window
+    // closed — one browser's state disclosed to everything else on the machine.
+    const auth = authenticateRequest({ store: sessions, cookieHeader: req.headers.cookie });
+    if (!auth.ok) return send(res, 200, { open: false, permits: READ_OPERATIONS }, origin);
+    // Never the id, and asking never extends the window.
+    return send(res, 200, {
+      open: true, expires_at: auth.context.expires_at, permits: READ_OPERATIONS,
+    }, origin);
   }
 
   return {

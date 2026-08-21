@@ -216,3 +216,53 @@ test("policy: an install over an existing hand-written copy is DETECTED, not sil
     "and the duplication is reported rather than left to be discovered");
 });
 
+
+test("policy: the backup hash is exact bytes, so LF and CRLF never collide", () => {
+  const { file, backups } = tempCopy();
+  // The same text with Windows line endings — what this file actually has on
+  // the machine it lives on.
+  const crlf = DOCUMENT.replace(/\n/g, "\r\n");
+  fs.writeFileSync(file, crlf);
+
+  const first = sync({ file, dryRun: false, backupDir: backups });
+  assert.equal(first.wrote, true);
+  assert.equal(fs.readFileSync(first.backup, "utf8"), crlf, "the CRLF bytes are what came back");
+
+  // Now the LF variant. A normalising hash would produce the SAME backup path,
+  // find it already there, and never preserve these bytes.
+  fs.writeFileSync(file, DOCUMENT);
+  const second = sync({ file, dryRun: false, backupDir: backups });
+  assert.equal(second.wrote, true);
+  assert.notEqual(second.backup, first.backup, "different bytes, different backup");
+  assert.equal(fs.readFileSync(second.backup, "utf8"), DOCUMENT);
+});
+
+test("policy: a write that would duplicate the rule is REFUSED", () => {
+  const marker = "Never move a `blocked-on-owner` exception";
+  const handWritten = DOCUMENT.replace(
+    "## 4. Money", `${marker} out of \`blocked-on-owner\`.\n\n## 4. Money`);
+  const { file, backups } = tempCopy(handWritten);
+  const before = fs.readFileSync(file, "utf8");
+
+  // The dry run reports it...
+  const dry = sync({ file, dryRun: true });
+  assert.equal(dry.ok, true);
+  assert.equal(dry.rule_occurrences_after, 2);
+
+  // ...and the write refuses rather than adding the second copy. The tool will
+  // not delete her paragraph to make room for its own, so this is the only
+  // honest remaining move.
+  const write = sync({ file, dryRun: false, backupDir: backups });
+  assert.equal(write.ok, false);
+  assert.equal(write.failure, "duplicate_rule");
+  assert.equal(write.wrote, false);
+  assert.equal(fs.readFileSync(file, "utf8"), before, "nothing written");
+  assert.match(write.reason, /Remove the older unmarked paragraph by hand/);
+
+  // Once a human removes it, the same call goes through.
+  fs.writeFileSync(file, DOCUMENT);
+  const clean = sync({ file, dryRun: false, backupDir: backups });
+  assert.equal(clean.ok, true);
+  assert.equal(clean.wrote, true);
+  assert.equal(clean.rule_occurrences_after, 1);
+});
