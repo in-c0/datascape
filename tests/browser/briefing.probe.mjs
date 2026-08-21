@@ -27,7 +27,7 @@ const ok = (name, condition, detail = "") => {
   console.log((condition ? "PASS  " : "FAIL  ") + name + (detail && !condition ? `  <- ${detail}` : ""));
 };
 
-const nodeCount = (tab) => tab.eval('document.querySelectorAll(".bf-stage__nodes .bf-node").length');
+const nodeCount = (tab) => tab.eval('document.querySelectorAll(".bf-stage__nodes .bf-node, .bf-placed__node .bf-node").length');
 const cardCount = (tab) => tab.eval('document.querySelectorAll(".bf-card").length');
 const settle = (ms = 900) => new Promise((r) => setTimeout(r, ms));
 
@@ -42,7 +42,7 @@ async function descend(tab, label = "descend") {
   const before = await tab.eval("location.search");
   const clicked = await tab.eval(
     '(()=>{const el=document.querySelector(".bf-childcol .bf-node") || ' +
-    '[...document.querySelectorAll(".bf-stage__nodes .bf-node")].find(n=>!n.className.includes("origin"));' +
+    '[...document.querySelectorAll(".bf-stage__nodes .bf-node, .bf-placed__node .bf-node")].find(n=>!n.className.includes("origin"));' +
     'if(!el) return false; el.click(); return true;})()',
   );
   await settle();
@@ -129,6 +129,59 @@ try {
   const cardText = await tab.eval('document.querySelector(".bf-card")?.innerText || ""');
   const hasMarkup = await tab.eval('!!document.querySelector(".bf-card .bf-md")');
   ok("authored bodies render as presentation Markdown", hasMarkup && !/\*\*/.test(cardText), hasMarkup ? "** still visible" : "no .bf-md");
+
+  // ---- spec v2.2: the stage IS the field ----
+  //
+  // These are DOM-geometry assertions on purpose. The model tests can prove a
+  // live envelope's x2 equals NOW; only the rendered page can prove the node
+  // sits inside the run that produced it, which is the invariant v2.1 broke by
+  // exactly one ring-radius while every unit test stayed green.
+  const NOW = encodeURIComponent("2026-08-21T18:40:00+10:00");
+  const SINCE = encodeURIComponent("2026-08-21T10:00:00+10:00");
+  await tab.goto(`${BASE}/?view=briefing&now=${NOW}&since=${SINCE}`);
+  await settle(1800);
+
+  const geom = JSON.parse(await tab.eval(`(()=>{
+    const box = (e) => { const r = e.getBoundingClientRect(); return {x1:r.left,x2:r.right,y1:r.top,y2:r.bottom}; };
+    const envs = [...document.querySelectorAll(".bf-env")].map((e) => ({...box(e), live: e.classList.contains("bf-env--live")}));
+    const nodes = [...document.querySelectorAll(".bf-placed__node")].map((e) => {
+      const r = e.querySelector(".bf-ring").getBoundingClientRect();
+      return { temporal: !e.classList.contains("bf-placed__node--atemporal"), cx: r.left + r.width/2, cy: r.top + r.height/2 };
+    });
+    const nowEl = document.querySelector(".bf-now");
+    const field = document.querySelector(".bf-field");
+    return JSON.stringify({ envs, nodes, now: nowEl && box(nowEl), field: field && box(field),
+      axisPanels: document.querySelectorAll(".bf-axis, .bf-axiswrap").length });
+  })()`));
+
+  const temporal = geom.nodes.filter((n) => n.temporal);
+  const contained = temporal.filter((n) => geom.envs.some((v) => n.cx >= v.x1 - 1 && n.cx <= v.x2 + 1 && n.cy >= v.y1 && n.cy <= v.y2));
+  ok("every temporally placed node sits inside the run that produced it",
+    temporal.length > 0 && contained.length === temporal.length,
+    `${contained.length}/${temporal.length} contained`);
+
+  ok("NOW crosses the graph area, not a separate strip",
+    !!geom.now && !!geom.field && geom.now.y1 <= geom.field.y1 + 2 && geom.now.y2 >= geom.field.y2 - 2,
+    JSON.stringify({ now: geom.now, field: geom.field }));
+
+  const live = geom.envs.filter((e) => e.live);
+  const done = geom.envs.filter((e) => !e.live);
+  ok("a live run terminates at NOW and completed runs terminate left of it",
+    live.length > 0 && done.length > 0
+      && live.every((e) => Math.abs(e.x2 - geom.now.x1) <= 2)
+      && done.every((e) => e.x2 < geom.now.x1 - 2),
+    JSON.stringify({ live: live.map((e) => e.x2), done: done.map((e) => e.x2), now: geom.now.x1 }));
+
+  ok("no independent timeline panel above the graph", geom.axisPanels === 0, `${geom.axisPanels} panel(s)`);
+
+  // Recentering must not drop the temporal field — v2.2 rejected time that
+  // disappears the moment semantic resolution increases.
+  await tab.goto(`${BASE}/?view=briefing&now=${NOW}&since=${SINCE}&at=lane%2Fpersonalos-surface-runtime`);
+  await settle(1600);
+  const zoomed = JSON.parse(await tab.eval(
+    '(()=>JSON.stringify({field:!!document.querySelector(".bf-field"),envs:document.querySelectorAll(".bf-env").length}))()',
+  ));
+  ok("a selected unattended lane keeps its temporal context", zoomed.field && zoomed.envs > 0, JSON.stringify(zoomed));
 
   // ---- the probe's own control, and the error assertion it once faked ----
   ok("PROBE CONTROL: the error collector survived every navigation", await tab.armed());

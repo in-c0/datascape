@@ -645,107 +645,131 @@ body:has(.bf-root) { overflow: auto; }
   .bf-exec--live .bf-ring { animation: none; box-shadow: 0 0 14px 2px rgba(125, 211, 252, 0.5); }
 }
 
-/* ---------- the temporal axis (spec v2.1) ----------
- * Time is spatial here: envelope width IS elapsed duration, NOW is a position,
- * and phase of day is a continuous field. The previous version drew rounded
- * cards around lane labels, which read as "cards for autonomous sessions" —
- * exactly what the spec rejected. */
-
-.bf-axiswrap {
-  position: relative;
-  z-index: 2;
-  max-width: 1140px;
-  margin: 14px auto 0;
-  padding: 0 26px;
-}
-.bf-axis {
-  position: relative;
-  width: 100%;
-  border-radius: 12px;
-  overflow: hidden;
-  border: 1px solid rgba(84, 98, 140, 0.24);
-}
-.bf-axis__field {
-  position: absolute;
-  inset: 0;
-  /* Continuous, low-frequency, and deliberately more separated in luminance
-   * than v2's field — "subtle cannot mean absent". */
-  filter: saturate(0.9);
-}
-.bf-axis__tick {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 1px;
-  background: rgba(210, 220, 255, 0.07);
-}
-.bf-axis__tick span {
-  position: absolute;
-  top: 4px;
-  left: 5px;
-  font-size: 9.5px;
-  color: rgba(214, 224, 255, 0.5);
-  white-space: nowrap;
-}
-
-/* NOW: stronger than the field, weaker than a selected semantic edge. */
-.bf-axis__now {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 1px;
-  background: rgba(236, 242, 255, 0.55);
-  box-shadow: 0 0 8px rgba(236, 242, 255, 0.35);
-}
-.bf-axis__now span {
-  position: absolute;
-  bottom: 3px;
-  left: 5px;
-  font-size: 9.5px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: rgba(236, 242, 255, 0.8);
-}
-
-/* An autonomy envelope is a temporal REGION. Its left edge is started_at, its
- * right edge is ended_at — or NOW, when the run is still live. */
-.bf-envelope {
-  position: absolute;
-  height: 16px;
-  border-radius: 8px;
-  border: 1px solid rgba(150, 132, 224, 0.45);
-  background: rgba(122, 104, 190, 0.22);
-  cursor: pointer;
-  padding: 0;
-  overflow: hidden;
-  transition: background 160ms ease, border-color 160ms ease;
-}
-.bf-envelope:hover { background: rgba(140, 120, 216, 0.34); border-color: rgba(170, 152, 240, 0.7); }
-.bf-envelope__label {
-  position: absolute;
-  left: 6px;
-  top: 0;
-  line-height: 15px;
-  font-size: 9.5px;
-  color: rgba(226, 220, 255, 0.9);
-  white-space: nowrap;
-}
-/* A live run runs INTO now, so its right edge is deliberately open. */
-.bf-envelope--live {
-  border-right-color: transparent;
-  border-top-right-radius: 0;
-  border-bottom-right-radius: 0;
-  background: linear-gradient(90deg, rgba(122, 104, 190, 0.22), rgba(125, 211, 252, 0.3));
-}
-
-/* Provenance we do not have is shown as absent, never guessed either way. */
-.bf-supervision--unknown .bf-node__sub::after {
-  content: "provenance unknown";
-  opacity: 0.45;
-  font-size: 10px;
-}
-
 @media (max-width: 900px) {
   .bf-axiswrap { padding: 0 16px; }
   .bf-axis__tick span { display: none; }
+}
+
+/* ---------- the stage IS the temporal field (spec v2.2) ----------
+ * No strip, no panel, no card edge. One semantic space whose horizontal
+ * dimension happens to be lived time. */
+
+.bf-stage--temporal {
+  display: block;
+  position: relative;
+  padding: 0;
+  max-width: 1536px;
+}
+.bf-field {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+.bf-field__wash {
+  position: absolute;
+  inset: 0;
+  /* Ambient: deliberately no border and no radius — a container edge is what
+   * made the previous version read as an observability panel. The bottom fades
+   * out so the field has no edge to read as one. */
+  opacity: 0.85;
+  -webkit-mask-image: linear-gradient(180deg, #000 72%, transparent 100%);
+  mask-image: linear-gradient(180deg, #000 72%, transparent 100%);
+}
+.bf-field__hour {
+  position: absolute;
+  top: 6px;
+  font-size: 9.5px;
+  color: rgba(214, 224, 255, 0.28);
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+/* An autonomy envelope is a faint region BEHIND the nodes that run produced.
+ * No chrome, visually subordinate, and not a semantic node. */
+.bf-env {
+  position: absolute;
+  border-radius: 18px;
+  background: rgba(150, 132, 224, 0.09);
+  border: 1px solid rgba(150, 132, 224, 0.16);
+  pointer-events: none;
+}
+.bf-env--live {
+  border-right-color: transparent;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  background: linear-gradient(90deg, rgba(150, 132, 224, 0.09), rgba(125, 211, 252, 0.14));
+}
+.bf-env__label {
+  position: absolute;
+  top: -14px;
+  left: 12px;
+  font-size: 9.5px;
+  color: rgba(206, 198, 246, 0.6);
+  white-space: nowrap;
+}
+
+/* NOW crosses the whole stage, so a live branch literally intersects it. */
+.bf-now {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: rgba(236, 242, 255, 0.4);
+  box-shadow: 0 0 10px rgba(236, 242, 255, 0.25);
+  pointer-events: none;
+}
+.bf-now span {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: rgba(236, 242, 255, 0.7);
+}
+
+/* Nodes live in the field, positioned by time. */
+.bf-placed { position: absolute; inset: 0; }
+.bf-placed__node {
+  position: absolute;
+  /* The RING is the record, so the ring's centre — not the node box's left
+   * edge — must land exactly on its moment. The ring is 24px, hence -12px.
+   * Without this every node sat 12px to the right of its own envelope end,
+   * which put two of three nodes outside the run that produced them. */
+  transform: translate(-12px, -50%);
+  max-width: 420px;
+  z-index: 3;
+}
+/* No trustworthy time: an explicitly non-temporal margin, never a fake x. */
+.bf-placed__node--atemporal { transform: translateY(-50%); opacity: 0.95; }
+.bf-placed__node--atemporal .bf-node__label { text-shadow: 0 1px 6px rgba(0, 0, 0, 0.7); }
+.bf-placed__node .bf-node { padding: 6px 10px 6px 0; }
+.bf-placed__node .bf-node__label { text-shadow: 0 1px 8px rgba(0, 0, 0, 0.75); }
+.bf-placed__node .bf-node__sub { text-shadow: 0 1px 6px rgba(0, 0, 0, 0.8); }
+
+/* P1: provenance uncertainty is Inspect-level, not entry-level prose. */
+.bf-supervision--unknown .bf-node__sub::after { content: none; }
+
+@media (max-width: 900px) {
+  /* No horizontal timeline squeezed across 375px: the field stays ambient and
+   * the nodes keep their vertical reflow and their readability. */
+  .bf-stage--temporal { min-height: 0; }
+  /* Nodes reflow vertically and stay ABOVE the wash — a static child has no
+   * stacking context, so v2.2's first mobile frame had the gradient painted
+   * over every label. */
+  .bf-placed { position: relative; z-index: 3; }
+  .bf-placed__node { position: static; transform: none; max-width: none; margin-bottom: 14px; }
+  .bf-now { display: none; }
+  .bf-field__hour { display: none; }
+  /* 9 hours squeezed into 375px is not a readable scale, so mobile keeps the
+   * ambient field without pretending its x-axis means anything. */
+  .bf-field__wash {
+    background-image: linear-gradient(
+      180deg,
+      rgba(38, 34, 74, 0.55),
+      rgba(96, 58, 70, 0.3) 42%,
+      rgba(48, 74, 110, 0.4)
+    ) !important;
+  }
+  .bf-env { display: none; }
 }
