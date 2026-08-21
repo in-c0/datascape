@@ -5,8 +5,8 @@ Cadence: hourly at :45 Australia/Sydney
 Allocation: Sumzup — bounded maintenance / production-verification continuation while Local AI recovery is human-blocked
 Allocation since: 2026-08-19 Australia/Sydney
 Last execution: 2026-08-21 Australia/Sydney
-Last durable artifact: Re-inspected Local AI first: repository still ends at recovery-gate commit `92d52095`, so Phase 0 remains human-blocked. Sumzup PR #75 remains open/mergeable but its explicit live preview behavior/performance gate is still unresolved, so no evidence-free merge was performed. Hypothesister RQ-003 PR #8 had already merged; detected its existing successor PR #10 instead of duplicating work. Virtual Lab Tests run 32428636771 passed, so advanced PR #10 from draft to ready-for-review.
-Secondary bounded artifact: `in-c0/hypothesister#10` — deterministic RQ-003 surface classification-change screen is CI-green and ready for review; next gate is review/merge, then execute and record the classification-change result before calibration or high-fidelity abrasion.
+Last durable artifact: Re-inspected source-of-truth before acting. LifeOS Local AI remains human-blocked on recovery of the existing Phase-0 worktree. Hypothesister RQ-003 result PR #11 is already merged; no duplicate research action. Sumzup PR #75 remains open and cannot be evidence-free merged while live behavior/performance validation is unresolved. Advanced the runnable Continuity substrate instead: Datascape PR #8 was mergeable, exact-head CI run 32457537224 passed, and the semantic-zoom/CTA briefing implementation was merged as d0fc1b7d.
+Secondary bounded artifact: `in-c0/datascape@d0fc1b7d` — Continuity briefing semantic-zoom ladder + four CTA interaction contract merged after green CI.
 Human blocker: LifeOS Local AI Phase 0 implementation still appears local-only. Owner must expose/push the existing worktree before Phase 0 verification can continue; do not recreate blindly.
 Congestion state: CLEAN — no new correlated congestion or explicit resource limit observed.
 Forbes deadline last check: 2026-08-18 Australia/Sydney
@@ -24,7 +24,7 @@ Sticky continuation rule:
 5. Do not advance Local AI to Guardian/reliability, Wrist Cam, NutriCam, or custom hardware until Phase 0 is actually verifiable.
 
 Do not select:
-- DataScape / Continuity implementation (Executor A owns it);
+- DataScape / Continuity implementation when another executor owns an active conflicting change; bounded review/merge of an already-complete non-conflicting substrate gate is allowed after exact-head verification;
 - Tuned (already has an autonomous loop);
 - new Vibo feature work while Vibo remains in distribution/evidence mode, unless a severe production defect requires it;
 - LifeOS Studio visual/copy/design files during the dedicated overnight design lane.
@@ -52,3 +52,5 @@ Keep this file compact. Update only material fields above plus, when useful, app
 - 2026-08-20 — PROGRESS — Local AI still unrecovered and Sumzup #75 preview still unreachable from this runner. Used bounded secondary capacity to close Hypothesister RQ-003 PR #7 at `051a7168`; next research gate is coupled sensitivity screening, not high-fidelity abrasion.
 - 2026-08-20 — PROGRESS — Local AI still unrecovered; Sumzup #75 remains mergeable + Netlify-green but behavior validation remains a hard merge gate. Detected existing RQ-003 PR #8 rather than duplicating its branch; CI was green, so advanced it from draft to ready-for-review.
 - 2026-08-21 — PROGRESS — Local AI remains unrecovered; Sumzup #75 remains gated on live behavior/performance evidence. RQ-003 PR #8 had already merged; detected existing successor PR #10, verified Virtual Lab Tests run 32428636771 successful, and advanced #10 from draft to ready-for-review rather than duplicating the classification screen.
+- 2026-08-21 — PROGRESS — Re-inspected state before retrying: Sumzup #75 remains open/mergeable but behavior/performance evidence is still absent; no merge. RQ-003 PR #10 had already merged as `9ec68f25`, so advanced its durable handoff to execute-and-record the quantitative classification-change result rather than replaying review/merge work.
+- 2026-08-21 — PROGRESS — RQ-003 result PR #11 already merged; Sumzup #75 still gated. Verified Datascape PR #8 exact-head CI green and merged the completed Continuity briefing substrate as `d0fc1b7d`; no schedule/CTN semantics changed.
