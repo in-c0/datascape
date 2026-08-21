@@ -1,0 +1,171 @@
+/* The authority declaration surface — spec V6.1.4 §15.
+ *
+ * This must read as DELEGATION, not as an IAM console. A person granting a
+ * capable engineer a mandate does not fill in a policy document; they say what
+ * they want, what the engineer may decide alone, and where to stop.
+ *
+ * So: one primary question at a time, generous type, no dense tables, and the
+ * two halves of the decision — what may happen without me, what must wait for
+ * me — always shown side by side rather than as one long list of switches. */
+
+.au {
+  --au-bg: #05060d;
+  --au-panel: rgba(13, 16, 31, 0.82);
+  --au-line: rgba(84, 98, 140, 0.28);
+  --au-text: #e8ecf6;
+  --au-muted: #8b96b3;
+  --au-violet: #a78bfa;
+  --au-teal: #5eead4;
+  --au-amber: #e8c078;
+  --au-rose: #fb9aa8;
+
+  min-height: 100vh;
+  color: var(--au-text);
+  background:
+    radial-gradient(1200px 700px at 18% -8%, rgba(72, 58, 140, 0.34), transparent 62%),
+    radial-gradient(900px 600px at 92% 8%, rgba(24, 78, 110, 0.26), transparent 60%),
+    var(--au-bg);
+  font: 400 15px/1.55 ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
+  padding: 26px 22px 80px;
+}
+
+.au__shell { max-width: 760px; margin: 0 auto; }
+
+/* --- header --------------------------------------------------------------- */
+
+.au__top { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 30px; }
+.au__brand { font-size: 13.5px; letter-spacing: 0.03em; font-weight: 620; }
+.au__brand span { color: var(--au-muted); font-weight: 450; }
+.au__back {
+  font-size: 12.5px; color: var(--au-muted); text-decoration: none;
+  border: 1px solid var(--au-line); border-radius: 999px; padding: 5px 13px;
+}
+.au__back:hover { color: var(--au-text); }
+
+/* --- the single primary question ------------------------------------------ */
+
+.au__ask { margin: 8px 0 26px; }
+.au__ask h1 {
+  font-size: 25px; line-height: 1.28; font-weight: 600; letter-spacing: -0.015em;
+  margin: 0 0 10px; max-width: 20ch;
+}
+.au__ask p { margin: 0; color: var(--au-muted); font-size: 14px; max-width: 56ch; }
+
+/* --- the two paths -------------------------------------------------------- */
+
+.au__paths { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 14px; }
+.au-path {
+  text-align: left; cursor: pointer; font: inherit; color: inherit;
+  background: var(--au-panel); border: 1px solid var(--au-line); border-radius: 15px;
+  padding: 18px 18px 16px; transition: border-color 140ms ease, transform 140ms ease;
+}
+.au-path:hover { border-color: rgba(167, 139, 250, 0.55); transform: translateY(-1px); }
+.au-path--on { border-color: var(--au-violet); box-shadow: 0 0 0 1px rgba(167, 139, 250, 0.3); }
+.au-path__k { font-size: 11px; letter-spacing: 0.09em; text-transform: uppercase; color: var(--au-violet); font-weight: 640; }
+.au-path__t { font-size: 16.5px; font-weight: 570; margin: 7px 0 5px; }
+.au-path__d { font-size: 13px; color: var(--au-muted); line-height: 1.5; }
+
+.au__notnow {
+  display: block; width: 100%; text-align: center; font: inherit; font-size: 13px;
+  color: var(--au-muted); background: none; border: 0; padding: 8px; cursor: pointer;
+}
+.au__notnow:hover { color: var(--au-text); }
+
+/* --- the editor ----------------------------------------------------------- */
+
+.au-card {
+  background: var(--au-panel); border: 1px solid var(--au-line);
+  border-radius: 16px; padding: 20px 20px 18px; margin-bottom: 14px;
+}
+.au-card__q { font-size: 16px; font-weight: 560; margin: 0 0 4px; }
+.au-card__h { font-size: 12.5px; color: var(--au-muted); margin: 0 0 13px; }
+
+.au-input, .au-textarea {
+  width: 100%; box-sizing: border-box; font: inherit; color: var(--au-text);
+  background: rgba(6, 8, 18, 0.66); border: 1px solid var(--au-line);
+  border-radius: 10px; padding: 11px 13px;
+}
+.au-input:focus, .au-textarea:focus { outline: none; border-color: var(--au-violet); }
+.au-textarea { resize: vertical; min-height: 62px; }
+
+/* Evidence-backed suggestion. Deliberately styled as a QUOTE, not as a
+ * pre-filled value: it is something the owner may copy, never something
+ * already agreed. */
+.au-sugg { margin-top: 11px; border-left: 2px solid rgba(167, 139, 250, 0.5); padding: 2px 0 2px 12px; }
+.au-sugg__l { font-size: 11.5px; color: var(--au-muted); }
+.au-sugg__t { font-size: 13.5px; font-style: italic; margin: 3px 0 5px; }
+.au-sugg__src { font-size: 11.5px; color: var(--au-muted); }
+.au-sugg__use {
+  font: inherit; font-size: 12px; cursor: pointer; margin-top: 6px;
+  color: var(--au-violet); background: none; border: 0; padding: 0;
+}
+
+/* --- capabilities: two columns, never one list ---------------------------- */
+
+.au-caps { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.au-caps__h {
+  font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 640;
+  margin-bottom: 9px;
+}
+.au-caps__h--may { color: var(--au-teal); }
+.au-caps__h--ask { color: var(--au-amber); }
+
+.au-cap { display: flex; align-items: flex-start; gap: 9px; padding: 5px 0; font-size: 13.5px; cursor: pointer; }
+.au-cap input { margin: 3px 0 0; accent-color: var(--au-violet); }
+.au-cap--locked { color: var(--au-muted); cursor: default; }
+.au-cap--locked .au-cap__lock { font-size: 11px; color: var(--au-amber); }
+
+/* --- limits --------------------------------------------------------------- */
+
+.au-limits { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.au-radio { display: flex; align-items: center; gap: 9px; padding: 4px 0; font-size: 13.5px; cursor: pointer; }
+.au-radio input { accent-color: var(--au-violet); }
+
+/* --- the deterministic preview -------------------------------------------- */
+
+.au-prev { border-color: rgba(167, 139, 250, 0.42); }
+.au-prev__t { font-size: 15px; font-weight: 570; margin: 0 0 12px; }
+.au-prev__grp { margin-bottom: 13px; }
+.au-prev__k { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 640; margin-bottom: 6px; }
+.au-prev__k--may { color: var(--au-teal); }
+.au-prev__k--ask { color: var(--au-amber); }
+.au-prev ul { margin: 0; padding-left: 17px; }
+.au-prev li { font-size: 13.5px; padding: 1.5px 0; }
+.au-prev__meta { font-size: 12.5px; color: var(--au-muted); border-top: 1px solid var(--au-line); padding-top: 11px; }
+
+/* --- actions -------------------------------------------------------------- */
+
+.au__acts { display: flex; gap: 10px; align-items: center; margin-top: 18px; flex-wrap: wrap; }
+.au-btn {
+  font: inherit; font-size: 14px; font-weight: 560; cursor: pointer;
+  border-radius: 11px; padding: 11px 20px; border: 1px solid transparent;
+}
+.au-btn--go { background: var(--au-violet); color: #12081f; }
+.au-btn--go:disabled { background: rgba(167, 139, 250, 0.22); color: var(--au-muted); cursor: not-allowed; }
+.au-btn--ghost { background: none; border-color: var(--au-line); color: var(--au-muted); }
+.au-btn--ghost:hover { color: var(--au-text); }
+.au-btn--danger { background: none; border-color: rgba(251, 154, 168, 0.4); color: var(--au-rose); }
+
+/* Review mode cannot grant authority. Said in the UI, not only in the code. */
+.au__reviewnote {
+  font-size: 12px; color: var(--au-amber); border: 1px dashed rgba(232, 192, 120, 0.4);
+  border-radius: 9px; padding: 8px 12px; margin-top: 14px;
+}
+
+/* --- authorized / paused / revoked ---------------------------------------- */
+
+.au-state { display: flex; align-items: center; gap: 9px; font-size: 13px; margin-bottom: 14px; }
+.au-dot { width: 8px; height: 8px; border-radius: 50%; }
+.au-dot--on { background: var(--au-teal); }
+.au-dot--paused { background: var(--au-amber); }
+.au-dot--off { background: var(--au-rose); }
+.au-revs { font-size: 12.5px; color: var(--au-muted); margin-top: 12px; }
+.au-revs b { color: var(--au-text); font-weight: 600; }
+
+@media (max-width: 640px) {
+  .au { padding: 18px 15px 64px; }
+  .au__ask h1 { font-size: 21px; }
+  .au__paths, .au-caps, .au-limits { grid-template-columns: 1fr; }
+  .au-caps { gap: 20px; }
+  .au__acts .au-btn { flex: 1 1 auto; }
+}

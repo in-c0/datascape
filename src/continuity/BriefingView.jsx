@@ -328,6 +328,17 @@ function OwnerCard({ action, onDone, api }) {
         </div>
       )}
 
+      {/* The V6 authority blocker is the one owner action whose resolution IS a
+          surface rather than a yes/no — so it links straight into the authoring
+          flow instead of asking her to compose a policy in a reply box. Still
+          ONE exception, not a second inbox (spec V6.1.4 section 14). */}
+      {action.loop === "datascape/v6-execution-authority" && (
+        <div className="bf-card__section">
+          <a className="bf-authorityentry" href="?view=authority">Set an autonomy envelope →</a>
+          <a className="bf-authorityentry" href="?view=authority&state=F4">Authorize one bounded task →</a>
+        </div>
+      )}
+
       {/* CTA sits ABOVE provenance: the spec forbids making her open details
           before she can act. */}
       <CTA action={action} onDone={onDone} api={api} />
