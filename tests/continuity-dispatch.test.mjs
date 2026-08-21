@@ -11,7 +11,7 @@ import { createClock } from "../src/continuity/control/fixture.js";
 import { runAdversarial } from "../src/continuity/control/adversarial.js";
 import { attributionMetrics, simulate } from "../src/continuity/control/simulate.js";
 
-const GATE = { id: "G1", loop: "distribution/launch-post", topic: "launch-post" };
+const GATE = { id: "G1", loop: "distribution/launch-post", topic: "launch-post", scope_completeness: "complete" };
 const INTENT = {
   intent_id: "I42", state: "ready", owner_gate_ids: [], semantic_centre: "Infrastructure",
   goal: "verify the deployment", success_condition: "green at head", current_operation: "run_tests",
@@ -20,19 +20,31 @@ const INTENT = {
 // ---- §2: topic provenance ----------------------------------------------------
 
 test("V6.1: same lane is not the same authority scope", () => {
-  const other = createScope({ semantic_centre: "Distribution", lane: "distribution", topic_refs: ["briefing-surface"] });
-  assert.equal(gateOverlap(other, GATE).overlap, "disjoint",
+  const other = createScope({
+    semantic_centre: "Distribution", lane: "distribution",
+    topic_refs: ["briefing-surface"], completeness: "complete",
+  });
+  assert.equal(gateOverlap(other, GATE).overlap, "no",
     "a gate on one topic must not freeze unrelated work in the same lane");
 
   const same = createScope({ semantic_centre: "Distribution", lane: "distribution", topic_refs: ["launch-post"] });
-  assert.equal(gateOverlap(same, GATE).overlap, "intersects");
+  assert.equal(gateOverlap(same, GATE).overlap, "yes");
+
+  // V6.1.2 section 4: the SAME disjoint pair, but with a partial scope, is no
+  // longer provable. Absence of a shared reference is not proof of
+  // disjointness when either side has not enumerated what it touches.
+  const partial = createScope({
+    semantic_centre: "Distribution", lane: "distribution",
+    topic_refs: ["briefing-surface"], completeness: "partial",
+  });
+  assert.equal(gateOverlap(partial, GATE).overlap, "unknown");
 });
 
 test("V6.1: unknown overlap blocks and never reads as unrelated", () => {
   const undeclared = createScope({ semantic_centre: "Distribution", lane: "distribution" });
   const overlap = gateOverlap(undeclared, GATE);
   assert.equal(overlap.overlap, "unknown");
-  assert.notEqual(overlap.overlap, "disjoint", "unknown must not mean probably unrelated");
+  assert.notEqual(overlap.overlap, "no", "unknown must not mean probably unrelated");
 
   const resolution = resolveScope(undeclared, [GATE]);
   assert.equal(resolution.scope_resolution, "unknown");
@@ -46,13 +58,13 @@ test("V6.1: unknown overlap blocks and never reads as unrelated", () => {
 test("V6.1: overlap is never resolved by prose similarity", () => {
   assert.throws(() => refuseSimilarityMatching(), /never by prose similarity/);
   // Words in common, no authoritative reference in common.
-  const scope = createScope({ semantic_centre: "Post-hoc validation", topic_refs: ["post-hoc-validation"] });
-  assert.equal(gateOverlap(scope, { id: "G2", loop: "distribution/launch-post" }).overlap, "disjoint");
+  const scope = createScope({ semantic_centre: "Post-hoc validation", topic_refs: ["post-hoc-validation"], completeness: "complete" });
+  assert.equal(gateOverlap(scope, { id: "G2", loop: "distribution/launch-post", scope_completeness: "complete" }).overlap, "no");
 });
 
 test("V6.1: an explicit exclusion is authoritative, an opinion is not", () => {
   const excluded = createScope({ semantic_centre: "D", excluded_gate_ids: ["G1"] });
-  assert.equal(gateOverlap(excluded, GATE).overlap, "disjoint");
+  assert.equal(gateOverlap(excluded, GATE).overlap, "no");
   assert.equal(resolveScope(excluded, [GATE]).dispatchable, true);
 });
 
@@ -62,7 +74,7 @@ test("V6.1: a dispatch is single-intent and materially different from ctn", () =
   const clock = createClock();
   const leases = createLeaseManager(clock);
   const { lease } = leases.claim("I42", "E1");
-  const scope = createScope({ semantic_centre: "Infrastructure", topic_refs: ["infra"] });
+  const scope = createScope({ semantic_centre: "Infrastructure", topic_refs: ["infra"], completeness: "complete" });
 
   const { ok, dispatch } = prepareDispatch({ intent: INTENT, lease, scope, openGates: [GATE], budget: { max_steps: 5, max_cost: 0 } });
   assert.equal(ok, true);
@@ -81,7 +93,7 @@ test("V6.1: a dispatch carries gates as constraints, never as rulings or secrets
   const clock = createClock();
   const leases = createLeaseManager(clock);
   const { lease } = leases.claim("I42", "E1");
-  const scope = createScope({ semantic_centre: "Infrastructure", topic_refs: ["infra"] });
+  const scope = createScope({ semantic_centre: "Infrastructure", topic_refs: ["infra"], completeness: "complete" });
   const { dispatch } = prepareDispatch({
     intent: INTENT, lease, scope,
     openGates: [{ ...GATE, ruling: "approved", secret: "REDACTED-PLACEHOLDER" }],
@@ -130,7 +142,7 @@ test("V6.1: a dispatch may not run until it is acknowledged, by identity", () =>
   const clock = createClock();
   const leases = createLeaseManager(clock);
   const { lease } = leases.claim("I42", "E1");
-  const scope = createScope({ semantic_centre: "Infrastructure", topic_refs: ["infra"] });
+  const scope = createScope({ semantic_centre: "Infrastructure", topic_refs: ["infra"], completeness: "complete" });
   const { dispatch } = prepareDispatch({ intent: INTENT, lease, scope, openGates: [], budget: {} });
 
   const tracker = createDispatchTracker({ now: clock.now, ackTimeoutMs: 60000 });
@@ -147,7 +159,7 @@ test("V6.1: silence is recoverable, never assumed to be work in progress", () =>
   const clock = createClock();
   const leases = createLeaseManager(clock);
   const { lease } = leases.claim("I42", "E1");
-  const scope = createScope({ semantic_centre: "Infrastructure", topic_refs: ["infra"] });
+  const scope = createScope({ semantic_centre: "Infrastructure", topic_refs: ["infra"], completeness: "complete" });
   const { dispatch } = prepareDispatch({ intent: INTENT, lease, scope, openGates: [], budget: {} });
 
   const tracker = createDispatchTracker({ now: clock.now, ackTimeoutMs: 60000 });
@@ -165,7 +177,7 @@ test("V6.1: an unattributed result keeps its evidence and loses its authority", 
   const clock = createClock();
   const leases = createLeaseManager(clock);
   const { lease } = leases.claim("I42", "E1");
-  const scope = createScope({ semantic_centre: "Infrastructure", topic_refs: ["infra"] });
+  const scope = createScope({ semantic_centre: "Infrastructure", topic_refs: ["infra"], completeness: "complete" });
   const { dispatch } = prepareDispatch({ intent: INTENT, lease, scope, openGates: [], budget: {} });
 
   const attribution = attributeResult({ text: "tests passed", produced_event_ids: ["ev-1"] },
@@ -261,7 +273,7 @@ test("V6.1: an intent with no declared condition never dispatches", () => {
   const result = simulate({
     intents: [{
       ...INTENT, state: "ready", wake: { type: "interval", interval: 360000 },
-      scope: createScope({ semantic_centre: "Infrastructure", topic_refs: ["infra"] }),
+      scope: createScope({ semantic_centre: "Infrastructure", topic_refs: ["infra"], completeness: "complete" }),
       authority: "autonomous",
     }],
     openGates: [], startMs: START, hours: 8,
@@ -273,7 +285,7 @@ test("V6.1: an intent with no declared condition never dispatches", () => {
 test("V6.1: every would-dispatch is fully attributed, and unknowns block", () => {
   const dispatchable = {
     ...INTENT, wake: { type: "recurring_goal", next_step_budget: { max_steps: 2 }, goal_ref: "verify" },
-    scope: createScope({ semantic_centre: "Infrastructure", topic_refs: ["infra"] }),
+    scope: createScope({ semantic_centre: "Infrastructure", topic_refs: ["infra"], completeness: "complete" }),
     authority: "autonomous",
   };
   const undeclared = {
@@ -346,7 +358,7 @@ test("V6.1: declaring a wake condition alone does not unblock a topicless intent
   const scoped = simulate({
     intents: [{
       ...INTENT, wake: { type: "recurring_goal", next_step_budget: { max_steps: 3 }, goal_ref: "explore" },
-      scope: createScope({ semantic_centre: "Infrastructure", topic_refs: ["infra"] }), authority: "autonomous",
+      scope: createScope({ semantic_centre: "Infrastructure", topic_refs: ["infra"], completeness: "complete" }), authority: "autonomous",
     }],
     openGates: [GATE], startMs: START, hours: 8,
   });

@@ -11,7 +11,7 @@
 // structured, single-intent unit; the natural language an executor reads is
 // GENERATED from it, and the structure remains authoritative.
 
-import { resolveScope } from "./scope.js";
+import { resolveScope, scopeHash, withinDispatchedScope } from "./scope.js";
 
 export const DISPATCH_STATES = ["prepared", "sent", "acknowledged", "running", "settled", "abandoned"];
 
@@ -24,6 +24,13 @@ export const DISPATCH_STATES = ["prepared", "sent", "acknowledged", "running", "
  * proceeds past.
  */
 export function prepareDispatch({ intent, lease, scope, openGates = [], checkpointRef = null, budget, operationPolicy = "autonomous_only" }) {
+  // A container is never dispatched (spec V6.1.2 section 1). Checked FIRST,
+  // before the lease, because "send ctn to the lane" must have no equivalent
+  // in V6 at all — not even a path that would work if a lease happened to
+  // exist. A lane is organizational context; it is not a unit of work.
+  if (intent.role === "container" || intent.executable === false) {
+    return { ok: false, reason: "a container intent is never dispatched; dispatch its grounded topic intents instead" };
+  }
   if (!lease || lease.intent_id !== intent.intent_id) {
     return { ok: false, reason: "a dispatch requires an active lease for this intent" };
   }
@@ -49,8 +56,20 @@ export function prepareDispatch({ intent, lease, scope, openGates = [], checkpoi
     success_condition: intent.success_condition,
     allowed_scope: {
       semantic_centre: scope.semantic_centre,
+      semantic_centre_refs: [...scope.semantic_centre_refs],
       topic_refs: [...scope.topic_refs],
       source_refs: [...scope.source_refs],
+      external_refs: [...scope.external_refs],
+      dependency_refs: [...scope.dependency_refs],
+      completeness: scope.completeness,
+    },
+    // Carried so a later checkpoint can prove the scope did not silently widen.
+    scope_hash: scopeHash(scope),
+    scope_provenance_refs: [...scope.scope_provenance_refs],
+    gate_overlap_evaluation: {
+      intersecting: resolution.intersecting_gate_ids,
+      unknown: resolution.unknown.map((u) => u.gate_id),
+      resolution: resolution.scope_resolution,
     },
     // Open gates travel as CONSTRAINTS and context. Never their rulings, never
     // their secrets. Telling an executor "G17 is unresolved and outside your
@@ -223,5 +242,30 @@ export function machineGateStatement(statement) {
     resolves_gate: false,
     authority: "none",
     reason: "only a matching gate_id plus an authoritative owner ruling changes gate state",
+  };
+}
+
+/**
+ * Did an executor try to widen its own authority envelope? (spec V6.1.2 §11)
+ *
+ * Narrowing during execution is fine and normal. Widening is not: an operation
+ * that reaches outside the dispatched scope must stop, checkpoint, and require
+ * a new dispatch. Otherwise "while I was in there I also fixed…" becomes a
+ * mechanism for an agent to grant itself a larger job than it was given.
+ */
+export function checkScopeExpansion(dispatch, operation) {
+  const dispatched = {
+    semantic_centre_refs: dispatch.allowed_scope.semantic_centre_refs || [],
+    topic_refs: dispatch.allowed_scope.topic_refs || [],
+    source_refs: dispatch.allowed_scope.source_refs || [],
+    external_refs: dispatch.allowed_scope.external_refs || [],
+    dependency_refs: dispatch.allowed_scope.dependency_refs || [],
+  };
+  const result = withinDispatchedScope(dispatched, operation.refs || []);
+  return {
+    ...result,
+    action: result.within ? "continue" : "stop_and_checkpoint",
+    // Never "expand the dispatch". A new envelope is a new authorization.
+    permitted: result.within,
   };
 }
