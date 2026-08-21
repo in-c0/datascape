@@ -176,13 +176,15 @@ function laneRecordItems(lane) {
  *   3. still-running unattended work
  *   4. everything else, by recency
  */
-export function rankLanes(lanes = [], dueNowActions = []) {
+export function rankLanes(lanes = [], dueNowActions = [], inWindow = null) {
   const highLoops = new Set(
     dueNowActions.filter((a) => a.severity === "high").map((a) => laneBucketKey(a)),
   );
   const rank = (lane) => {
     if (highLoops.has(lane.lane)) return 0;
-    const unattended = lane.supervision === "unattended";
+    // Unattended only earns promotion when the change landed inside the away
+    // interval; when no departure is known, nothing is promoted on that basis.
+    const unattended = lane.supervision === "unattended" && (!inWindow || inWindow.has(lane.lane));
     if (unattended && (lane.records || []).length) return 1;
     if (unattended && lane.execution === "live") return 2;
     return 3;
@@ -257,7 +259,12 @@ export function awaySummary(data, now = Date.now()) {
   const { dueNow } = partitionActions(data?.ownerActions || [], now);
 
   const unattendedLanes = lanes.filter((l) => l.supervision === "unattended");
-  const materialChanges = unattendedLanes.filter((l) => (l.records || []).length).length;
+  // Only changes that landed INSIDE the away interval count. An eight-hour-old
+  // completed run must not be promoted just for being unattended.
+  const inWindow = data?.ownerLastPresentAt
+    ? returnWindowLanes(unattendedLanes, data.ownerLastPresentAt, now)
+    : [];
+  const materialChanges = inWindow.length;
   const stillRunning = unattendedLanes.filter((l) => l.execution === "live").length;
 
   const longest = unattendedLanes
@@ -277,6 +284,28 @@ export function awaySummary(data, now = Date.now()) {
 // fan started from an invisible point, so the eye could not answer "what am I
 // inside?" without reading the breadcrumb.
 const FOCAL_KINDS = new Set(["origin", "parent", "focus"]);
+/**
+ * The material outcome of a lane's recent work, in the author's own words.
+ *
+ * Spec v2.1 P1: "the run/lane is provenance; the node is the consequence." So
+ * a root prefers the authored headline of its most material record over the
+ * name of the worker that produced it. Findings and progress outrank routine
+ * state, and nothing is summarised — this is verbatim authored text or nothing.
+ */
+export function materialOutcome(lane) {
+  const weight = { finding: 0, progress: 1, owner_action: 2, state: 3 };
+  const items = (lane?.records || [])
+    .flatMap((r) => (r.items || []).map((i) => ({ ...i, at: r.emittedAt })))
+    .filter((i) => i.headline && i.headline.length > 12)
+    .sort((a, b) => (weight[a.type] ?? 9) - (weight[b.type] ?? 9)
+      || String(b.at).localeCompare(String(a.at)));
+  const best = items[0];
+  // A routine tick is not an outcome; fall back to the lane name rather than
+  // dressing up "still generating" as a material change.
+  if (!best || /^tick[:\s]/i.test(best.headline)) return null;
+  return best.headline.length > 68 ? `${best.headline.slice(0, 66).trimEnd()}…` : best.headline;
+}
+
 const node = (props) => ({ dashed: false, dim: false, focal: FOCAL_KINDS.has(props.kind), ...props });
 
 /**
@@ -323,7 +352,11 @@ export function buildScene(data, { path = "", brief = "3m", now = Date.now(), pa
   // ---------- entry ----------
   if (level === "entry") {
     const laneBudget = (brief === "30s" ? BUDGETS.entry30 : BUDGETS.entry) - (ordered.length ? 1 : 0);
-    const ranked = rankLanes(lanes, ordered).filter((l) => (l.records || []).length);
+    // A lane whose only unattended work predates her departure is not a return-
+    // window change and must not be promoted for being unattended.
+    const departedAt = data?.ownerLastPresentAt || null;
+    const inWindow = departedAt ? new Set(returnWindowLanes(lanes, departedAt, now).map((l) => l.lane)) : null;
+    const ranked = rankLanes(lanes, ordered, inWindow).filter((l) => (l.records || []).length);
     const shown = window_(ranked, laneBudget);
     if (ordered.length) {
       scene.nodes.push(node({
@@ -338,10 +371,13 @@ export function buildScene(data, { path = "", brief = "3m", now = Date.now(), pa
       // enclosure however many machine events it contains.
       const run = (lane.runs || []).slice().sort((a, b) => (b.hours || 0) - (a.hours || 0))[0] || null;
       scene.nodes.push(node({
-        key: lane.lane, kind: "root", label: lane.label, path: `lane/${lane.lane}`,
+        key: lane.lane, kind: "root", label: materialOutcome(lane) || lane.label, path: `lane/${lane.lane}`,
+        provenanceLabel: lane.label,
         status: "committed",
-        sub: run && lane.supervision === "unattended"
-          ? `unattended · ${run.startedAt.slice(11, 16)}–${run.endedAt.slice(11, 16)}`
+        // The envelope on the axis already carries the interval; repeating it
+        // here is the duplication the review flagged. Position is the label.
+        sub: lane.supervision === "unattended"
+          ? "unattended"
           : `${(lane.records || []).length} changed`,
         at: lane.lastSeen,
         supervision: lane.supervision,
@@ -351,6 +387,38 @@ export function buildScene(data, { path = "", brief = "3m", now = Date.now(), pa
       }));
     }
     scene.hidden = Math.max(0, ranked.length - shown.length);
+
+    // The temporal window the entry scene is suspended in: from the earliest
+    // visible unattended run (or the owner's departure) through to NOW. Every
+    // envelope is positioned on THIS scale, so a two-hour run is visibly half
+    // the width of a four-hour one.
+    const runStarts = shown
+      .flatMap((l) => l.runs || [])
+      .map((r) => Date.parse(r.startedAt))
+      .filter(Number.isFinite);
+    const departure = Date.parse(data?.ownerLastPresentAt);
+    const earliest = Math.min(
+      ...(runStarts.length ? runStarts : [now - 8 * 3600 * 1000]),
+      Number.isFinite(departure) ? departure : Infinity,
+    );
+    scene.timeline = {
+      from: new Date(Math.min(earliest, now - 30 * 60 * 1000)).toISOString(),
+      to: new Date(now).toISOString(),
+      now,
+      ownerLastPresentAt: data?.ownerLastPresentAt || null,
+      // Only runs that actually INTERSECT the window. Clamping an out-of-window
+      // run to the edge drew a 15:26–18:03 envelope at the 02:50 position — the
+      // label said one thing and the geometry said another, which is worse than
+      // omitting it, because the whole point of the axis is that position is
+      // trustworthy.
+      runs: shown
+        .flatMap((lane) => (lane.runs || []).map((run) => ({ ...run, laneKey: lane.lane, laneLabel: lane.label })))
+        .filter((run) => {
+          const a = Date.parse(run.startedAt);
+          const b = Date.parse(run.endedAt || new Date(now).toISOString());
+          return Number.isFinite(a) && Number.isFinite(b) && b >= earliest && a <= now;
+        }),
+    };
     return scene;
   }
 
@@ -561,8 +629,19 @@ export function agoLabel(iso, now = Date.now()) {
   return days === 1 ? "yesterday" : `${days}d ago`;
 }
 
-export function awayLabel(lanes = [], now = Date.now()) {
-  const newest = lanes.map((l) => Date.parse(l.lastSeen || "")).filter(Number.isFinite).sort((a, b) => b - a)[0];
+/**
+ * How long she was away.
+ *
+ * Measured from her ACTUAL departure when we know it. Using the newest lane
+ * timestamp instead reported "away for 6 min" on a scene promoting eight-hour
+ * -old overnight runs — the inconsistency the review caught. Lane recency is
+ * only a fallback for when no departure is recorded.
+ */
+export function awayLabel(lanes = [], now = Date.now(), ownerLastPresentAt = null) {
+  const departed = Date.parse(ownerLastPresentAt);
+  const newest = Number.isFinite(departed)
+    ? departed
+    : lanes.map((l) => Date.parse(l.lastSeen || "")).filter(Number.isFinite).sort((a, b) => b - a)[0];
   if (!newest) return null;
   const minutes = Math.max(0, Math.round((now - newest) / 60000));
   if (minutes < 60) return `${minutes} min`;
@@ -597,10 +676,21 @@ export function readLocation(href) {
   const url = new URL(href, "http://datascape.local/");
   const brief = url.searchParams.get("brief");
   const pageRaw = Number(url.searchParams.get("page"));
+
+  // `now` and `since` are deterministic-fixture affordances for acceptance
+  // screenshots: the spec asks for a scene showing an 8+ hour overnight return,
+  // which cannot be captured reproducibly against a live clock. They only ever
+  // move the viewing instant and the departure marker — no data is fabricated,
+  // and an invalid value is ignored rather than guessed at.
+  const nowRaw = Date.parse(url.searchParams.get("now"));
+  const sinceRaw = url.searchParams.get("since");
+
   return {
     path: url.searchParams.get("at") || "",
     brief: ["30s", "3m", "full"].includes(brief) ? brief : "3m",
     page: Number.isFinite(pageRaw) && pageRaw > 0 ? Math.floor(pageRaw) : 0,
+    now: Number.isFinite(nowRaw) ? nowRaw : null,
+    since: Number.isFinite(Date.parse(sinceRaw)) ? sinceRaw : null,
   };
 }
 
@@ -621,4 +711,96 @@ export function writeLocation(state, mode = "push") {
   const url = buildUrl(state, window.location.href);
   const method = mode === "push" ? "pushState" : "replaceState";
   window.history[method](null, "", `${url.pathname}${url.search}${url.hash}`);
+}
+
+// ---------------------------------------------------------------------------
+// Execution provenance, grounded at the trigger (spec v2.1, P0)
+//
+// The v2 rule — "a lane with an autoRunUrl produces unattended records" — was
+// rejected, correctly. `autoRunUrl` establishes that a lane SUPPORTS unattended
+// execution; it cannot prove that any particular record was unattended. A 4am
+// human ruling inside an otherwise autonomous lane is attended, and the only
+// thing that knows the difference is what triggered the record.
+//
+// So supervision is derived from trigger.kind and nothing else. `unknown` is a
+// real answer and must never be displayed as either attended or unattended —
+// claiming provenance we do not have is worse than admitting the gap.
+// ---------------------------------------------------------------------------
+
+export const TRIGGER_KINDS = ["scheduler", "automation", "owner", "operator", "unknown"];
+
+export function supervisionFromTrigger(trigger) {
+  const kind = trigger?.kind;
+  if (kind === "scheduler" || kind === "automation") return "unattended";
+  if (kind === "owner" || kind === "operator") return "attended";
+  return "unknown";
+}
+
+/**
+ * Did this record's material state transition happen inside the away interval?
+ *
+ * An unattended run may have STARTED before she left; it only belongs in the
+ * return framing if something material happened while she was gone. Without
+ * this, a six-minute absence promoted an eight-hour-old completed run purely
+ * for being unattended.
+ */
+export function isReturnWindowChange(at, ownerLastPresentAt, now = Date.now()) {
+  const t = Date.parse(at);
+  const from = Date.parse(ownerLastPresentAt);
+  if (!Number.isFinite(t)) return false;
+  // With no known departure we cannot prove anything is in-window, so nothing
+  // is promoted on that basis.
+  if (!Number.isFinite(from)) return false;
+  return t > from && t <= now;
+}
+
+/** Lanes whose material change landed inside the away interval. */
+export function returnWindowLanes(lanes = [], ownerLastPresentAt, now = Date.now()) {
+  return lanes.filter((lane) =>
+    (lane.records || []).some((r) => isReturnWindowChange(r.emittedAt, ownerLastPresentAt, now)));
+}
+
+// ---------------------------------------------------------------------------
+// Temporal scale (spec v2.1, P0)
+//
+// Time becomes a real spatial axis: an envelope's width IS its elapsed
+// duration, and NOW is a position rather than a label. That is what makes
+// "completed terminates before NOW / live intersects NOW" readable in a still
+// screenshot without badges.
+// ---------------------------------------------------------------------------
+
+export function timeScale({ from, to, width = 1000, padding = 0.04 }) {
+  const a = Date.parse(from);
+  const b = Date.parse(to);
+  const span = Math.max(1, b - a);
+  const usable = width * (1 - padding * 2);
+  const x = (value) => {
+    const t = value instanceof Date ? value.getTime() : Date.parse(value);
+    if (!Number.isFinite(t)) return null;
+    const clamped = Math.min(Math.max(t, a), b);
+    return width * padding + ((clamped - a) / span) * usable;
+  };
+  return { from: a, to: b, width, x, spanMs: span };
+}
+
+/**
+ * Envelope geometry on the shared scale.
+ *
+ * A live run has no `endedAt` and is drawn THROUGH now; a completed run stops
+ * to the left of it. The geometry carries the execution state, so no LIVE /
+ * COMPLETED badge is needed to make a still frame interpretable.
+ */
+export function envelopeGeometry(run, scale, now = Date.now()) {
+  if (!run || !scale) return null;
+  const x1 = scale.x(run.startedAt);
+  const live = run.execution === "live" || !run.endedAt;
+  const x2 = live ? scale.x(new Date(now)) : scale.x(run.endedAt);
+  if (x1 == null || x2 == null) return null;
+  return {
+    x1: Math.min(x1, x2),
+    x2: Math.max(x1, x2),
+    width: Math.max(2, Math.abs(x2 - x1)),
+    live,
+    intersectsNow: live,
+  };
 }
