@@ -102,6 +102,21 @@ export function normalizeEvent(raw) {
     text: raw.text,
     relations: [...(raw.relations || [])],
     owner_action_ref: raw.owner_action_ref ?? null,
+    // WHO INITIATED, kept separate from who authored the record. GitHub
+    // authored the merge envelope; a human or a bot initiated the merge. Those
+    // are different provenance facts, and collapsing them is how "a human wrote
+    // the PR title" silently becomes "a human merged it". Non-semantic: it may
+    // never alter authored text or semantic status.
+    actor: raw.actor
+      ? {
+        id: raw.actor.id ?? null,
+        type: ["human", "bot", "app", "unknown"].includes(raw.actor.type) ? raw.actor.type : "unknown",
+        source_system: raw.actor.source_system ?? raw.source_system,
+      }
+      : null,
+    // An explicit cross-system reference. Co-reference requires evidence like
+    // this; it is never inferred from prose similarity.
+    external_ref: raw.external_ref ?? null,
   };
   event.event_id = canonicalId(event);
   return { event };
