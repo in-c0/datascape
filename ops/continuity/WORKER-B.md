@@ -5,8 +5,8 @@ Cadence: hourly at :45 Australia/Sydney
 Allocation: Sumzup — bounded maintenance / production-verification continuation while Local AI recovery is human-blocked
 Allocation since: 2026-08-19 Australia/Sydney
 Last execution: 2026-08-21 Australia/Sydney
-Last durable artifact: Re-inspected source-of-truth before acting. LifeOS Local AI remains human-blocked at 92d52095. Sumzup PR #75 remains open and gated on live behavior/performance evidence; closed stale PR #69 because #75 is its fresh reconciliation replacement.
-Secondary bounded artifact: `in-c0/ai-digest-site#69` closed without merge; no production behavior changed.
+Last durable artifact: Re-inspected source-of-truth before acting. LifeOS Local AI remains human-blocked at 92d52095. Sumzup PR #75 remains open but has drifted materially: head is now 5 commits behind current master / master 8 commits ahead from the common base, and GitHub reports it non-mergeable + draft. Do not merge/retry the stale preview; reconcile the measured watch-forward patch onto current master again before fresh behavior/performance validation.
+Secondary bounded artifact: Recorded the refreshed #75 drift/reconciliation gate in Continuity state; no production behavior changed.
 Human blocker: LifeOS Local AI Phase 0 implementation still appears local-only. Owner must expose/push the existing worktree before Phase 0 verification can continue; do not recreate blindly.
 Congestion state: CLEAN — no new correlated congestion or explicit resource limit observed.
 Forbes deadline last check: 2026-08-18 Australia/Sydney
@@ -56,3 +56,4 @@ Keep this file compact. Update only material fields above plus, when useful, app
 - 2026-08-21 — PROGRESS — RQ-003 result PR #11 already merged; Sumzup #75 still gated. Verified Datascape PR #8 exact-head CI green and merged the completed Continuity briefing substrate as `d0fc1b7d`; no schedule/CTN semantics changed.
 - 2026-08-21 — CLEANUP — Local AI still unrecovered and Sumzup #75 still evidence-gated. Closed stale Hypothesister draft PR #9 because merged #10/#11 already implement and record the same classification-change gate; removed duplicate WIP without changing the research conclusion.
 - 2026-08-21 — CLEANUP — Re-inspected Local AI: implementation is still absent from GitHub. Sumzup #75 is now the sole fresh watch-forward reconciliation branch; closed stale PR #69 without merge and preserved #75's live behavior/performance gate.
+- 2026-08-21 — PROGRESS / RECONCILE — Re-inspected #75 before retrying: current master has advanced materially; #75 is draft/non-mergeable and diverged (branch 5 commits ahead of its merge base while master is 8 ahead). Preserved the measured optimization as a reconciliation-first gate; next machine step is to port only its still-applicable four-file patch onto current master, then obtain fresh validation rather than trusting the stale preview.
