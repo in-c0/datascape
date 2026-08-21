@@ -22,6 +22,7 @@ export const store = {
   gitHistory: null,   // per-commit cadence (optional)
   thoughts: null,     // { meta, thoughts[] } — the big one
   continuity: null,   // temporal decision/continuity graph (optional)
+  briefing: null,     // catch-up briefing: lane must-reads + owner actions (optional)
 };
 
 export function dataUrl(name) {
@@ -46,11 +47,23 @@ async function fetchJson(base, name, { optional = false } = {}) {
 
 // Load every data file in parallel. Core files are required; git-history and
 // continuity are optional so existing Datascape datasets remain compatible.
+// The briefing is a standalone catch-up read. It must NOT require the rest of
+// the corpus: a deployment can have an operating layer running long before it
+// has a landscape to show, and an operator opening "what needs me?" should not
+// be told that content.json is missing. Loading only what the surface needs is
+// why main.jsx picks a loader per view.
+export async function loadBriefing(base) {
+  store._base = base;
+  const briefing = await fetchJson(base, "continuity-briefing.json", { optional: true });
+  Object.assign(store, { briefing });
+  return store;
+}
+
 export async function loadData(base) {
   store._base = base;
   const [
     content, prov, corpus, evidence, creed,
-    mirrors, becoming, featured, gitHistory, thoughts, continuity,
+    mirrors, becoming, featured, gitHistory, thoughts, continuity, briefing,
   ] = await Promise.all([
     fetchJson(base, "content.json"),
     fetchJson(base, "provenance.json"),
@@ -63,10 +76,11 @@ export async function loadData(base) {
     fetchJson(base, "git-history.json", { optional: true }),
     fetchJson(base, "thoughts.json"),
     fetchJson(base, "continuity.json", { optional: true }),
+    fetchJson(base, "continuity-briefing.json", { optional: true }),
   ]);
   Object.assign(store, {
     content, prov, corpus, evidence, creed,
-    mirrors, becoming, featured, gitHistory, thoughts, continuity,
+    mirrors, becoming, featured, gitHistory, thoughts, continuity, briefing,
   });
   return store;
 }

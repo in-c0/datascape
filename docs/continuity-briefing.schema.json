@@ -1,0 +1,143 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://datascape.local/schemas/continuity-briefing.schema.json",
+  "title": "Datascape Continuity briefing",
+  "description": "The catch-up projection: per-lane must-reads and open owner-gated actions. Authored text is carried verbatim; nothing here is model-generated.",
+  "type": "object",
+  "required": ["version", "generatedAt", "lanes", "ownerActions"],
+  "properties": {
+    "version": { "const": 1 },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "generatedAtLocal": { "type": "string" },
+    "timezone": { "type": "string" },
+    "latestPerLane": { "type": "integer", "minimum": 1 },
+    "lanes": { "type": "array", "items": { "$ref": "#/$defs/lane" } },
+    "ownerActions": { "type": "array", "items": { "$ref": "#/$defs/ownerAction" } },
+    "totals": { "type": "object", "additionalProperties": true }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "lane": {
+      "type": "object",
+      "required": ["lane", "label", "total", "records"],
+      "properties": {
+        "lane": { "type": "string", "minLength": 1 },
+        "label": { "type": "string", "minLength": 1 },
+        "total": { "type": "integer", "minimum": 0 },
+        "lastSeen": { "type": ["string", "null"] },
+        "autoRunUrl": {
+          "type": ["string", "null"],
+          "description": "The branched conversation the ctn loop drives."
+        },
+        "autoRunTitle": { "type": ["string", "null"] },
+        "seedUrl": {
+          "type": ["string", "null"],
+          "description": "The frozen original the lane was branched from. Never driven."
+        },
+        "branchedFrom": { "type": ["string", "null"] },
+        "hiddenCount": { "type": "integer", "minimum": 0 },
+        "records": { "type": "array", "items": { "$ref": "#/$defs/record" } }
+      },
+      "additionalProperties": true
+    },
+    "record": {
+      "type": "object",
+      "required": ["id", "lane", "emittedAt", "items"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^mr_[a-f0-9]{16}$" },
+        "lane": { "type": "string" },
+        "laneLabel": { "type": ["string", "null"] },
+        "sessionId": { "type": ["string", "null"] },
+        "messageUuid": { "type": ["string", "null"] },
+        "emittedAt": { "type": "string" },
+        "cwd": { "type": ["string", "null"] },
+        "gitBranch": { "type": ["string", "null"] },
+        "provenance": {
+          "enum": ["emitted", "backfilled-from-log"],
+          "description": "Absent means emitted. Reconstructed records must say so."
+        },
+        "sourceRef": { "type": ["string", "null"] },
+        "ownerActionCount": { "type": "integer", "minimum": 0 },
+        "footer": { "type": ["string", "null"] },
+        "raw": { "type": "string" },
+        "items": { "type": "array", "items": { "$ref": "#/$defs/item" } }
+      },
+      "additionalProperties": true
+    },
+    "item": {
+      "type": "object",
+      "required": ["headline", "type"],
+      "properties": {
+        "headline": { "type": "string", "minLength": 1 },
+        "headlineMarkdown": { "type": "string" },
+        "detail": { "type": "string" },
+        "type": { "enum": ["owner_action", "finding", "progress", "state"] },
+        "links": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["text", "href"],
+            "properties": {
+              "text": { "type": "string" },
+              "href": { "type": "string" }
+            },
+            "additionalProperties": true
+          }
+        },
+        "refs": {
+          "type": "object",
+          "properties": {
+            "exceptions": { "type": "array", "items": { "type": "string" } },
+            "prs": { "type": "array", "items": { "type": "string" } },
+            "commits": { "type": "array", "items": { "type": "string" } }
+          },
+          "additionalProperties": true
+        },
+        "raw": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "ownerAction": {
+      "type": "object",
+      "required": ["id", "title", "severity", "steps"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "loop": { "type": ["string", "null"] },
+        "title": { "type": "string", "minLength": 1 },
+        "severity": { "enum": ["low", "medium", "high"] },
+        "opened": { "type": ["string", "null"] },
+        "updated": { "type": ["string", "null"] },
+        "occurrences": { "type": "integer", "minimum": 1 },
+        "sourceRef": { "type": "string" },
+        "stepCount": { "type": "integer", "minimum": 0 },
+        "needsBreakdown": {
+          "type": "boolean",
+          "description": "True when the steps were derived from prose rather than authored. The surface must say so — a derived step is a hint, not a checklist."
+        },
+        "authoredSteps": { "type": "boolean" },
+        "estimatedSeconds": { "type": ["integer", "null"] },
+        "effortKnown": { "type": "boolean" },
+        "latestAmendment": { "type": ["string", "null"] },
+        "amendmentCount": { "type": "integer", "minimum": 0 },
+        "steps": { "type": "array", "items": { "$ref": "#/$defs/step" } }
+      },
+      "additionalProperties": true
+    },
+    "step": {
+      "type": "object",
+      "required": ["n", "kind", "text"],
+      "properties": {
+        "n": { "type": "integer", "minimum": 1 },
+        "kind": {
+          "enum": ["run", "open", "decide", "physical"],
+          "description": "run = one command she can execute; open = a hyperlink; decide = a ruling, with the exact words that unblock it; physical = the irreducible ones."
+        },
+        "text": { "type": "string", "minLength": 1 },
+        "command": { "type": ["string", "null"] },
+        "href": { "type": ["string", "null"] },
+        "seconds": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": true
+    }
+  }
+}

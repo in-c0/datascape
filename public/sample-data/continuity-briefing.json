@@ -1,0 +1,190 @@
+{
+  "version": 1,
+  "generatedAt": "2026-03-14T22:05:00.000Z",
+  "generatedAtLocal": "2026-03-15T09:05:00+11:00",
+  "timezone": "Australia/Sydney",
+  "latestPerLane": 2,
+  "lanes": [
+    {
+      "lane": "atlas-migration",
+      "label": "Atlas · storage migration",
+      "total": 34,
+      "lastSeen": "2026-03-15T08:52:00+11:00",
+      "autoRunUrl": "https://example.invalid/auto-run/atlas",
+      "autoRunTitle": "Auto Run: Atlas storage migration",
+      "seedUrl": "https://example.invalid/seed/atlas",
+      "branchedFrom": "the last \"break it down\" message",
+      "hiddenCount": 32,
+      "records": [
+        {
+          "id": "mr_1a2b3c4d5e6f7a8b",
+          "lane": "atlas-migration",
+          "laneLabel": "Atlas · storage migration",
+          "sessionId": "demo-session-1",
+          "messageUuid": "demo-uuid-1",
+          "emittedAt": "2026-03-15T08:52:00+11:00",
+          "ownerActionCount": 1,
+          "footer": "Commit `a1b2c3d`. No spend.",
+          "raw": "### Must-read\n\n1. **Bucket cutover is done** — 41k objects copied, checksums match.\n2. **One decision left** — the old bucket costs $12/mo until you delete it.",
+          "items": [
+            {
+              "headline": "Bucket cutover is done",
+              "headlineMarkdown": "**Bucket cutover is done**",
+              "detail": "41,204 objects copied and checksum-verified against the source. Reads have been served from the new bucket for 6 hours with no 5xx.",
+              "type": "progress",
+              "links": [],
+              "refs": { "exceptions": [], "prs": ["#128"], "commits": ["a1b2c3d"] },
+              "raw": "**Bucket cutover is done** — 41,204 objects copied and checksum-verified."
+            },
+            {
+              "headline": "One decision left",
+              "headlineMarkdown": "**One decision left**",
+              "detail": "The old bucket still costs $12/mo. Deleting it is irreversible, so it is yours to call.",
+              "type": "owner_action",
+              "links": [],
+              "refs": { "exceptions": ["2026-03-15-atlas-storage-4f2a"], "prs": [], "commits": [] },
+              "raw": "**One decision left** — the old bucket costs $12/mo until you delete it."
+            }
+          ]
+        },
+        {
+          "id": "mr_2b3c4d5e6f7a8b9c",
+          "lane": "atlas-migration",
+          "laneLabel": "Atlas · storage migration",
+          "sessionId": "demo-session-1",
+          "messageUuid": "demo-uuid-2",
+          "emittedAt": "2026-03-15T07:40:00+11:00",
+          "ownerActionCount": 0,
+          "footer": null,
+          "raw": "### Must-read\n\n- **Copy is 82% through** — no errors.",
+          "items": [
+            {
+              "headline": "Copy is 82% through",
+              "headlineMarkdown": "**Copy is 82% through**",
+              "detail": "No errors. Estimated completion 08:45.",
+              "type": "state",
+              "links": [],
+              "refs": { "exceptions": [], "prs": [], "commits": [] },
+              "raw": "**Copy is 82% through** — no errors."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "lane": "beacon-research",
+      "label": "Beacon · signal research",
+      "total": 11,
+      "lastSeen": "2026-03-15T06:10:00+11:00",
+      "autoRunUrl": null,
+      "autoRunTitle": null,
+      "seedUrl": null,
+      "branchedFrom": null,
+      "hiddenCount": 10,
+      "records": [
+        {
+          "id": "mr_3c4d5e6f7a8b9c0d",
+          "lane": "beacon-research",
+          "laneLabel": "Beacon · signal research",
+          "sessionId": "demo-session-2",
+          "messageUuid": null,
+          "emittedAt": "2026-03-15T06:10:00+11:00",
+          "provenance": "backfilled-from-log",
+          "sourceRef": "ops/demo/beacon-log.md#tick-9",
+          "ownerActionCount": 0,
+          "footer": null,
+          "raw": "Baseline replication failed on the held-out split.",
+          "items": [
+            {
+              "headline": "Baseline replication failed on the held-out split",
+              "headlineMarkdown": "Baseline replication failed on the held-out split",
+              "detail": "The published F1 does not reproduce when the calibration set is kept disjoint from the held-out subjects. Filed as a finding rather than a fix; the claim under test is the paper's, not ours.",
+              "type": "finding",
+              "links": [],
+              "refs": { "exceptions": [], "prs": [], "commits": [] },
+              "raw": "Baseline replication failed on the held-out split."
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "ownerActions": [
+    {
+      "id": "2026-03-15-atlas-storage-4f2a",
+      "loop": "atlas/storage",
+      "title": "Delete the old Atlas bucket — $12/mo until you do, and deletion is irreversible",
+      "severity": "medium",
+      "opened": "2026-03-15T08:52:00+11:00",
+      "updated": "2026-03-15T08:52:00+11:00",
+      "occurrences": 1,
+      "sourceRef": "ops/demo/exceptions/2026-03-15-atlas-storage-4f2a.md",
+      "stepCount": 3,
+      "needsBreakdown": false,
+      "authoredSteps": true,
+      "estimatedSeconds": 80,
+      "effortKnown": true,
+      "latestAmendment": null,
+      "amendmentCount": 0,
+      "steps": [
+        {
+          "n": 1,
+          "kind": "open",
+          "text": "Confirm the new bucket is serving reads",
+          "command": null,
+          "href": "https://example.invalid/console/atlas/metrics",
+          "seconds": 20
+        },
+        {
+          "n": 2,
+          "kind": "run",
+          "text": "Print what would be deleted — nothing is removed by this",
+          "command": "node ops/atlas/bucket.mjs plan-delete --bucket atlas-legacy",
+          "seconds": 30
+        },
+        {
+          "n": 3,
+          "kind": "decide",
+          "text": "Reply \"delete atlas-legacy\" and the loop runs the deletion and closes this item.",
+          "command": null,
+          "href": null,
+          "seconds": 30
+        }
+      ]
+    },
+    {
+      "id": "2026-03-12-beacon-dataset-9c31",
+      "loop": "beacon/dataset",
+      "title": "The replication set needs a licence you have to accept in person",
+      "severity": "low",
+      "opened": "2026-03-12T14:02:00+11:00",
+      "updated": "2026-03-14T09:31:00+11:00",
+      "occurrences": 2,
+      "sourceRef": "ops/demo/exceptions/2026-03-12-beacon-dataset-9c31.md",
+      "stepCount": 1,
+      "needsBreakdown": true,
+      "authoredSteps": false,
+      "estimatedSeconds": 300,
+      "effortKnown": true,
+      "latestAmendment": "Re-checked 2026-03-14: the mirror still requires a signed-in academic account, so it cannot be fetched unattended.",
+      "amendmentCount": 1,
+      "steps": [
+        {
+          "n": 1,
+          "kind": "physical",
+          "text": "Accept the dataset licence with a signed-in account, then say \"licence accepted\".",
+          "command": null,
+          "href": null,
+          "seconds": 300
+        }
+      ]
+    }
+  ],
+  "totals": {
+    "lanes": 2,
+    "mustReads": 45,
+    "ownerActions": 2,
+    "ownerActionsNeedingBreakdown": 1,
+    "high": 0
+  }
+}
