@@ -272,7 +272,7 @@ test("the shipped sample briefing still satisfies every budget", () => {
 // Temporal execution provenance (spec v2)
 // ---------------------------------------------------------------------------
 
-import { awaySummary, localHour, spansNight, temporalPhase, TEMPORAL_PHASES } from "../src/continuity/briefing.js";
+import { awayLabel, awaySummary, localHour, spansNight, temporalPhase, TEMPORAL_PHASES } from "../src/continuity/briefing.js";
 
 const laneWith = (over = {}) => ({
   lane: "l", label: "L", total: 3, lastSeen: "2026-08-21T11:53:00+10:00",
@@ -298,10 +298,14 @@ test("header clauses appear only when their count is non-zero", () => {
   const quiet = awaySummary({ lanes: [laneWith()], ownerActions: [] }, NOW);
   assert.deepEqual(quiet.clauses, [], "a quiet day should say nothing about unattended work");
 
+  // Material changes are now return-window scoped, so the fixture needs a
+  // departure marker and records that actually landed after it.
+  const inWindow = [laneRecord("mr_9999999999999999", [{ headline: "changed", type: "progress" }])];
   const busy = awaySummary({
+    ownerLastPresentAt: "2026-08-21T14:00:00+10:00",
     lanes: [
-      laneWith({ supervision: "unattended", records: [1, 2] }),
-      laneWith({ lane: "m", supervision: "unattended", execution: "live", records: [1] }),
+      laneWith({ supervision: "unattended", records: inWindow }),
+      laneWith({ lane: "m", supervision: "unattended", execution: "live", records: inWindow }),
     ],
     ownerActions: [action("ex-1")],
   }, NOW);
@@ -332,7 +336,9 @@ test("one long run is one enclosure, however many events it holds", () => {
     ownerActions: [],
   }, { now: NOW });
   const root = scene.nodes.find((n) => n.kind === "root");
-  assert.equal(root.sub, "unattended · 03:58–11:53", "97 events must collapse to one labelled enclosure");
+  // The interval now lives on the axis envelope, not duplicated in the label.
+  assert.equal(root.sub, "unattended");
+  assert.equal(root.run.hours, 7.9, "97 events must collapse to ONE run");
   assert.equal(root.run.records, 97);
 });
 
@@ -386,4 +392,83 @@ test("temporal reasoning uses Sydney, not the runner's timezone", () => {
   assert.equal(temporalPhase(morning, "UTC"), "night", "control: the same instant is 01:00 UTC");
   assert.equal(Math.round(localHour(morning)), 11);
   assert.equal(Math.round(localHour(morning, "UTC")), 1);
+});
+
+// ---------------------------------------------------------------------------
+// Spec v2.1 hard regression invariants
+// ---------------------------------------------------------------------------
+
+import { envelopeGeometry, isReturnWindowChange, materialOutcome, returnWindowLanes, supervisionFromTrigger, timeScale } from "../src/continuity/briefing.js";
+
+test("an auto-run-capable lane with an owner-triggered record is ATTENDED", () => {
+  // Lane capability is not provenance. This is the case the v2 rule got wrong:
+  // a 4am human ruling inside an autonomous lane must not read as machine work.
+  assert.equal(supervisionFromTrigger({ kind: "owner" }), "attended");
+  assert.equal(supervisionFromTrigger({ kind: "operator" }), "attended");
+  assert.equal(supervisionFromTrigger({ kind: "scheduler" }), "unattended");
+  assert.equal(supervisionFromTrigger({ kind: "automation" }), "unattended");
+  // Unknown stays unknown — never displayed as either.
+  for (const bad of [undefined, null, {}, { kind: "" }, { kind: "guess" }]) {
+    assert.equal(supervisionFromTrigger(bad), "unknown");
+  }
+});
+
+test("a completed run before departure is excluded from the return window", () => {
+  const departed = "2026-08-21T15:00:00+10:00";
+  const now = Date.parse("2026-08-21T15:06:00+10:00");
+  assert.equal(isReturnWindowChange("2026-08-21T09:37:00+10:00", departed, now), false, "run A ended 09:37");
+  assert.equal(isReturnWindowChange("2026-08-21T15:03:00+10:00", departed, now), true, "run B changed 15:03");
+  // A six-minute absence must not promote an eight-hour-old run.
+  const lanes = [
+    laneWith({ lane: "old", supervision: "unattended", records: [{ id: "mr_a", emittedAt: "2026-08-21T09:37:00+10:00", items: [] }] }),
+    laneWith({ lane: "new", supervision: "unattended", records: [{ id: "mr_b", emittedAt: "2026-08-21T15:03:00+10:00", items: [] }] }),
+  ];
+  assert.deepEqual(returnWindowLanes(lanes, departed, now).map((l) => l.lane), ["new"]);
+});
+
+test("with no known departure nothing is promoted as a return-window change", () => {
+  const now = Date.parse("2026-08-21T15:06:00+10:00");
+  assert.equal(isReturnWindowChange("2026-08-21T15:03:00+10:00", null, now), false);
+  assert.equal(awaySummary({ lanes: [laneWith({ supervision: "unattended", records: [1] })], ownerActions: [] }, now).materialChanges, 0);
+});
+
+test("envelope geometry derives from started_at/ended_at on one shared scale", () => {
+  const scale = timeScale({ from: "2026-08-21T02:00:00+10:00", to: "2026-08-21T10:00:00+10:00", width: 1000 });
+  const twoHours = envelopeGeometry({ startedAt: "2026-08-21T03:00:00+10:00", endedAt: "2026-08-21T05:00:00+10:00", execution: "completed" }, scale);
+  const fourHours = envelopeGeometry({ startedAt: "2026-08-21T03:00:00+10:00", endedAt: "2026-08-21T07:00:00+10:00", execution: "completed" }, scale);
+  // Width IS duration: double the time, double the width.
+  assert.ok(Math.abs(fourHours.width - twoHours.width * 2) < 2, `${twoHours.width} vs ${fourHours.width}`);
+});
+
+test("a live run intersects NOW; a completed run terminates before it", () => {
+  const now = Date.parse("2026-08-21T10:00:00+10:00");
+  const scale = timeScale({ from: "2026-08-21T02:00:00+10:00", to: "2026-08-21T10:00:00+10:00", width: 1000 });
+  const nowX = scale.x(new Date(now));
+
+  const live = envelopeGeometry({ startedAt: "2026-08-21T08:00:00+10:00", endedAt: null, execution: "live" }, scale, now);
+  assert.equal(live.intersectsNow, true);
+  assert.ok(Math.abs(live.x2 - nowX) < 1, "a live run must reach NOW");
+
+  const done = envelopeGeometry({ startedAt: "2026-08-21T03:00:00+10:00", endedAt: "2026-08-21T05:00:00+10:00", execution: "completed" }, scale, now);
+  assert.equal(done.intersectsNow, false);
+  assert.ok(done.x2 < nowX - 10, "a completed run must terminate left of NOW");
+});
+
+test("away time is measured from departure, not from lane recency", () => {
+  const now = Date.parse("2026-08-21T10:35:00+10:00");
+  const lanes = [laneWith({ lastSeen: "2026-08-21T10:30:00+10:00" })];
+  // The bug: a scene promoting overnight runs reported "away for 5 min".
+  assert.equal(awayLabel(lanes, now, "2026-08-21T02:00:00+10:00"), "8h 35m");
+  assert.equal(awayLabel(lanes, now), "5 min", "fallback when no departure is recorded");
+});
+
+test("a root prefers the authored outcome over the worker's name", () => {
+  const lane = laneWith({
+    label: "PersonalOS · Surface Runtime",
+    records: [laneRecord("mr_5555555555555555", [{ headline: "Distribution path changed after the LAN hardening", type: "progress" }])],
+  });
+  assert.match(materialOutcome(lane), /Distribution path changed/);
+  // A routine tick is not an outcome — fall back rather than dress it up.
+  const ticking = laneWith({ records: [laneRecord("mr_6666666666666666", [{ headline: "tick: still generating", type: "state" }])] });
+  assert.equal(materialOutcome(ticking), null);
 });

@@ -3,6 +3,7 @@ import { store } from "../store.js";
 import { config } from "../../datascape.config.js";
 import { actionsAvailable, recordAction } from "./actions.js";
 import Authored from "./authored.jsx";
+import TemporalAxis from "./TemporalAxis.jsx";
 import { excerptAuthored, parseAuthored } from "./authored.js";
 import {
   agoLabel,
@@ -100,7 +101,7 @@ function ThreadFan({ geometry, origin, enabled }) {
   );
 }
 
-function Node({ node, onSelect, refCallback, focal, keyboard }) {
+function Node({ node, onSelect, refCallback, focal, keyboard, now }) {
   const interactive = Boolean(onSelect);
   const activate = (event) => {
     if (!interactive || (event.key !== "Enter" && event.key !== " ")) return;
@@ -118,7 +119,11 @@ function Node({ node, onSelect, refCallback, focal, keyboard }) {
         // encloses. Neither ever recolours the semantic status ring, which keeps
         // meaning Needs you / Finding / Progress / State.
         (node.execution ? ` bf-exec--${node.execution}` : "") +
-        (node.supervision === "unattended" ? " bf-unattended" : "")
+        // No enclosure around the node itself: v2 drew a rounded card here and
+        // it read as "a card for an autonomous session", which the spec
+        // rejected. The envelope now lives on the temporal axis, where its
+        // width actually means something.
+        (node.supervision === "unknown" ? " bf-supervision--unknown" : "")
       }
       role={interactive ? "button" : undefined}
       tabIndex={interactive ? 0 : undefined}
@@ -139,8 +144,9 @@ function Node({ node, onSelect, refCallback, focal, keyboard }) {
           <span className="bf-node__sub">
             {node.severity && <em className={`bf-sev bf-sev--${node.severity}`}>{SEVERITY_LABEL[node.severity]}</em>}
             {node.sub}
-            {node.at ? `${node.sub ? " · " : ""}${agoLabel(node.at)}` : ""}
-            {node.run && spansNight(node.run) && <span className="bf-overnight">overnight</span>}
+            {node.at ? `${node.sub ? " · " : ""}${agoLabel(node.at, now)}` : ""}
+            {/* No overnight pill at entry: once the run occupies the night
+                portion of the axis, position carries the meaning. */}
           </span>
         )}
       </span>
@@ -430,7 +436,10 @@ function BriefingSurface({ data }) {
   );
 
   const scene = useMemo(
-    () => buildScene(effective, { path, brief, page }),
+    () => buildScene(
+      initial.since ? { ...effective, ownerLastPresentAt: initial.since } : effective,
+      { path, brief, page, ...(initial.now ? { now: initial.now } : {}) },
+    ),
     [effective, path, brief, page],
   );
 
@@ -512,7 +521,8 @@ function BriefingSurface({ data }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [scene.path, go, selectable, kbIndex]);
 
-  const away = awayLabel(data.lanes || []);
+  const sceneNow = initial.now || Date.now();
+  const away = awayLabel(data.lanes || [], sceneNow, initial.since || data.ownerLastPresentAt);
   const { counts } = scene;
 
   // §9 auto-advance: after a ruling, focus the next due decision in the same
@@ -565,6 +575,16 @@ function BriefingSurface({ data }) {
         </div>
       </header>
 
+      {scene.timeline && (
+        <div className="bf-axiswrap">
+          <TemporalAxis
+            timeline={scene.timeline}
+            width={1088}
+            onSelectRun={(run) => go(`lane/${run.laneKey}`)}
+          />
+        </div>
+      )}
+
       {scene.breadcrumb.length > 0 && (
         <nav className={`bf-crumbs${["z0","z1"].includes(scene.level) ? " bf-crumbs--secondary" : ""}`} aria-label="Semantic position">
           {scene.breadcrumb.map((crumb, index) => (
@@ -591,6 +611,7 @@ function BriefingSurface({ data }) {
                   key={n.key}
                   node={n}
                   focal
+                  now={sceneNow}
                   keyboard={kbKey === n.key}
                   refCallback={ringRef(n.key)}
                   onSelect={n.kind === "focus" || n.kind === "absent" ? undefined : () => go(n.path)}
@@ -604,6 +625,7 @@ function BriefingSurface({ data }) {
                 key={n.key}
                 node={n}
                 focal={!hasFocalColumn && n.kind === "focus"}
+                now={sceneNow}
                 keyboard={kbKey === n.key}
                 refCallback={ringRef(n.key)}
                 onSelect={n.kind === "focus" || n.kind === "absent" ? undefined : () => go(n.path)}

@@ -641,47 +641,111 @@ body:has(.bf-root) { overflow: auto; }
   background: radial-gradient(ellipse 95% 55% at 55% 110%, rgba(112, 74, 122, 0.16), transparent 72%);
 }
 
-/* ---------- execution grammar (spec v2 §2) ----------
- * Execution animates; supervision encloses. Neither touches the semantic ring
- * colour, which keeps meaning Needs you / Finding / Progress / State. */
-
-/* Live: one subtle slow breath, and nothing else on the surface moves. */
-.bf-exec--live .bf-ring { animation: bf-breathe 3.4s ease-in-out infinite; }
-@keyframes bf-breathe {
-  0%, 100% { box-shadow: 0 0 8px rgba(125, 211, 252, 0.25); }
-  50% { box-shadow: 0 0 15px 2px rgba(125, 211, 252, 0.55); }
-}
-/* Completed: stable and solid. Explicit, so it can never inherit a pulse. */
-.bf-exec--completed .bf-ring { animation: none; }
-/* Planned: ghosted, and must never read as historically committed. */
-.bf-exec--planned .bf-ring { border-style: dashed; opacity: 0.5; }
-.bf-exec--planned .bf-node__label { opacity: 0.65; }
-
-/* Autonomy envelope: a faint enclosure behind the run, not a recoloured node
- * and not another node family. One run = one enclosure, however many machine
- * events it contains. */
-.bf-unattended {
-  position: relative;
-  padding-left: 12px;
-}
-.bf-unattended::before {
-  content: "";
-  position: absolute;
-  inset: -6px -10px -6px -2px;
-  border-radius: 14px;
-  background: rgba(122, 104, 190, 0.07);
-  border: 1px solid rgba(122, 104, 190, 0.16);
-  pointer-events: none;
-  z-index: -1;
-}
-.bf-overnight {
-  border: 1px solid rgba(122, 104, 190, 0.4);
-  border-radius: 999px;
-  padding: 0 7px;
-  font-size: 10px;
-  color: rgba(178, 162, 232, 0.95);
-}
-
 @media (prefers-reduced-motion: reduce) {
   .bf-exec--live .bf-ring { animation: none; box-shadow: 0 0 14px 2px rgba(125, 211, 252, 0.5); }
+}
+
+/* ---------- the temporal axis (spec v2.1) ----------
+ * Time is spatial here: envelope width IS elapsed duration, NOW is a position,
+ * and phase of day is a continuous field. The previous version drew rounded
+ * cards around lane labels, which read as "cards for autonomous sessions" —
+ * exactly what the spec rejected. */
+
+.bf-axiswrap {
+  position: relative;
+  z-index: 2;
+  max-width: 1140px;
+  margin: 14px auto 0;
+  padding: 0 26px;
+}
+.bf-axis {
+  position: relative;
+  width: 100%;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid rgba(84, 98, 140, 0.24);
+}
+.bf-axis__field {
+  position: absolute;
+  inset: 0;
+  /* Continuous, low-frequency, and deliberately more separated in luminance
+   * than v2's field — "subtle cannot mean absent". */
+  filter: saturate(0.9);
+}
+.bf-axis__tick {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: rgba(210, 220, 255, 0.07);
+}
+.bf-axis__tick span {
+  position: absolute;
+  top: 4px;
+  left: 5px;
+  font-size: 9.5px;
+  color: rgba(214, 224, 255, 0.5);
+  white-space: nowrap;
+}
+
+/* NOW: stronger than the field, weaker than a selected semantic edge. */
+.bf-axis__now {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: rgba(236, 242, 255, 0.55);
+  box-shadow: 0 0 8px rgba(236, 242, 255, 0.35);
+}
+.bf-axis__now span {
+  position: absolute;
+  bottom: 3px;
+  left: 5px;
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(236, 242, 255, 0.8);
+}
+
+/* An autonomy envelope is a temporal REGION. Its left edge is started_at, its
+ * right edge is ended_at — or NOW, when the run is still live. */
+.bf-envelope {
+  position: absolute;
+  height: 16px;
+  border-radius: 8px;
+  border: 1px solid rgba(150, 132, 224, 0.45);
+  background: rgba(122, 104, 190, 0.22);
+  cursor: pointer;
+  padding: 0;
+  overflow: hidden;
+  transition: background 160ms ease, border-color 160ms ease;
+}
+.bf-envelope:hover { background: rgba(140, 120, 216, 0.34); border-color: rgba(170, 152, 240, 0.7); }
+.bf-envelope__label {
+  position: absolute;
+  left: 6px;
+  top: 0;
+  line-height: 15px;
+  font-size: 9.5px;
+  color: rgba(226, 220, 255, 0.9);
+  white-space: nowrap;
+}
+/* A live run runs INTO now, so its right edge is deliberately open. */
+.bf-envelope--live {
+  border-right-color: transparent;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  background: linear-gradient(90deg, rgba(122, 104, 190, 0.22), rgba(125, 211, 252, 0.3));
+}
+
+/* Provenance we do not have is shown as absent, never guessed either way. */
+.bf-supervision--unknown .bf-node__sub::after {
+  content: "provenance unknown";
+  opacity: 0.45;
+  font-size: 10px;
+}
+
+@media (max-width: 900px) {
+  .bf-axiswrap { padding: 0 16px; }
+  .bf-axis__tick span { display: none; }
 }
