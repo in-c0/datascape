@@ -884,7 +884,7 @@ test("preflight provenance: a dirty checkout cannot change the deployed verdict"
   const world = await deployedWorld();
   try {
     const clean = await world.deployMod.authorityPreflight({ liveDir: world.live, stateDir: world.state });
-    assert.equal(clean.ok, true);
+    assert.equal(clean.ok, true, JSON.stringify(clean));
     assert.equal(clean.gate_source, "deployed");
 
     // Sabotage the WORKING TREE's copy of the gate so it would pass anything.
@@ -948,6 +948,97 @@ test("cookie transport: only the owner-controls origin is credentialed", async (
     });
     assert.equal(legacy.status, 200);
     assert.equal(legacy.headers.get("access-control-allow-credentials"), null);
+  } finally { await world.close(); }
+});
+
+test("preflight: the credentialed OPTIONS + POST roundtrip both succeed", async () => {
+  // A browser transaction is TWO requests. The preflight used to be answered
+  // before the URL was parsed, so it never carried `Allow-Credentials` and the
+  // legitimate credentialed POST failed before reaching the code that
+  // authorises it. Testing the POST alone could never have caught that.
+  const world = await deployedWorld();
+  try {
+    const started = await world.launch();
+    const owner = "http://127.0.0.1:5313";
+    const url = `http://127.0.0.1:${started.port}/__continuity/authority/unlock_read`;
+
+    const preflight = await fetch(url, {
+      method: "OPTIONS",
+      headers: {
+        Origin: owner,
+        "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers": "content-type",
+      },
+    });
+    assert.equal(preflight.status, 204);
+    assert.equal(preflight.headers.get("access-control-allow-origin"), owner);
+    assert.equal(preflight.headers.get("access-control-allow-credentials"), "true",
+      "without this the browser never sends the real request");
+
+    // And the request the preflight was for is reachable with the same origin.
+    const real = await fetch(url, {
+      method: "POST",
+      headers: { Origin: owner, "Content-Type": "application/json" },
+      body: "{}",
+    });
+    assert.notEqual(real.status, 403, "the origin gate must not refuse the origin it just approved");
+    assert.equal(real.headers.get("access-control-allow-credentials"), "true");
+  } finally { await world.close(); }
+});
+
+test("preflight: a wrong loopback origin gets NO CORS headers on OPTIONS either", async () => {
+  // The claim "refused authority origins receive no CORS headers at all" was
+  // false for OPTIONS while preflight was handled globally — which is the half
+  // of the transaction a hostile page reaches first.
+  const world = await deployedWorld();
+  try {
+    const started = await world.launch();
+    const url = `http://127.0.0.1:${started.port}/__continuity/authority/unlock_read`;
+
+    for (const origin of ["http://127.0.0.1:7777", "http://localhost:5313"]) {
+      const preflight = await fetch(url, {
+        method: "OPTIONS",
+        headers: { Origin: origin, "Access-Control-Request-Method": "POST" },
+      });
+      assert.equal(preflight.status, 403, origin);
+      assert.equal(preflight.headers.get("access-control-allow-origin"), null, origin);
+      assert.equal(preflight.headers.get("access-control-allow-credentials"), null, origin);
+    }
+
+    // Negative control: the NON-authority routes keep their legacy loopback
+    // preflight, so this test is measuring the authority gate and not a server
+    // that stopped answering OPTIONS at all.
+    const legacy = await fetch(`http://127.0.0.1:${started.port}/api/decisions`, {
+      method: "OPTIONS",
+      headers: { Origin: "http://127.0.0.1:7777", "Access-Control-Request-Method": "GET" },
+    });
+    assert.equal(legacy.status, 204);
+    assert.equal(legacy.headers.get("access-control-allow-origin"), "http://127.0.0.1:7777");
+    assert.equal(legacy.headers.get("access-control-allow-credentials"), null);
+  } finally { await world.close(); }
+});
+
+test("topology: an incompatible host reports the subsystem UNAVAILABLE", async () => {
+  // The startup state used to say `authority_available: true` while every
+  // authority request answered 503. The route failing closed is what protects
+  // her; a status line claiming the subsystem is up is what makes a
+  // misconfigured host look healthy to whoever reads it next.
+  const world = await deployedWorld();
+  try {
+    const started = await world.launch({ ownerControlsOrigin: "http://localhost:5313" });
+    assert.equal(started.authority_available, false,
+      "a host whose every authority route 503s is not an available subsystem");
+    assert.match(started.authority_reason, /not same-site|owner-controls origin/);
+
+    // The route agrees, and /api/act is untouched — the two halves of failing
+    // closed without taking her inbox controls down.
+    const authority = await fetch(
+      `http://127.0.0.1:${started.port}/__continuity/authority/status`);
+    assert.equal(authority.status, 503);
+    assert.equal((await authority.json()).error, "owner_controls_origin_incompatible");
+
+    const decisions = await fetch(`http://127.0.0.1:${started.port}/api/decisions`);
+    assert.equal(decisions.status, 200, "her inbox controls stay live");
   } finally { await world.close(); }
 });
 

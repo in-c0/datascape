@@ -17,6 +17,12 @@ import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
 import { stripGuard } from "./exception-guard-patch.mjs";
+// DERIVED, not restated. This list used to name the artifact's sources by hand
+// beside `live-host-deploy.mjs`'s own lists, so adding a module to the reviewed
+// set left this world deploying from a repo that did not contain it — and the
+// failure surfaced as "no deployed entry point to ask", which reads like a
+// broken gate rather than a stale fixture.
+import { ARTIFACT, AUTHORITY_ARTIFACT } from "./live-host-deploy.mjs";
 
 const REPO = process.cwd();
 const REAL_HOST_OPS = process.env.PRB_HOST_OPS || "D:/Projects/_ship_inbox/ops";
@@ -35,13 +41,8 @@ export function readLanes() { return [] }
 const STUB_BRIEFING = `export function build() { return { lanes: [], mustReads: [] } }\n`;
 
 /** Everything deployment needs to exist in the repo it deploys FROM. */
-const REPO_SOURCES = [
-  "ops/live-host/briefing-server.mjs",
-  "ops/live-host/briefing-server-core.mjs",
-  "ops/live-host/authority-host.mjs",
-  "src/continuity/control/authority-read-session.js",
-  "src/continuity/control/authority-exception-adapter.js",
-  "src/continuity/control/authority-commit.js",
+/** Sources the world needs that are NOT part of either deployed artifact. */
+const EXTRA_SOURCES = [
   "ops/exception-guard-patch.mjs",
   "src/continuity/control/owner-ruling.js",
   "src/continuity/control/owner-presence.js",
@@ -50,6 +51,13 @@ const REPO_SOURCES = [
   "src/continuity/control/owner-presence-windows.js",
   "src/continuity/control/owner-presence-coordinator.js",
 ];
+
+const REPO_SOURCES = [...new Set([
+  "ops/live-host/briefing-server.mjs",
+  ...ARTIFACT.map((f) => f.source),
+  ...AUTHORITY_ARTIFACT.map((f) => f.source),
+  ...EXTRA_SOURCES,
+])];
 
 function installHostDependency(liveDir, name, fallback) {
   const real = path.join(REAL_HOST_OPS, name);
@@ -169,7 +177,25 @@ export async function deployedWorld({ damage = null } = {}) {
     deployMod, entryMod, entry, storeBefore,
     advance: (ms) => { clock += ms; },
     /** Start through the REAL entry point, with a device we control. */
-    async launch() {
+    async launch({ ownerControlsOrigin = undefined } = {}) {
+      // The origin is read from the environment by the real entry point, so a
+      // test that wants an incompatible topology has to change the environment
+      // rather than pass a flag past it — otherwise it would be exercising a
+      // path production does not have.
+      const previous = process.env.CONTINUITY_OWNER_CONTROLS_ORIGIN;
+      if (ownerControlsOrigin !== undefined) {
+        process.env.CONTINUITY_OWNER_CONTROLS_ORIGIN = ownerControlsOrigin;
+      }
+      try {
+        return await world.startWith();
+      } finally {
+        if (ownerControlsOrigin !== undefined) {
+          if (previous === undefined) delete process.env.CONTINUITY_OWNER_CONTROLS_ORIGIN;
+          else process.env.CONTINUITY_OWNER_CONTROLS_ORIGIN = previous;
+        }
+      }
+    },
+    async startWith() {
       const started = await entryMod.startLiveHost({
         liveDir: live,
         stateDir: state,

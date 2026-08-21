@@ -416,9 +416,31 @@ export function createServer(deps = null, {
     if (!isLoopbackHost(req.headers.host) || !originAllowed(origin)) {
       return send(res, 403, { error: "loopback only" })
     }
-    if (req.method === "OPTIONS") return send(res, 204, {}, origin)
-
     const url = new URL(req.url, "http://127.0.0.1")
+
+    // PREFLIGHT IS ROUTE-AWARE, and must be, for two separate reasons.
+    //
+    // It used to be answered here-first, before the URL was parsed and before
+    // the authority origin gate. That broke the surface in both directions at
+    // once: the legitimate cross-origin owner-controls page never received
+    // `Allow-Credentials` on its preflight, so its credentialed POST failed
+    // before reaching the code that authorises it — and a wrong loopback origin
+    // DID receive CORS headers, which falsified the claim that refused origins
+    // get none. A browser transaction is two requests, so a gate that only
+    // guards the second one is not a gate.
+    const isAuthorityPath = url.pathname === AUTHORITY_PREFIX
+      || url.pathname.startsWith(`${AUTHORITY_PREFIX}/`)
+    if (req.method === "OPTIONS") {
+      if (!isAuthorityPath) return send(res, 204, {}, origin)
+      const allowed = !origin || (Boolean(ownerControlsOrigin) && origin === ownerControlsOrigin)
+      if (!allowed) {
+        return send(res, 403, {
+          error: "authority_origin_refused",
+          detail: "owner controls are served from one origin, and this is not it.",
+        })
+      }
+      return send(res, 204, {}, origin, ownerControlsOrigin)
+    }
 
     try {
       if (req.method === "GET" && url.pathname === "/api/briefing") {
@@ -431,7 +453,7 @@ export function createServer(deps = null, {
         return send(res, 200, { decisions: readDecisions({ limit: 40 }) }, origin)
       }
 
-      if (url.pathname === AUTHORITY_PREFIX || url.pathname.startsWith(`${AUTHORITY_PREFIX}/`)) {
+      if (isAuthorityPath) {
         // SAME-ORIGIN, or the exact configured owner-controls origin. Nothing
         // else, and nothing else gets CORS headers either — a refusal that
         // echoed the origin would still tell a hostile page it had reached a

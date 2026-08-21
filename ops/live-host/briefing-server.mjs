@@ -289,6 +289,14 @@ export async function startLiveHost({
         apiOrigin: `http://${host}:${port || PORT}`,
       });
       if (!authority.topology.ok) authorityReason = authority.topology.reason;
+      // AVAILABILITY MUST FOLLOW THE TOPOLOGY GATE.
+      //
+      // Keeping the object and reporting `authority_available: true` while
+      // every authority request answers 503 made the startup state disagree
+      // with the running surface. The route failing closed is what protects
+      // her; a status line that says the subsystem is up is what makes a
+      // misconfigured host look healthy to whoever reads it next. The object is
+      // still kept so the route can answer 503 with a reason rather than 404.
     } catch (error) {
       authority = null;
       authorityReason = `the authority subsystem failed to load: ${error.message}`;
@@ -306,7 +314,7 @@ export async function startLiveHost({
   return {
     mode: "owner_rulings", gate, server, core, deps, port: server.address().port,
     owner_rulings: true, security_runtime_imported: true,
-    authority_available: Boolean(authority),
+    authority_available: Boolean(authority) && authority.topology.ok === true,
     authority_reason: authorityReason,
     close: () => new Promise((resolve) => server.close(resolve)),
   };

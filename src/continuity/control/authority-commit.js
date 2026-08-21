@@ -4,20 +4,32 @@
 // would let something through, and the sequence is the reviewable artifact:
 //
 //   authenticate the read session
-//   durable replay lookup            (before any prompt)
+//   durable replay lookup            (before any prompt, no receipt needed)
 //   retrieve the receipt
 //   the receipt belongs to THIS session
-//   validate domain / lineage / revision
+//   validate domain / lineage / revision   (absence is revision 0)
+//   DURABLE pre-prompt claim, bound to this receipt
 //   derive the prompt ENTIRELY from the receipt
 //   fresh Windows verification, via the host's ONE coordinator
 //   re-read: session live, receipt live, revision current
 //   consume the one-shot presence
-//   commit the exact receipt-bound mutation
+//   commit inside ONE durable transaction, with a final revision CAS
 //   consume the receipt AFTER the durable commit
 //
 // The browser's part in this is two opaque strings. It supplies no policy, no
 // scope, no action, no revision and no lineage, because anything it supplies is
 // something it can be made to supply differently.
+//
+// Two corrections from the parts 0-8 review are load-bearing here:
+//
+// - The pre-prompt claim is DURABLE and RECEIPT-BOUND. It used to be an
+//   in-process Map, which meant two concurrent same-id requests could both
+//   prompt, a same-id-different-receipt attempt was never noticed, and the
+//   "durable replay" property vanished on restart.
+// - The authority write happens INSIDE the durable transaction. It used to run
+//   outside: an `applyAuthority()` that returned a failure was recorded as a
+//   completed success, and a crash between the write and the completion marker
+//   could prompt and write a second time.
 
 /**
  * Fields a browser must never send at commit.
@@ -27,6 +39,8 @@
  * mismatch then surfaces as a confusing success rather than a refusal. Refusing
  * says plainly that the commit wire is two identifiers and nothing more.
  */
+import { expectedRevision, receiptBinding, revisionOf } from "./authority-operation.js";
+
 export const FORBIDDEN_COMMIT_FIELDS = [
   "authorization_action", "action", "draft", "policy", "normalized_policy", "policy_identity",
   "scope_refs", "resulting_scope_refs", "goal_id", "expected_authority_revision",
@@ -120,11 +134,10 @@ export function prepareAuthority({ authenticate, receipts, issue }) {
 export async function commitAuthority({
   body,
   authenticate,        // (…) -> { ok, context } from the request's cookie
-  operations,          // durable operation ledger: { completed(id), begin(…), complete(…), abort(…) }
+  operations,          // the DURABLE journal port: { completed, claim, commit, abort }
   receipts,            // the receipt store
   presence,            // { verifier, budget } from the host's ONE coordinator
-  currentRevision,     // (receipt) -> the authority's current revision
-  applyAuthority,      // (receipt) -> the durable authority write
+  currentRevision,     // (receipt) -> the authority's current revision, or null for none
   now,
 }) {
   // 1. The wire, before anything else. A malformed or over-specified commit
@@ -142,14 +155,24 @@ export async function commitAuthority({
   }
   const session = auth.context.read_session_id;
 
-  // 3. Durable replay, BEFORE any prompt. A lost response must not cost her a
-  //    second dialog or a second write.
+  // 3. Durable replay, BEFORE any prompt and WITHOUT needing the receipt — a
+  //    committed operation consumed its receipt, so requiring one here would
+  //    turn every lost response into a fresh dialog.
   const done = operations.completed(wire.operation_id);
   if (done) {
-    return {
-      ok: true, replayed: true, result: done.result,
-      prompt_shown: false, authority_written: false,
-    };
+    // A replay must be the SAME intention. The receipt object is gone — a
+    // committed operation consumed it — so the comparison is against the
+    // receipt id recorded with the claim. Without this, presenting a committed
+    // id with a different prepared review replayed the first one's result for a
+    // change she never approved.
+    if (done.receipt_id && done.receipt_id !== wire.preview_receipt) {
+      return {
+        ok: false, failure: "idempotency_collision",
+        reason: "this operation id was already used for a different prepared review",
+        prompt_shown: false, authority_written: false,
+      };
+    }
+    return { ok: true, replayed: true, result: done.result, prompt_shown: false, authority_written: false };
   }
 
   // 4. The receipt, and whether it belongs to THIS browser session.
@@ -159,9 +182,13 @@ export async function commitAuthority({
   }
   const receipt = found.receipt;
 
-  // 5. Lineage and revision, from the receipt against the store.
-  const revisionBefore = currentRevision(receipt);
-  if (receipt.base_authority_revision !== null && receipt.base_authority_revision !== revisionBefore) {
+  // 5. Lineage and revision, UNCONDITIONALLY. Absence is revision 0, so a
+  //    receipt prepared when no authority existed is checked by the same rule
+  //    as every later revision — otherwise a competing first grant appearing
+  //    before or during the dialog goes unnoticed and both write.
+  const expected = expectedRevision(receipt);
+  const revisionBefore = revisionOf(currentRevision(receipt));
+  if (expected !== revisionBefore) {
     return {
       ok: false, failure: "stale_authority_revision",
       reason: "the authority changed since this review was prepared; review again",
@@ -169,14 +196,30 @@ export async function commitAuthority({
     };
   }
 
+  // 6. THE DURABLE CLAIM, bound to this receipt, before the prompt. Everything
+  //    except a fresh claim means do not prompt.
+  const binding = receiptBinding(receipt);
+  const claim = operations.claim({
+    operation_id: wire.operation_id, binding, receipt_id: receipt.receipt_id, at: now(),
+  });
+  if (!claim.ok) {
+    return {
+      ok: false, failure: claim.failure, reason: claim.reason,
+      prompt_shown: false, authority_written: false,
+    };
+  }
+  if (claim.state === "committed") {
+    // Won by a concurrent request between step 3 and here.
+    return { ok: true, replayed: true, result: claim.record, prompt_shown: false, authority_written: false };
+  }
+
   const allowed = presence.budget.mayPrompt();
   if (!allowed.ok) {
+    operations.abort(wire.operation_id, allowed.failure);
     return { ok: false, ...allowed, prompt_shown: false, authority_written: false };
   }
 
-  operations.begin({ operation_id: wire.operation_id, receipt_id: receipt.receipt_id, at: now() });
-
-  // 6. Fresh presence, described by the receipt.
+  // 7. Fresh presence, described by the receipt.
   const verification = await presence.verifier.verify({
     purpose: promptForReceipt(receipt),
     operationRef: `authority:${receipt.receipt_id}`,
@@ -190,13 +233,17 @@ export async function commitAuthority({
     };
   }
 
-  // 7. RE-READ. The dialog was open for a while, and three things could have
+  // 8. RE-READ. The dialog was open for a while, and three things could have
   //    moved underneath it. Each spends the presence and writes nothing: she
   //    reviewed a state that no longer exists, so she reviews again.
+  const spend = (outcome) => {
+    presence.verifier.authorizes(verification, `authority:${receipt.receipt_id}`);
+    operations.abort(wire.operation_id, outcome);
+  };
+
   const stillAuthenticated = authenticate();
   if (!stillAuthenticated.ok || stillAuthenticated.context.read_session_id !== session) {
-    presence.verifier.authorizes(verification, `authority:${receipt.receipt_id}`);
-    operations.abort(wire.operation_id, "read_session_lost");
+    spend("read_session_lost");
     return {
       ok: false, failure: "read_session_lost",
       reason: "the owner-read session ended while the verification was open",
@@ -205,13 +252,11 @@ export async function commitAuthority({
   }
   const stillPrepared = receipts.verify(wire.preview_receipt, {}, { readSessionId: session });
   if (!stillPrepared.ok) {
-    presence.verifier.authorizes(verification, `authority:${receipt.receipt_id}`);
-    operations.abort(wire.operation_id, stillPrepared.failure);
+    spend(stillPrepared.failure);
     return { ...stillPrepared, prompt_shown: true, authority_written: false };
   }
-  if (receipt.base_authority_revision !== null && currentRevision(receipt) !== revisionBefore) {
-    presence.verifier.authorizes(verification, `authority:${receipt.receipt_id}`);
-    operations.abort(wire.operation_id, "stale_authority_revision");
+  if (revisionOf(currentRevision(receipt)) !== revisionBefore) {
+    spend("stale_authority_revision");
     return {
       ok: false, failure: "stale_authority_revision",
       reason: "the authority changed while the verification was open; review again",
@@ -219,19 +264,36 @@ export async function commitAuthority({
     };
   }
 
-  // 8. Consume the presence exactly once, then commit the receipt's mutation.
+  // 9. Consume the presence exactly once, then commit.
   const consumed = presence.verifier.authorizes(verification, `authority:${receipt.receipt_id}`);
   if (!consumed.ok) {
     operations.abort(wire.operation_id, "presence_not_valid");
     return { ok: false, failure: "presence_not_valid", reason: consumed.reason, prompt_shown: true, authority_written: false };
   }
 
-  const result = await applyAuthority(receipt);
-  operations.complete(wire.operation_id, result);
+  // 10. ONE durable transaction. The authority write, the exception resolution
+  //     and the committed marker are the journal's business, including the
+  //     final store-level revision CAS — checked once more inside, because
+  //     everything up to here is a read and only this is atomic with the write.
+  const committed = await operations.commit({
+    operation_id: wire.operation_id,
+    receipt,
+    binding,
+    expected_revision: expected,
+  });
+  if (!committed.ok) {
+    return {
+      ok: false, failure: committed.failure || "transaction_failed", reason: committed.reason,
+      prompt_shown: true,
+      // The journal decides this, not us: a crash mid-transaction may have left
+      // a durable record that recovery will roll forward.
+      authority_written: Boolean(committed.authority_written),
+    };
+  }
 
-  // 9. Only now. A receipt consumed before the durable commit would leave a
-  //    crash with no way to replay and no way to re-present.
+  // 11. Only now. A receipt consumed before the durable commit would leave a
+  //     crash with no way to replay and no way to re-present.
   receipts.consume(receipt.receipt_id);
 
-  return { ok: true, replayed: false, result, prompt_shown: true, authority_written: true };
+  return { ok: true, replayed: false, result: committed.result, prompt_shown: true, authority_written: true };
 }

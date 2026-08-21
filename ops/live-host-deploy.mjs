@@ -88,6 +88,13 @@ export const AUTHORITY_ARTIFACT = [
   { dest: "_authority/authority-read-session.js", source: "src/continuity/control/authority-read-session.js" },
   { dest: "_authority/authority-exception-adapter.js", source: "src/continuity/control/authority-exception-adapter.js" },
   { dest: "_authority/authority-commit.js", source: "src/continuity/control/authority-commit.js" },
+  // The receipt binding and the revision algebra the commit path depends on.
+  // Every addition here is a deliberate widening of the reviewed set — the
+  // runtime gate refuses an import that is not in it, which is how this file
+  // stays the authority on what ships rather than a description of it.
+  { dest: "_authority/authority-operation.js", source: "src/continuity/control/authority-operation.js" },
+  { dest: "_authority/authority-exception-port.js", source: "src/continuity/control/authority-exception-port.js" },
+  { dest: "_authority/authority-journal.js", source: "src/continuity/control/authority-journal.js" },
 ];
 
 /** The one module the host imports to reach the authority subsystem. */
