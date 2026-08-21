@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { store } from "../store.js";
 import { config } from "../../datascape.config.js";
 import { actionsAvailable, recordAction } from "./actions.js";
+import Authored from "./authored.jsx";
 import {
   agoLabel,
   awayLabel,
@@ -282,7 +283,7 @@ function OwnerCard({ action, onDone, api }) {
       {action.proposed && (
         <div className="bf-card__section">
           <h3>Proposed action</h3>
-          <p className="bf-verbatim">{action.proposed}</p>
+          <Authored text={action.proposed} />
         </div>
       )}
 
@@ -304,7 +305,7 @@ function OwnerCard({ action, onDone, api }) {
       {action.latestAmendment && (
         <details className="bf-more">
           <summary>Latest amendment{action.amendmentCount > 1 ? ` (${action.amendmentCount})` : ""}</summary>
-          <p className="bf-verbatim">{action.latestAmendment}</p>
+          <Authored text={action.latestAmendment} />
         </details>
       )}
 
@@ -323,7 +324,7 @@ function RecordCard({ item, full, onOpenFull }) {
     <div className="bf-card">
       <div className="bf-card__eyebrow">{item.facet}<span>{agoLabel(item.at)}</span>{full && <span>full record</span>}</div>
       <h2 className="bf-card__title">{item.title}</h2>
-      {body.text && <p className="bf-verbatim">{body.text}{body.truncated ? "…" : ""}</p>}
+      {body.text && <Authored text={body.truncated ? body.text + "…" : body.text} />}
       {body.truncated && (
         <button type="button" className="bf-readfull" onClick={onOpenFull}>
           Read full authored record →
@@ -544,7 +545,7 @@ function BriefingSurface({ data }) {
       </header>
 
       {scene.breadcrumb.length > 0 && (
-        <nav className="bf-crumbs" aria-label="Semantic position">
+        <nav className={`bf-crumbs${["z0","z1"].includes(scene.level) ? " bf-crumbs--secondary" : ""}`} aria-label="Semantic position">
           {scene.breadcrumb.map((crumb, index) => (
             <span key={crumb.path || "root"}>
               {index > 0 && <i>›</i>}

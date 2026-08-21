@@ -19,7 +19,8 @@
     "preview": "vite preview",
     "navigator": "node scripts/navigator-server.mjs",
     "sample": "node scripts/make-sample.mjs",
-    "deploy-data": "node scripts/deploy-data.mjs"
+    "deploy-data": "node scripts/deploy-data.mjs",
+    "verify:browser": "node tests/browser/briefing.probe.mjs"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.7",

@@ -559,3 +559,55 @@ body:has(.bf-root) { overflow: auto; }
   }
   .bf-card { padding-bottom: 0; }
 }
+
+/* ---------- ruling 1: breadcrumb is secondary at Z0/Z1 ----------
+ * Priority is FOCAL NODE > children > breadcrumb. Once the focal geometry
+ * carries "what am I inside?", the breadcrumb must stop competing with it.
+ * Z2+ restores emphasis, where the graph alone no longer conveys the path. */
+.bf-crumbs--secondary { opacity: 0.5; }
+.bf-crumbs--secondary button { font-weight: 400; }
+.bf-crumbs--secondary span:last-child button { color: var(--bf-muted); font-weight: 400; }
+.bf-crumbs--secondary button:hover { color: var(--bf-text); }
+
+/* ---------- ruling 2: presentation Markdown in authored cards ----------
+ * Formatting only. The words are unchanged; the delimiters stop being noise. */
+.bf-md > :first-child { margin-top: 0; }
+.bf-md > :last-child { margin-bottom: 0; }
+.bf-md-p { margin: 0 0 9px; white-space: pre-wrap; }
+.bf-md-h {
+  margin: 12px 0 5px;
+  font-size: 12px;                 /* restrained: authored H1 never becomes page typography */
+  font-weight: 640;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--bf-muted);
+}
+.bf-md-list { margin: 0 0 9px; padding-left: 20px; }
+.bf-md-list li { margin: 3px 0; }
+.bf-md-quote {
+  margin: 0 0 9px;
+  padding-left: 11px;
+  border-left: 2px solid rgba(167, 139, 250, 0.4);
+  color: var(--bf-muted);
+}
+.bf-md-pre {
+  margin: 0 0 9px;
+  padding: 9px 11px;
+  border: 1px solid rgba(84, 98, 140, 0.35);
+  border-radius: 9px;
+  background: rgba(3, 5, 11, 0.75);
+  overflow-x: auto;
+}
+.bf-md-pre code { font-size: 11.5px; color: var(--bf-teal); white-space: pre; }
+.bf-md code {
+  background: rgba(3, 5, 11, 0.7);
+  border: 1px solid rgba(84, 98, 140, 0.3);
+  border-radius: 4px;
+  padding: 0 4px;
+  font-size: 11.5px;
+  color: var(--bf-teal);
+}
+.bf-md a { color: var(--bf-cyan); text-decoration: none; }
+.bf-md a:hover { text-decoration: underline; }
+.bf-md strong { font-weight: 660; color: #fff; }
+.bf-md em { font-style: italic; }
