@@ -157,6 +157,18 @@ export function unmanagedDelta(before, after, region) {
 }
 
 /**
+ * How many times does the owner-gate rule appear in this document?
+ *
+ * More than one is a real problem and not one this tool may fix: the extra copy
+ * is somebody's hand-written prose, and two statements of the same rule are
+ * free to drift apart. Reported so a person removes it deliberately.
+ */
+export function duplicateRuleCount(document) {
+  const marker = "Never move a `blocked-on-owner` exception";
+  return document.split(marker).length - 1;
+}
+
+/**
  * Synchronise the block.
  *
  * `dryRun` is the default: this tool writes only when told to, and during a held
@@ -182,6 +194,9 @@ export function sync({ file = CLAUDE_MD, text = canonicalText(), dryRun = true, 
     before_hash: sha(document),
     after_hash: sha(plan.document),
     unmanaged_bytes_changed: unmanagedDelta(document, plan.document, plan.region),
+    // Surfaced on every run, because the answer being 2 is exactly the state a
+    // hand reconciliation leaves behind and nobody would otherwise look for.
+    rule_occurrences_after: duplicateRuleCount(plan.document),
     wrote: false,
   };
   if (result.unmanaged_bytes_changed !== 0) {

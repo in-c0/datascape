@@ -10,7 +10,8 @@ import os from "node:os";
 import path from "node:path";
 
 import {
-  BEGIN, END, FIRST_INSTALL_ANCHOR, canonicalText, locateBlock, planSync, renderBlock, sync, unmanagedDelta,
+  BEGIN, END, FIRST_INSTALL_ANCHOR, canonicalText, duplicateRuleCount, locateBlock, planSync,
+  renderBlock, sync, unmanagedDelta,
 } from "../ops/claude-policy-sync.mjs";
 
 /** A document shaped like CLAUDE.md, without being it. */
@@ -187,18 +188,31 @@ test("policy: a blank-line change far from the block is NOT hidden", () => {
   assert.equal(unmanagedDelta(stale, meddledUpdate, update.region), 1, "the meddled one is not");
 });
 
-test("policy: a planned real-file sync would not duplicate the existing rule", () => {
-  // That file was reconciled BY HAND earlier in this lane, so it already
-  // contains the owner-gate rule unmarked. Installing a marked block without
-  // checking would leave the same instruction twice, disagreeing subtly.
-  const real = fs.readFileSync("D:/Projects/CLAUDE.md", "utf8");
-  const plan = planSync(real);
-  assert.equal(plan.ok, true, plan.reason);
-  assert.equal(unmanagedDelta(real, plan.document, plan.region), 0);
-
+test("policy: an install over an existing hand-written copy is DETECTED, not silently doubled", () => {
+  // The real CLAUDE.md was reconciled by hand earlier in this lane, so it
+  // already states this rule unmarked. Installing a managed block without
+  // noticing would leave the same instruction twice, free to drift apart.
+  //
+  // Checked against a synthetic document rather than the real file: a repo test
+  // that reads a machine-local path fails on CI for the environment rather than
+  // for the code. The real-file observation is an ops step — `node
+  // ops/claude-policy-sync.mjs` reports it read-only before any merge.
   const marker = "Never move a `blocked-on-owner` exception";
-  const occurrences = plan.document.split(marker).length - 1;
-  assert.equal(occurrences, 2,
-    "the hand-written paragraph is still there beside the managed block — "
-    + "it must be removed by hand before the post-merge sync, not by this tool");
+  const handWritten = DOCUMENT.replace(
+    "## 4. Money",
+    `${marker} out of \`blocked-on-owner\`.
+
+## 4. Money`);
+
+  const plan = planSync(handWritten);
+  assert.equal(plan.ok, true);
+  assert.equal(unmanagedDelta(handWritten, plan.document, plan.region), 0,
+    "the tool still writes only inside its own block");
+
+  assert.equal(plan.document.split(marker).length - 1, 2,
+    "the hand-written paragraph survives — removing her prose is a human edit, "
+    + "not something this tool does to tidy its own install");
+  assert.equal(duplicateRuleCount(plan.document), 2,
+    "and the duplication is reported rather than left to be discovered");
 });
+
