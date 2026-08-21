@@ -1096,14 +1096,123 @@ test("transaction: the private exception adapter is not addressable", async () =
       apiOrigin: "http://127.0.0.1:5319",
       transaction: { operations: {}, receipts: {}, currentRevision: () => null, prepare: () => ({ ok: false }) },
     });
-    assert.deepEqual(host.operations.sort(),
-      ["commit", "lock_read", "prepare", "status", "unlock_read"]);
+    // An EXACT list, so a route added by accident fails here rather than
+    // quietly widening what the browser can ask for.
+    assert.deepEqual(host.operations.sort(), [
+      "blocker", "catalogue", "commit", "context", "current",
+      "lock_read", "prepare", "status", "suggestions", "unlock_read",
+    ]);
     for (const name of host.operations) {
       assert.ok(!/resolve|exception|adapter/.test(name), `${name} must not address the adapter`);
     }
 
     // And no ruling was made along the way.
     assert.equal(world.broker.calls.length, 1, "only the unlock asked her anything");
+  } finally { await world.close(); }
+});
+
+test("reads: the surface serves REAL exception data for a stable domain", async () => {
+  const world = await deployedWorld();
+  try {
+    const LOOP = "datascape/authority-under-test";
+    world.fixture("2026-08-22-authority-domain", {
+      loop: LOOP, evidence: "five lanes have no authoritative goal",
+      proposed: "designate one goal envelope or one bounded task",
+    });
+    // A blocker in a DIFFERENT loop, so a surface that ignored the loop would
+    // become ambiguous and fail rather than quietly pass.
+    world.fixture("2026-08-22-unrelated", { loop: "sumzup/publish" });
+
+    const started = await world.launch({ authorityLoop: LOOP });
+    const base = `http://127.0.0.1:${started.port}/__continuity/authority`;
+    world.broker.answer = "verified";
+    const unlock = await fetch(`${base}/unlock_read`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+    });
+    const cookie = unlock.headers.getSetCookie().join("; ");
+
+    const read = async (op) => {
+      const r = await fetch(`${base}/${op}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Cookie: cookie },
+        body: "{}",
+      });
+      return { status: r.status, body: await r.json() };
+    };
+
+    const context = await read("context");
+    assert.equal(context.status, 200, JSON.stringify(context.body));
+    assert.equal(context.body.authority_domain, "2026-08-22-authority-domain");
+    assert.equal(context.body.blocker.evidence, "five lanes have no authoritative goal");
+    assert.equal(context.body.current, null, "no authority has been granted yet");
+
+    // The catalogue is DERIVED from the loops that exist, not a fixture list.
+    const refs = context.body.catalogue.map((c) => c.ref);
+    assert.ok(refs.includes(`scope:${LOOP}`));
+    assert.ok(refs.includes("scope:sumzup/publish"));
+
+    // Suggestions are empty and SAY they are empty. An invented suggestion on
+    // an authority screen is a machine proposing its own autonomy.
+    assert.deepEqual(context.body.suggestions, []);
+    assert.match(context.body.suggestions_reason, /no owner-authored suggestions/);
+
+    // The read surface hands over what it was asked for, not the whole file.
+    const serialised = JSON.stringify(context.body);
+    assert.ok(!serialised.includes("Owner steps"), "the owner-steps section must not travel");
+    assert.ok(!serialised.includes("fingerprint"), "internal dedupe keys must not travel");
+
+    // Unauthenticated: nothing at all.
+    const anon = await fetch(`${base}/context`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+    });
+    assert.equal(anon.status, 401);
+  } finally { await world.close(); }
+});
+
+test("reads: an unconfigured domain refuses by name and never guesses", async () => {
+  const world = await deployedWorld();
+  try {
+    world.fixture("2026-08-22-one", { loop: "datascape/two-candidates" });
+    const started = await world.launch({ authorityLoop: null });
+    const base = `http://127.0.0.1:${started.port}/__continuity/authority`;
+    const unlock = await fetch(`${base}/unlock_read`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+    });
+    const cookie = unlock.headers.getSetCookie().join("; ");
+    const response = await fetch(`${base}/context`, {
+      method: "POST", headers: { "Content-Type": "application/json", Cookie: cookie }, body: "{}",
+    });
+    assert.equal(response.status, 409);
+    assert.equal((await response.json()).failure, "no_authority_loop");
+  } finally { await world.close(); }
+});
+
+test("reads: two candidates in one loop REFUSE rather than picking by file order", async () => {
+  const world = await deployedWorld();
+  try {
+    world.fixture("2026-08-22-one", { loop: "datascape/two-candidates" });
+    world.fixture("2026-08-22-two", { loop: "datascape/two-candidates" });
+    const started = await world.launch({ authorityLoop: "datascape/two-candidates" });
+    const base = `http://127.0.0.1:${started.port}/__continuity/authority`;
+    const unlock = await fetch(`${base}/unlock_read`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+    });
+    const cookie = unlock.headers.getSetCookie().join("; ");
+    const response = await fetch(`${base}/context`, {
+      method: "POST", headers: { "Content-Type": "application/json", Cookie: cookie }, body: "{}",
+    });
+    assert.equal(response.status, 409);
+    const body = await response.json();
+    assert.equal(body.failure, "ambiguous_authority_domain");
+    assert.deepEqual(body.candidates.sort(), ["2026-08-22-one", "2026-08-22-two"]);
+
+    // And prepare refuses for the same reason: an ambiguous domain must not be
+    // resolvable by asking a different route.
+    const prepared = await fetch(`${base}/prepare`, {
+      method: "POST", headers: { "Content-Type": "application/json", Cookie: cookie }, body: "{}",
+    });
+    assert.equal(prepared.status, 409);
+    assert.equal((await prepared.json()).failure, "ambiguous_authority_domain");
   } finally { await world.close(); }
 });
 

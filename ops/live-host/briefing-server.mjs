@@ -309,10 +309,10 @@ export async function startLiveHost({
           // and the parser, and checks for all three rather than trusting one.
           atomic: atomicMod,
           now: deps.now,
-          // No domain resolver yet: the real-data read surface is the next
-          // step, and until it exists `prepare` refuses by name rather than
-          // letting the browser nominate a lineage.
-          resolveDomain: () => null,
+          // The loop whose exception IS the authority domain. Configured, not
+          // guessed: with no loop set, the read surface and `prepare` both
+          // refuse by name rather than picking a blocker out of directory order.
+          authorityLoop: process.env.CONTINUITY_AUTHORITY_LOOP || null,
         });
       } catch (error) {
         // NAMED, and surfaced in the startup state below. A host whose

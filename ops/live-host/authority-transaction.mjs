@@ -28,17 +28,20 @@ const { createAuthorityStore } = await load("authority-store.js");
 const { createAuthorityExceptionAdapter } = await load("authority-exception-adapter.js");
 const { createCommitJournalPort, createJournalExceptionPort } = await load("authority-exception-port.js");
 const { revisionOf } = await load("authority-operation.js");
+const domainMod = await load("authority-domain.js");
+const { publicBlocker, readExceptionIndex, resolveAuthorityDomain, scopeCatalogue } = domainMod;
 
 /**
  * @param fs          node:fs, injected so tests can run against a temp tree
  * @param journalFile where the durable authority journal lives
  * @param inbox       the exception directory
  * @param atomic      the atomic exception writer (see boundary 2 above)
- * @param resolveDomain  () -> the authority domain this host is acting for.
- *                       HOST-DERIVED. The browser never names a lineage.
+ * @param authorityLoop  the loop whose exception IS the authority domain.
+ *                        HOST-DERIVED. The browser never names a lineage.
  */
 export function createAuthorityTransaction({
-  fs, journalFile, inbox, atomic, now = () => Date.now(), resolveDomain = () => null,
+  fs, journalFile, inbox, atomic, now = () => Date.now(),
+  authorityLoop = process.env.CONTINUITY_AUTHORITY_LOOP || null,
 }) {
   const receipts = createReceiptStore({ now });
 
@@ -65,6 +68,23 @@ export function createAuthorityTransaction({
     storage: { read: () => [], append: () => {}, update: () => {} },
   });
 
+  /**
+   * The domain, resolved fresh on every call from her real exception files.
+   *
+   * Not cached. A cached domain would keep pointing at a blocker after the file
+   * moved, was renamed, or was resolved somewhere else, and the surface would
+   * go on describing a world that no longer exists.
+   */
+  function domain() {
+    const entries = readExceptionIndex({ fs, inbox, parseException: atomic.parseException });
+    const resolved = resolveAuthorityDomain({
+      entries,
+      loop: authorityLoop,
+      hasLineage: (id) => Boolean(journal.currentForDomain(id)),
+    });
+    return { ...resolved, entries };
+  }
+
   /** The revision a receipt's domain is currently at. Absence stays absence. */
   function currentRevision(receipt) {
     const domain = receipt.authority_domain ?? receipt.source_exception_id ?? null;
@@ -88,11 +108,72 @@ export function createAuthorityTransaction({
     }, now()),
   });
 
+  /**
+   * THE READ SURFACE.
+   *
+   * Every operation resolves the domain itself rather than accepting one, so
+   * there is no argument a browser could supply to change which authority it is
+   * reading. Each returns a NAMED refusal when the domain is not exactly one,
+   * because a surface that quietly picked a candidate would be showing her
+   * somebody else's decision.
+   */
+  const reads = {
+    context() {
+      const found = domain();
+      if (!found.ok) {
+        return {
+          ok: false, failure: found.failure, reason: found.reason,
+          candidates: found.candidates ?? null,
+        };
+      }
+      return {
+        ok: true,
+        authority_domain: found.domain,
+        blocker: publicBlocker(found.entry),
+        // Found by originating exception, so it keeps resolving AFTER the grant
+        // has resolved that blocker.
+        current: journal.currentForDomain(found.domain),
+        catalogue: scopeCatalogue(found.entries),
+        // Deliberately empty rather than invented. Owner-authored suggestions
+        // are hers; this host has none to offer and says so.
+        suggestions: [],
+        suggestions_reason: "no owner-authored suggestions exist for this domain yet",
+      };
+    },
+
+    current() {
+      const found = domain();
+      if (!found.ok) return { ok: false, failure: found.failure, reason: found.reason };
+      return { ok: true, authority_domain: found.domain, current: journal.currentForDomain(found.domain) };
+    },
+
+    blocker() {
+      const found = domain();
+      if (!found.ok) return { ok: false, failure: found.failure, reason: found.reason };
+      return { ok: true, authority_domain: found.domain, blocker: publicBlocker(found.entry) };
+    },
+
+    catalogue() {
+      const found = domain();
+      const entries = found.entries ?? readExceptionIndex({ fs, inbox, parseException: atomic.parseException });
+      return { ok: true, catalogue: scopeCatalogue(entries) };
+    },
+
+    suggestions() {
+      return {
+        ok: true, suggestions: [],
+        reason: "no owner-authored suggestions exist for this domain yet",
+      };
+    },
+  };
+
   return {
     receipts,
     operations,
     journal,
     currentRevision,
+    domain,
+    reads,
 
     /**
      * Prepare a review.
@@ -106,18 +187,14 @@ export function createAuthorityTransaction({
       if (!auth.ok) return { ok: false, failure: auth.failure, reason: auth.reason };
       const readSessionId = auth.context.read_session_id;
 
-      const domain = resolveDomain();
-      if (!domain) {
-        return {
-          ok: false, failure: "no_authority_domain",
-          reason: "this host is not currently acting for an owner-gated authority domain",
-        };
-      }
+      const found = domain();
+      if (!found.ok) return { ok: false, failure: found.failure, reason: found.reason };
+      const domainId = found.domain;
 
       const action = typeof body?.authorization_action === "string"
         ? body.authorization_action : "authorize_goal";
       const amending = action === "narrow_authority" || action === "revoke_authority";
-      const lineage = amending ? journal.currentForDomain(domain) : null;
+      const lineage = amending ? journal.currentForDomain(domainId) : null;
       if (amending && !lineage) {
         return { ok: false, failure: "no_current_authority", reason: "there is no authority here to amend" };
       }
@@ -125,9 +202,9 @@ export function createAuthorityTransaction({
       const receipt = receipts.issue({
         draft: body?.draft ?? null,
         action,
-        authorityDomain: domain,
+        authorityDomain: domainId,
         // Bound HOST-side. A browser cannot point a review at another domain.
-        sourceExceptionId: amending ? null : domain,
+        sourceExceptionId: amending ? null : domainId,
         goalId: amending ? lineage.goal.goal_id : null,
         baseRevision: amending ? lineage.revision : null,
         resultingScopeRefs: amending

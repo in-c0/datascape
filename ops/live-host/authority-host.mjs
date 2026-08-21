@@ -15,6 +15,16 @@ import { fileURLToPath } from "node:url";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
+/**
+ * The read operations this host serves.
+ *
+ * A CLOSED LIST, stated here rather than inferred from whatever the transaction
+ * happens to expose. A read surface that grew by accident — a new method on an
+ * object silently becoming a new HTTP route — is exactly how something private
+ * becomes addressable.
+ */
+const READ_ROUTES = ["context", "current", "blocker", "catalogue", "suggestions"];
+
 const load = (name) => import(pathToFileURL(path.join(HERE, name)).href);
 
 const session = await load("authority-read-session.js");
@@ -188,7 +198,7 @@ export function createAuthorityHost({
      */
     operations: [
       "unlock_read", "lock_read", "status",
-      ...(transaction ? ["prepare", "commit"] : []),
+      ...(transaction ? [...READ_ROUTES, "prepare", "commit"] : []),
     ],
 
     /** The request-scoped principal, or a named refusal. */
@@ -224,6 +234,20 @@ export function createAuthorityHost({
       const auth = this.authenticate(req);
       if (!auth.ok) {
         return ctx.send(res, 401, { error: auth.failure, detail: auth.reason }, ctx.origin), true;
+      }
+
+      // THE READ SURFACE. Authenticated, and it accepts no argument that could
+      // select which authority is being read — every operation resolves the
+      // domain host-side for itself.
+      if (req.method === "POST" && READ_ROUTES.includes(route)) {
+        if (!transaction?.reads?.[route]) {
+          return ctx.send(res, 501, {
+            error: "not_implemented",
+            detail: "This host was composed without an authority read surface.",
+          }, ctx.origin), true;
+        }
+        const result = transaction.reads[route]();
+        return ctx.send(res, result.ok ? 200 : 409, result, ctx.origin), true;
       }
 
       if (req.method === "POST" && (route === "prepare" || route === "commit")) {

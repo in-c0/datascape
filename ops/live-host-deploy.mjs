@@ -95,6 +95,7 @@ export const AUTHORITY_ARTIFACT = [
   { dest: "_authority/authority-operation.js", source: "src/continuity/control/authority-operation.js" },
   { dest: "_authority/authority-exception-port.js", source: "src/continuity/control/authority-exception-port.js" },
   { dest: "_authority/authority-journal.js", source: "src/continuity/control/authority-journal.js" },
+  { dest: "_authority/authority-domain.js", source: "src/continuity/control/authority-domain.js" },
   // The transaction composition, and the record construction it reuses. The
   // closure below is what `createAuthorityStore` actually pulls in; the runtime
   // gate verifies it exactly, so this list is the authority on what ships

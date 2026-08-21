@@ -177,14 +177,19 @@ export async function deployedWorld({ damage = null } = {}) {
     deployMod, entryMod, entry, storeBefore,
     advance: (ms) => { clock += ms; },
     /** Start through the REAL entry point, with a device we control. */
-    async launch({ ownerControlsOrigin = undefined } = {}) {
+    async launch({ ownerControlsOrigin = undefined, authorityLoop = undefined } = {}) {
       // The origin is read from the environment by the real entry point, so a
       // test that wants an incompatible topology has to change the environment
       // rather than pass a flag past it — otherwise it would be exercising a
       // path production does not have.
       const previous = process.env.CONTINUITY_OWNER_CONTROLS_ORIGIN;
+      const previousLoop = process.env.CONTINUITY_AUTHORITY_LOOP;
       if (ownerControlsOrigin !== undefined) {
         process.env.CONTINUITY_OWNER_CONTROLS_ORIGIN = ownerControlsOrigin;
+      }
+      if (authorityLoop !== undefined) {
+        if (authorityLoop === null) delete process.env.CONTINUITY_AUTHORITY_LOOP;
+        else process.env.CONTINUITY_AUTHORITY_LOOP = authorityLoop;
       }
       try {
         return await world.startWith();
@@ -192,6 +197,10 @@ export async function deployedWorld({ damage = null } = {}) {
         if (ownerControlsOrigin !== undefined) {
           if (previous === undefined) delete process.env.CONTINUITY_OWNER_CONTROLS_ORIGIN;
           else process.env.CONTINUITY_OWNER_CONTROLS_ORIGIN = previous;
+        }
+        if (authorityLoop !== undefined) {
+          if (previousLoop === undefined) delete process.env.CONTINUITY_AUTHORITY_LOOP;
+          else process.env.CONTINUITY_AUTHORITY_LOOP = previousLoop;
         }
       }
     },
@@ -237,12 +246,22 @@ export async function deployedWorld({ damage = null } = {}) {
     file: (id) => fs.readFileSync(path.join(inbox, `${id}.md`), "utf8"),
     amendments: (id) => (world.file(id).match(/OWNER [A-Z ]+ /g) || []).length,
     status: (id) => world.file(id).match(/^status: (.+)$/m)[1],
-    fixture(id = "2026-08-22-deployed-0001", { status = "blocked-on-owner", proposed = "do the thing" } = {}) {
+    fixture(id = "2026-08-22-deployed-0001", {
+      status = "blocked-on-owner", proposed = "do the thing",
+      loop = "datascape/deployed", evidence = null,
+    } = {}) {
       fs.writeFileSync(path.join(inbox, `${id}.md`), [
-        "---", `id: ${id}`, "loop: datascape/deployed", "title: An owner ruling is required",
+        "---", `id: ${id}`, `loop: ${loop}`, "title: An owner ruling is required",
         "severity: medium", `status: ${status}`, "fingerprint: deployed",
         "opened: 2026-08-22T08:00:00+10:00", "updated: 2026-08-22T08:00:00+10:00",
         "occurrences: 1", `proposed: ${proposed}`, "---", "", "# An owner ruling is required", "",
+        // The two sections the read surface may show, plus one it must not, so
+        // a test can tell "the section was absent" apart from "the surface
+        // withheld it".
+        ...(evidence
+          ? ["## Evidence", "", evidence, "", "## Proposed action", "", proposed, "",
+            "## Owner steps", "", "- a step she should never receive over HTTP", ""]
+          : []),
       ].join("\n"));
       return id;
     },
