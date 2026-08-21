@@ -107,6 +107,17 @@ export function retireOperationId(intent) {
 }
 
 /**
+ * Is there an action API at all?
+ *
+ * When there is not, the surface degrades to read-only rather than rendering
+ * controls that silently fail: she must never be unable to tell "acted" from
+ * "nothing happened".
+ */
+export function actionsAvailable() {
+  return Boolean(ACTION_API);
+}
+
+/**
  * Record an owner ruling.
  *
  * Returns the server's rebuilt queue. Nothing is removed optimistically: a

@@ -70,3 +70,24 @@ test("actions: no verification result is ever persisted in the browser", () => {
     assert.ok(!new RegExp(`setItem[^)]*${forbidden}`, "i").test(source), `${forbidden} must not be persisted`);
   }
 });
+
+test("actions: every export the UI imports actually exists", async () => {
+  // `npm test` does not run the bundler, so a deleted export passes here and
+  // fails the build minutes later in CI. That happened: an edit to the
+  // operation-id block took `actionsAvailable` with it, and nothing local
+  // noticed. This closes the gap without making the test suite depend on vite.
+  const actions = await import("../src/continuity/actions.js");
+  const imported = new Set();
+  for (const file of ["BriefingView.jsx", "ContinuityView.jsx", "LiveAuthorityView.jsx"]) {
+    const source = fs.readFileSync(new URL(`../src/continuity/${file}`, import.meta.url), "utf8");
+    const match = source.match(/import\s*\{([^}]*)\}\s*from\s*["']\.\/actions\.js["']/);
+    if (!match) continue;
+    for (const name of match[1].split(",").map((n) => n.trim().split(/\s+as\s+/)[0]).filter(Boolean)) {
+      imported.add(name);
+    }
+  }
+  assert.ok(imported.size > 0, "the views do import from actions.js");
+  for (const name of imported) {
+    assert.ok(name in actions, `${name} is imported by a view but not exported`);
+  }
+});
