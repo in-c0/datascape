@@ -59,6 +59,7 @@ export function createAuthorityDraft({
   max_cost = 0,
   max_wall_time_ms = 15 * 60 * 1000,
   credential_policy = "none",
+  scope_label = null,
 }) {
   if (!draft_id) throw new Error("an authority draft requires draft_id");
   if (!["persistent_goal", "bounded_canary"].includes(kind)) throw new Error(`unknown draft kind: ${kind}`);
@@ -67,6 +68,8 @@ export function createAuthorityDraft({
     kind,
     statement,
     scope_refs: [...scope_refs],
+    // Owner-facing name for the same boundary, from the catalogue.
+    scope_label,
     allowed_capabilities: [...allowed_capabilities],
     stop_conditions: [...stop_conditions],
     // Defaults are the restrictive end of every axis, and none of them is
@@ -144,7 +147,11 @@ export function suggestFromEvidence(records) {
 export function resolveScopeSelection(selection, catalogue) {
   const matches = catalogue.filter((entry) =>
     entry.labels.some((l) => l.toLowerCase() === String(selection).toLowerCase()));
-  if (matches.length === 1) return { resolved: true, scope_refs: [...matches[0].refs] };
+  // The display label comes from the authoritative catalogue, not from
+  // re-casing a repo slug: "in-c0/datascape" cannot be turned back into
+  // "DataScape" by any rule, and guessing branding is how a preview starts
+  // saying something the catalogue never said.
+  if (matches.length === 1) return { resolved: true, scope_refs: [...matches[0].refs], scope_label: matches[0].labels[0] };
   if (matches.length === 0) {
     return { resolved: false, outcome: "needs_clarification", reason: `no known project or area matches "${selection}"` };
   }
@@ -176,6 +183,13 @@ export function renderPreview(draft, envelope) {
     may_autonomously: may,
     must_stop_and_ask: mustAsk,
     scope_refs: [...draft.scope_refs],
+    // The boundary the owner is actually agreeing to, rendered from EVERY
+    // operative scope constraint. Showing only the first ref told her she was
+    // granting repo-wide authority when the envelope was narrower than that —
+    // and the authorization preview is precisely the moment she is supposed to
+    // understand what is being granted, so a partial rendering there is worse
+    // than no rendering at all.
+    scope_boundary: draft.scope_label || describeScope(draft.scope_refs),
     max_cost: draft.max_cost,
     max_iteration_minutes: Math.round(draft.max_wall_time_ms / 60000),
     stop_conditions: [...draft.stop_conditions],
@@ -233,6 +247,29 @@ export function authorize(draft, { actor, action, at, revision = 1 }) {
     goal,
     envelope,
   };
+}
+
+/**
+ * A human boundary phrase covering ALL scope refs.
+ *
+ * `repo:in-c0/datascape` plus `semantic-centre:continuity` narrows to Continuity
+ * INSIDE that repo — so the phrase must name both, most-general first, and can
+ * never collapse to the repository alone.
+ */
+export function describeScope(scopeRefs) {
+  const label = (ref) => {
+    const [kind, ...rest] = String(ref).split(":");
+    const value = rest.join(":");
+    if (kind === "repo") return value.split("/").pop();
+    if (kind === "semantic-centre") return value.charAt(0).toUpperCase() + value.slice(1);
+    return value || ref;
+  };
+  const ordered = [
+    ...scopeRefs.filter((r) => r.startsWith("repo:")),
+    ...scopeRefs.filter((r) => r.startsWith("semantic-centre:")),
+    ...scopeRefs.filter((r) => !r.startsWith("repo:") && !r.startsWith("semantic-centre:")),
+  ];
+  return ordered.map(label).join(" / ") || null;
 }
 
 function validateDraft(draft) {

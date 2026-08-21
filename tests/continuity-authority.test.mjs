@@ -5,6 +5,7 @@ import {
   createAuthorityDraft, createAuthorityLedger, createPauseState, renderPreview,
   resolveScopeSelection, suggestFromEvidence,
 } from "../src/continuity/control/authority-draft.js";
+import { describeScope } from "../src/continuity/control/authority-draft.js";
 import { SCOPE_CATALOGUE, fixtureStates } from "../src/continuity/control/authority-fixture.js";
 import { verifyGoalAuthority } from "../src/continuity/control/goal.js";
 import { admitWorkDeclaration } from "../src/continuity/control/declaration.js";
@@ -216,4 +217,48 @@ test("V6.1.4: F1 is the real state and no fixture grants real authority", () => 
       `${state.key} must not grant authority merely by existing`);
   }
   assert.equal(Object.keys(F).length, 7, "F1 through F7");
+});
+
+// ---- §8 regression: the preview must not widen the displayed scope ----------
+
+test("V6.1.4: the preview renders every operative scope constraint, never just the first", () => {
+  // The defect the visual review caught: a draft scoped to Continuity INSIDE
+  // the datascape repo rendered its boundary as "anything outside
+  // in-c0/datascape" — telling the owner she was granting repo-wide authority
+  // at the exact moment she is supposed to understand what she is granting.
+  const refs = ["repo:in-c0/datascape", "semantic-centre:continuity"];
+  const draft = createAuthorityDraft({
+    draft_id: "scope", statement: "Keep Continuity green", scope_refs: refs,
+    allowed_capabilities: ["run_tests"],
+  });
+  const preview = renderPreview(draft, composeEnvelope(draft.allowed_capabilities));
+
+  assert.equal(preview.scope_boundary, "datascape / Continuity",
+    "with no catalogue label, the boundary is derived from every ref");
+
+  // With the catalogue's own label, the owner sees the name she typed.
+  const labelled = renderPreview(
+    createAuthorityDraft({ ...draft, scope_label: "DataScape / Continuity" }),
+    composeEnvelope(draft.allowed_capabilities),
+  );
+  assert.equal(labelled.scope_boundary, "DataScape / Continuity");
+  assert.ok(/Continuity/.test(preview.scope_boundary),
+    "the narrowing constraint must survive into the rendered boundary");
+
+  // Negative control: the boundary may NEVER read as repo-only when a narrower
+  // constraint is present.
+  assert.notEqual(preview.scope_boundary, "datascape");
+  assert.notEqual(preview.scope_boundary, "in-c0/datascape");
+
+  // Repo-only input still renders repo-only — the rule is fidelity, not
+  // always appending something.
+  const repoOnly = renderPreview(
+    createAuthorityDraft({ draft_id: "r", statement: "s", scope_refs: ["repo:in-c0/datascape"], allowed_capabilities: ["run_tests"] }),
+    composeEnvelope(["run_tests"]),
+  );
+  assert.equal(repoOnly.scope_boundary, "datascape");
+
+  // And it is deterministic and order-independent.
+  assert.equal(describeScope([...refs].reverse()), describeScope(refs));
+  assert.equal(describeScope([]), null);
 });

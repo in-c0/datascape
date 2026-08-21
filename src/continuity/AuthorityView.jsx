@@ -137,7 +137,16 @@ export default function AuthorityView() {
               <p className="au-card__h">A project, or an area inside one.</p>
               <input
                 className="au-input" value={scopeText} placeholder="DataScape / Continuity"
-                onChange={(e) => setScopeText(e.target.value)}
+                onChange={(e) => {
+                  setScopeText(e.target.value);
+                  // The preview must reflect what she actually typed, not the
+                  // scope the fixture happened to start with.
+                  const next = resolveScopeSelection(e.target.value, SCOPE_CATALOGUE);
+                  set({
+                    scope_refs: next.resolved ? next.scope_refs : [],
+                    scope_label: next.resolved ? next.scope_label : null,
+                  });
+                }}
               />
               {scopeText && !scope.resolved && (
                 <p className="au-card__h" style={{ marginTop: 9, color: "var(--au-amber)" }}>
@@ -245,7 +254,7 @@ export default function AuthorityView() {
         {step === "review" && (
           <>
             <Ask title="This is what you would be granting." hint="Read it once. Nothing has been granted yet." />
-            <Preview preview={preview} scope={scope} />
+            <Preview preview={preview} />
             <div className="au__acts">
               <button className="au-btn au-btn--go" type="button" disabled={!ready} onClick={() => setStep("authorized")}>
                 {path === "canary" ? "Authorize this one task" : "Authorize"}
@@ -306,12 +315,14 @@ function Choose({ onPick }) {
           </div>
         </button>
       </div>
-      <button className="au__notnow" type="button">Not now</button>
+      {/* Never inert. In review mode this is the non-authorizing exit; in the
+          real flow it maps to the exception layer's existing Defer semantics. */}
+      <a className="au__notnow" href="?view=briefing">Not now</a>
     </>
   );
 }
 
-function Preview({ preview, scope }) {
+function Preview({ preview }) {
   return (
     <div className="au-card au-prev">
       <p className="au-prev__t">{preview.statement || "—"}</p>
@@ -323,7 +334,7 @@ function Preview({ preview, scope }) {
         <div className="au-prev__k au-prev__k--ask">It must stop and ask you before</div>
         <ul>
           {preview.must_stop_and_ask.slice(0, 6).map((m) => <li key={m}>{m}</li>)}
-          <li>anything outside {scope.resolved ? scope.scope_refs[0].split(":").pop() : "this area"}</li>
+          <li>anything outside {preview.scope_boundary || "this area"}</li>
         </ul>
       </div>
       <div className="au-prev__meta">
@@ -338,7 +349,7 @@ function Preview({ preview, scope }) {
 function Authorized({ preview, revoked, narrowed, paused, onPause, onNarrow, onRevoke, onEdit }) {
   const state = revoked ? "off" : paused ? "paused" : "on";
   const label = revoked ? "Revoked — no new work will start"
-    : paused ? "Paused — running work will finish and stop"
+    : paused ? "Paused — running work stops at its next safe point"
       : narrowed ? "Active, narrowed to Continuity only" : "Active";
   return (
     <>
@@ -346,14 +357,16 @@ function Authorized({ preview, revoked, narrowed, paused, onPause, onNarrow, onR
         title={revoked ? "Autonomy is off." : paused ? "Autonomy is paused." : "DataScape is working on this."}
         hint={revoked
           ? "Nothing new will start. Everything already recorded is untouched."
-          : "You can pause, narrow or stop this at any time, and it takes effect at the next safe point."}
+          : paused
+            ? "Anything running now stops at its next safe checkpoint. It does not keep going to finish the job."
+            : "You can pause, narrow or stop this at any time, and it takes effect at the next safe point."}
       />
       <div className="au-card">
         <div className="au-state">
           <span className={`au-dot au-dot--${state}`} />
           <span>{label}</span>
         </div>
-        <Preview preview={preview} scope={{ resolved: true, scope_refs: ["semantic-centre:continuity"] }} />
+        <Preview preview={preview} />
         <div className="au-revs">
           Authority revision <b>{revoked ? 3 : narrowed ? 2 : 1}</b>
           {narrowed && !revoked ? " · scope narrowed 22 Aug, work outside it stops at its next checkpoint" : ""}

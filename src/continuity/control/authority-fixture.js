@@ -19,6 +19,7 @@ export const SCOPE_CATALOGUE = [
 const BASE = {
   statement: "Keep Continuity's tests and deployed briefing surface green",
   scope_refs: ["repo:in-c0/datascape", "semantic-centre:continuity"],
+  scope_label: "DataScape / Continuity",
   allowed_capabilities: ["inspect_repository", "run_tests", "modify_code", "run_verification", "prepare_pull_requests"],
   stop_conditions: ["the suite has been green for three consecutive days"],
   max_cost: 0,
@@ -48,7 +49,7 @@ export function fixtureStates() {
         ...createAuthorityDraft({
           draft_id: "F4", kind: "bounded_canary",
           statement: "Verify the deployed briefing surface at the current head",
-          scope_refs: BASE.scope_refs,
+          scope_refs: BASE.scope_refs, scope_label: BASE.scope_label,
           allowed_capabilities: ["inspect_repository", "run_verification"],
           max_wall_time_ms: 15 * 60 * 1000,
         }),
@@ -64,7 +65,7 @@ export function fixtureStates() {
         ...createAuthorityDraft({
           draft_id: "F5", kind: "bounded_canary",
           statement: "Verify the deployed briefing surface at the current head",
-          scope_refs: BASE.scope_refs,
+          scope_refs: BASE.scope_refs, scope_label: BASE.scope_label,
           allowed_capabilities: ["inspect_repository", "run_verification"],
         }),
         operation: "run_verification",
