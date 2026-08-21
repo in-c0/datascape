@@ -126,6 +126,32 @@ export function clearedCookie() {
   return `${COOKIE_NAME}=; Path=${COOKIE_PATH}; HttpOnly; SameSite=Strict; Max-Age=0`;
 }
 
+/**
+ * Can a SameSite=Strict cookie set by `apiOrigin` travel on a request the page
+ * at `uiOrigin` makes?
+ *
+ * Only if they are the same site. Port is not part of a site, so 127.0.0.1:5313
+ * and 127.0.0.1:5319 are fine — but `localhost` and `127.0.0.1` are DIFFERENT
+ * HOSTS, and that is the topology the launcher currently produces: it opens the
+ * briefing on localhost while the API answers on 127.0.0.1. The owner-read
+ * cookie would be set and then never sent, and the authority surface would
+ * authenticate nobody.
+ *
+ * The fix is to serve the owner-controls surface from the same host as the API,
+ * NOT to weaken the cookie to SameSite=None over loopback HTTP.
+ */
+export function sameSiteWith(uiOrigin, apiOrigin) {
+  try {
+    const ui = new URL(uiOrigin);
+    const api = new URL(apiOrigin);
+    // Scheme must match too: a Strict cookie is not sent across a scheme change.
+    if (ui.protocol !== api.protocol) return false;
+    return ui.hostname === api.hostname;
+  } catch {
+    return false;
+  }
+}
+
 export function readCookie(header, name = COOKIE_NAME) {
   if (!header) return null;
   for (const part of String(header).split(";")) {

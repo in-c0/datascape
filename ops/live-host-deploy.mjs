@@ -369,10 +369,21 @@ export async function authorityPreflight({ liveDir = liveDir_(), stateDir: sd = 
   // outruns production reality — the operator gate says PASS, the host says
   // FAIL, and only one of them is in the report.
   //
-  // The entry point is the authority on this question, so ask it.
-  const entry = await import(pathToFileURL(path.join(repoDir(), "ops", "live-host", "briefing-server.mjs")).href);
+  // Ask the DEPLOYED entry point, not the checkout's copy of it.
+  //
+  // Delegating to `repoDir()/ops/live-host/briefing-server.mjs` shared source
+  // semantics only while the working tree happened to match the release: a
+  // dirty checkout could return PASS for a host that fails at startup. That is
+  // the same provenance class already fixed for the guard transformation, and
+  // an operator gate that runs unreviewed logic is exactly how a report and a
+  // host disagree.
+  const entryPath = path.join(liveDir, "briefing-server.mjs");
+  if (!fs.existsSync(entryPath)) {
+    return { ok: false, reason: "no deployed entry point to ask", expected: AUTHORITY_ARTIFACT.length };
+  }
+  const entry = await import(`${pathToFileURL(entryPath).href}?deployed=${sha(read(entryPath) ?? "")}`);
   const verdict = entry.manifestAuthorityGate({ liveDir, stateDir: sd });
-  return { ...verdict, expected: AUTHORITY_ARTIFACT.length };
+  return { ...verdict, expected: AUTHORITY_ARTIFACT.length, gate_source: "deployed" };
 }
 
 /**

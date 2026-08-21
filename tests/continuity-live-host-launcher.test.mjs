@@ -170,11 +170,15 @@ for (const [label, damage, expectation] of [
  * No launcher, no module import, no test-side wiring. If the gate is not in
  * that file, this test cannot see it — which is the point.
  */
-async function spawnLikeCatchup(world, port) {
+async function spawnLikeCatchup(world) {
+  // PORT 0: the OS picks a free one and the host prints which. Fixed random
+  // ports in a range collided between parallel test files often enough to make
+  // this gate flaky, and a release gate that fails for the harness teaches
+  // people to re-run it rather than read it.
   const child = spawn(process.execPath, [path.join(world.live, "briefing-server.mjs")], {
     env: {
       ...process.env,
-      BRIEFING_API_PORT: String(port),
+      BRIEFING_API_PORT: "0",
       // Test-only disable: the production path is interactive-capable by
       // default, and a spawned test must never be able to prompt her.
       OWNER_PRESENCE_INTERACTIVE: "0",
@@ -189,23 +193,25 @@ async function spawnLikeCatchup(world, port) {
   child.stdout.on("data", (d) => { out += d; });
   child.stderr.on("data", (d) => { err += d; });
 
-  // Wait for it to answer, or to die.
+  // Wait for the status line, which carries the port it actually bound.
   const deadline = Date.now() + 15000;
+  let port = null;
   while (Date.now() < deadline) {
+    const line = out.trim().split("\n").filter(Boolean).pop();
+    if (line) {
+      try { port = JSON.parse(line).port ?? null; } catch { /* still streaming */ }
+    }
+    if (port) break;
     if (child.exitCode !== null) break;
-    try {
-      const probe = await fetch(`http://127.0.0.1:${port}/api/decisions`, { signal: AbortSignal.timeout(500) });
-      if (probe.ok) break;
-    } catch { /* not up yet */ }
-    await new Promise((r) => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, 100));
   }
-  return { child, out: () => out, err: () => err, stop: () => { try { child.kill(); } catch { /* gone */ } } };
+  return { child, port, out: () => out, err: () => err, stop: () => { try { child.kill(); } catch { /* gone */ } } };
 }
 
 test("startup: the real spawned command gates before it can rule", async () => {
   const world = await deployedWorld();
-  const port = 5390 + Math.floor(Math.random() * 300);
-  const proc = await spawnLikeCatchup(world, port);
+  const proc = await spawnLikeCatchup(world);
+  const port = proc.port;
   try {
     const status = JSON.parse(proc.out().trim().split("\n").filter(Boolean).pop() ?? "{}");
     assert.equal(status.mode, "owner_rulings", `${proc.out()}\n${proc.err()}`);
@@ -239,8 +245,8 @@ for (const [label, damage] of [
 ]) {
   test(`startup: ${label} cannot rule through the real spawned command`, async () => {
     const world = await deployedWorld({ damage });
-    const port = 5390 + Math.floor(Math.random() * 300);
-    const proc = await spawnLikeCatchup(world, port);
+    const proc = await spawnLikeCatchup(world);
+    const port = proc.port;
     try {
       const status = JSON.parse(proc.out().trim().split("\n").filter(Boolean).pop() ?? "{}");
       assert.equal(status.mode, "read_only", `${proc.out()}\n${proc.err()}`);
@@ -866,4 +872,60 @@ test("authority preflight: the operator gate and the runtime gate agree", async 
       assert.equal(started.mode, "owner_rulings", "/api/act unaffected either way");
     } finally { await world.close(); }
   }
+});
+
+test("preflight provenance: a dirty checkout cannot change the deployed verdict", async () => {
+  const world = await deployedWorld();
+  try {
+    const clean = await world.deployMod.authorityPreflight({ liveDir: world.live, stateDir: world.state });
+    assert.equal(clean.ok, true);
+    assert.equal(clean.gate_source, "deployed");
+
+    // Sabotage the WORKING TREE's copy of the gate so it would pass anything.
+    // Delegating to the checkout shared source semantics only while the tree
+    // happened to match the release — the same provenance class already fixed
+    // for the guard transformation.
+    const repoGate = path.join(world.repo, "ops", "live-host", "briefing-server.mjs");
+    fs.writeFileSync(repoGate,
+      "export function manifestAuthorityGate() { return { ok: true, entry: 'anything' } }\n");
+
+    // Now break the deployed authority world. The checkout would say fine.
+    fs.writeFileSync(path.join(world.live, "_authority", "smuggled.mjs"), "export const x = 1\n");
+
+    const verdict = await world.deployMod.authorityPreflight({ liveDir: world.live, stateDir: world.state });
+    assert.equal(verdict.ok, false, "the deployed gate is the one that answers");
+    assert.match(verdict.reason, /unrecorded authority code/);
+
+    // And the runtime agrees, which is the whole point of one implementation.
+    const started = await world.launch();
+    assert.equal(started.authority_available, false);
+    assert.equal(verdict.ok, started.authority_available);
+  } finally { await world.close(); }
+});
+
+test("cookie transport: a specific origin gets credentials, and never a wildcard", async () => {
+  const world = await deployedWorld();
+  try {
+    const started = await world.launch();
+    const origin = "http://127.0.0.1:5313";
+    const response = await fetch(`http://127.0.0.1:${started.port}/api/decisions`, {
+      headers: { Origin: origin },
+    });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("access-control-allow-origin"), origin);
+    // Without this the browser drops the Set-Cookie on a cross-origin fetch and
+    // never sends it back, so the authority surface would authenticate nobody.
+    assert.equal(response.headers.get("access-control-allow-credentials"), "true");
+    assert.notEqual(response.headers.get("access-control-allow-origin"), "*",
+      "credentials and a wildcard origin are mutually exclusive, and for good reason");
+    assert.match(response.headers.get("vary") ?? "", /Origin/);
+
+    // A foreign origin never gets that far: the loopback check refuses first,
+    // so there is no echoed origin to attach credentials to.
+    const foreign = await fetch(`http://127.0.0.1:${started.port}/api/decisions`, {
+      headers: { Origin: "https://evil.example" },
+    });
+    assert.equal(foreign.status, 403);
+    assert.equal(foreign.headers.get("access-control-allow-credentials"), null);
+  } finally { await world.close(); }
 });

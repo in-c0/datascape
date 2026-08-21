@@ -10,7 +10,8 @@ import fs from "node:fs";
 
 import {
   COOKIE_NAME, COOKIE_PATH, MUTATION_OPERATIONS, READ_OPERATIONS, SESSION_TTL_MS,
-  authenticateRequest, clearedCookie, createReadSessionStore, permitsRead, readCookie, sessionCookie,
+  authenticateRequest, clearedCookie, createReadSessionStore, permitsRead, readCookie,
+  sameSiteWith, sessionCookie,
 } from "../src/continuity/control/authority-read-session.js";
 
 function clock(start = 1_000_000) {
@@ -129,4 +130,22 @@ test("read session: the source carries no path to disk or to a token log", () =>
   assert.ok(!/writeFileSync|appendFileSync|localStorage|sessionStorage/.test(source),
     "a session that reaches disk or browser storage is not process-memory-only");
   assert.ok(!/console\.(log|info|warn|error)/.test(source), "and it must never be logged");
+});
+
+test("read session: the cookie only works when the surface is same-site with the API", () => {
+  // Port is not part of a site, so this is the topology that works.
+  assert.equal(sameSiteWith("http://127.0.0.1:5313", "http://127.0.0.1:5319"), true);
+
+  // And this is the topology the launcher currently produces: it opens the
+  // briefing on localhost while the API answers on 127.0.0.1. Different hosts,
+  // so a SameSite=Strict cookie is set and then never sent — the authority
+  // surface would authenticate nobody.
+  assert.equal(sameSiteWith("http://localhost:5313", "http://127.0.0.1:5319"), false);
+
+  // A cloud-served surface is further still, and the answer there is to serve
+  // owner controls from the loopback side, NOT to weaken the cookie to
+  // SameSite=None over plain HTTP.
+  assert.equal(sameSiteWith("https://datascape.example", "http://127.0.0.1:5319"), false);
+  assert.equal(sameSiteWith("https://127.0.0.1:5313", "http://127.0.0.1:5319"), false,
+    "a scheme change is not same-site either");
 });

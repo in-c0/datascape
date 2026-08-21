@@ -165,3 +165,75 @@ test("adapter: nothing user-facing imports it", () => {
   assert.ok(!/verifiedRefs|new Set\(|registerVerified/.test(adapter),
     "no registry of refs, and no credential to present");
 });
+
+// ---------------------------------------------------------------------------
+// The complete postcondition, not just the ref
+// ---------------------------------------------------------------------------
+
+/** Put an exception into an arbitrary (status, refs) state. */
+function stateWith({ status, refs = [] }) {
+  const { dir, id } = inbox(status);
+  if (refs.length) {
+    const file = path.join(dir, `${id}.md`);
+    const body = refs
+      .map((ref) => `OWNER AUTHORIZED 2026-08-22T11:00:00+10:00 (via datascape/authority) [${ref}]`)
+      .join("\n");
+    fs.writeFileSync(file, `${fs.readFileSync(file, "utf8")}\n${body}\n`);
+  }
+  return { dir, id };
+}
+
+test("adapter: our ref present but NOT resolved is inconsistent, not a replay", () => {
+  // The exact shape a crash between the ref landing and the status changing
+  // would leave. Keying only on the ref called this "already done".
+  for (const status of ["blocked-on-owner", "investigating"]) {
+    const { dir, id } = stateWith({ status, refs: ["authority:half"] });
+    const adapter = createAuthorityExceptionAdapter({ inbox: dir, now, atomic });
+    const before = fs.readFileSync(path.join(dir, `${id}.md`), "utf8");
+
+    const result = adapter.resolve(id, "authority:half");
+    assert.equal(result.ok, false, status);
+    assert.equal(result.failure, "inconsistent_resolution", status);
+    assert.equal(fs.readFileSync(path.join(dir, `${id}.md`), "utf8"), before, "and it writes nothing");
+  }
+});
+
+test("adapter: an item that is not owner-gated accepts no first authority", () => {
+  for (const status of ["resolved", "investigating", "new"]) {
+    const { dir, id } = stateWith({ status });
+    const adapter = createAuthorityExceptionAdapter({ inbox: dir, now, atomic });
+    const before = fs.readFileSync(path.join(dir, `${id}.md`), "utf8");
+
+    const result = adapter.resolve(id, "authority:unwanted");
+    assert.equal(result.ok, false, status);
+    assert.equal(result.failure, "not_owner_gated", status);
+    assert.equal(result.status, status);
+    assert.equal(fs.readFileSync(path.join(dir, `${id}.md`), "utf8"), before,
+      "an authority resolution must not be appended to something nobody is waiting on");
+  }
+});
+
+test("adapter: resolved with our exact ref replays without writing", () => {
+  const { dir, id } = stateWith({ status: "resolved", refs: ["authority:done"] });
+  const adapter = createAuthorityExceptionAdapter({ inbox: dir, now, atomic });
+  const before = fs.readFileSync(path.join(dir, `${id}.md`), "utf8");
+
+  const result = adapter.resolve(id, "authority:done");
+  assert.equal(result.ok, true);
+  assert.equal(result.replayed, true);
+  assert.equal(fs.readFileSync(path.join(dir, `${id}.md`), "utf8"), before);
+});
+
+test("adapter: blocked-on-owner with no ref is the ONLY state that writes", () => {
+  const { dir, id } = stateWith({ status: "blocked-on-owner" });
+  const adapter = createAuthorityExceptionAdapter({ inbox: dir, now, atomic });
+
+  const result = adapter.resolve(id, "authority:only-path");
+  assert.equal(result.ok, true);
+  assert.equal(result.replayed, false);
+  assert.equal(result.status, "resolved");
+
+  const after = adapter.inspect(id);
+  assert.equal(after.status, "resolved");
+  assert.deepEqual(after.refs, ["authority:only-path"]);
+});

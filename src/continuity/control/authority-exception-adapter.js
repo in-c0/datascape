@@ -85,16 +85,43 @@ export function createAuthorityExceptionAdapter({ inbox, now, atomic }) {
         return { ok: false, failure: "unknown_exception", reason: `no exception ${exceptionId}` };
       }
 
-      if (current.refs.includes(rulingRef)) {
-        // Already done by this exact authority. Recovery calling again must not
-        // append a second amendment.
-        return { ok: true, replayed: true, status: current.status, ruling_ref: rulingRef };
+      // AN EXPLICIT STATE MACHINE over (our ref present?, other ref present?,
+      // status). The first version keyed only on the ref, so "same ref" was
+      // treated as a completed replay whatever the status said — including a
+      // half-written state where the ref landed and the status did not, which
+      // is exactly the crash this adapter exists to survive. And with no ref at
+      // all it would happily authorize an exception that was no longer waiting
+      // on anybody.
+      const mine = current.refs.includes(rulingRef);
+      const others = current.refs.filter((ref) => ref !== rulingRef);
+
+      if (mine) {
+        if (current.status === "resolved" && others.length === 0) {
+          // Recovery replaying a completed resolution. Write nothing.
+          return { ok: true, replayed: true, status: current.status, ruling_ref: rulingRef };
+        }
+        return {
+          ok: false, failure: "inconsistent_resolution",
+          reason: `${exceptionId} carries ${rulingRef} but is ${current.status}`
+            + (others.length ? ` and also ${others.join(", ")}` : ""),
+          status: current.status,
+        };
       }
-      if (current.refs.length) {
+
+      if (others.length) {
         return {
           ok: false, failure: "already_authorized",
-          reason: `${exceptionId} was already resolved by ${current.refs.join(", ")}`,
-          existing_refs: current.refs,
+          reason: `${exceptionId} was already resolved by ${others.join(", ")}`,
+          existing_refs: others,
+        };
+      }
+
+      if (current.status !== "blocked-on-owner") {
+        // Nothing is waiting on her here, so there is nothing to authorize.
+        return {
+          ok: false, failure: "not_owner_gated",
+          reason: `${exceptionId} is ${current.status}, not waiting on an owner decision`,
+          status: current.status,
         };
       }
 

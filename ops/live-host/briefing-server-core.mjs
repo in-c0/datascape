@@ -333,7 +333,18 @@ function send(res, code, body, origin) {
     "Content-Type": "application/json",
     "Content-Length": Buffer.byteLength(json),
     "Cache-Control": "no-store",
-    ...(origin ? { "Access-Control-Allow-Origin": origin, "Vary": "Origin" } : {}),
+    // A SPECIFIC origin, echoed only after it passed the loopback check above —
+    // never `*`. Credentials and a wildcard origin are mutually exclusive in
+    // every browser, and for good reason: the pair would let any page send the
+    // owner's cookie here.
+    ...(origin ? {
+      "Access-Control-Allow-Origin": origin,
+      // Required for the owner-read cookie to travel at all on a cross-origin
+      // fetch. Without it the browser drops the Set-Cookie and never sends it
+      // back, so the authority surface would authenticate nobody.
+      "Access-Control-Allow-Credentials": "true",
+      "Vary": "Origin",
+    } : {}),
     "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
   })
