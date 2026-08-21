@@ -23,7 +23,8 @@
     "verify:browser": "node tests/browser/briefing.probe.mjs",
     "verify:semantic": "node tests/browser/semantic.probe.mjs",
     "shadow:preflight": "node ops/shadow-preflight.mjs",
-    "shadow:equivalence": "node ops/shadow-equivalence.mjs"
+    "shadow:equivalence": "node ops/shadow-equivalence.mjs",
+    "github:observe": "node ops/github-observe.mjs"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.7",

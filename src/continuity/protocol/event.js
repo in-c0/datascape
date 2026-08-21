@@ -55,6 +55,21 @@ function fingerprint(text) {
 const oneOf = (value, allowed, fallback = null) => (allowed.includes(value) ? value : fallback);
 
 /**
+ * Normalization may TRANSLATE a foreign vocabulary; it may never OVERWRITE a
+ * value that is already canonical.
+ *
+ * Formalised protocol-wide rather than fixed in one adapter, because the same
+ * mistake produced three separate defects on the first real corpus: a kind map
+ * written for a fixture vocabulary swallowed 37 real owner actions by mapping
+ * canonical inputs through a translation table that did not contain them.
+ * Translation is for foreign shapes only.
+ */
+export function preserveCanonical(value, vocabulary, translate) {
+  if (vocabulary.includes(value)) return value;
+  return translate(value);
+}
+
+/**
  * Normalise a raw adapter payload into the canonical envelope.
  *
  * Returns `{ event }` or `{ rejected, reason }`. Rejection rather than

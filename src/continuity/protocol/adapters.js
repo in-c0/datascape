@@ -5,7 +5,7 @@
 // external, no prose of its own). If both normalise cleanly through one
 // envelope, the protocol is doing its job.
 
-import { EVENT_KINDS, canonicalId, normalizeEvent } from "./event.js";
+import { EVENT_KINDS, TRIGGER, canonicalId, normalizeEvent, preserveCanonical } from "./event.js";
 
 /**
  * The adapter contract. `read` returns raw payloads; `toEvents` maps them into
@@ -71,15 +71,15 @@ const actorType = (raw) => {
   if (raw === "app") return "app";
   return "unknown";
 };
-const initiatorTrigger = (raw) => {
-  const type = actorType(raw);
+const initiatorTrigger = (raw) => preserveCanonical(raw, TRIGGER, (value) => {
+  const type = actorType(value);
   if (type === "human") return "operator";
   if (type === "bot" || type === "app") return "automation";
   return "unknown";
-};
+});
 
 const isOwnerAction = (record) => record.ownerAction === true || record.kind === "owner_action";
-const hubKind = (kind) => (EVENT_KINDS.includes(kind) ? kind : (KIND_FROM_HUB[kind] || "observation"));
+const hubKind = (kind) => preserveCanonical(kind, EVENT_KINDS, (k) => KIND_FROM_HUB[k] || "observation");
 
 const KIND_FROM_HUB = {
   risk: "finding",
