@@ -41,7 +41,13 @@ const BRIEFS = [
 ];
 
 const DEFER_PRESETS = ["1 hour", "Tonight", "Tomorrow"];
-const REPLY_CHIPS = ["Done", "No", "Need context"];
+// Each chip IS an action class, not a phrase the host has to interpret. The
+// label is what she reads; the key is what the host verifies and performs.
+const REPLY_CHIPS = [
+  { key: "reply_done", label: "Done" },
+  { key: "reply_no", label: "No" },
+  { key: "reply_need_context", label: "Need context", note: "Need context" },
+];
 
 const SEVERITY_LABEL = { high: "High", medium: "Med", low: "Low" };
 
@@ -279,8 +285,8 @@ function CTA({ action, onDone, api }) {
         <div className="bf-cta__panel">
           <div className="bf-chips">
             {REPLY_CHIPS.map((chip) => (
-              <button key={chip} type="button" className="bf-chip" disabled={Boolean(pending)}
-                onClick={() => run("reply", { note: chip })}>{chip}</button>
+              <button key={chip.key} type="button" className="bf-chip" disabled={Boolean(pending)}
+                onClick={() => run(chip.key, chip.note ? { note: chip.note } : {})}>{chip.label}</button>
             ))}
           </div>
           <input
@@ -292,7 +298,9 @@ function CTA({ action, onDone, api }) {
               // Enter submits; Shift+Enter is a line break (spec §5.1).
               if (event.key === "Enter" && !event.shiftKey) {
                 event.preventDefault();
-                if (text.trim()) run("reply", { note: text });
+                // Typed words are the editable reply class; the exact text is
+                // bound into the operation and shown in the OS prompt.
+                if (text.trim()) run("reply_need_context", { note: text });
               }
             }}
             placeholder="your reply, persisted verbatim"
