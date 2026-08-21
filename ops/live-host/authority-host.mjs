@@ -15,11 +15,22 @@ import { fileURLToPath } from "node:url";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
-const session = await import(pathToFileURL(path.join(HERE, "authority-read-session.js")).href);
+const load = (name) => import(pathToFileURL(path.join(HERE, name)).href);
+
+const session = await load("authority-read-session.js");
 const {
   MUTATION_OPERATIONS, READ_OPERATIONS, authenticateRequest, clearedCookie,
   createReadSessionStore, sameSiteWith, sessionCookie,
 } = session;
+
+const commitMod = await load("authority-commit.js");
+const { commitAuthority, prepareAuthority, promptForReceipt, validateCommitWire } = commitMod;
+
+const portMod = await load("authority-exception-port.js");
+const { createCommitJournalPort, createJournalExceptionPort } = portMod;
+
+const operationMod = await load("authority-operation.js");
+const { revisionOf } = operationMod;
 
 /** Read a JSON body with a hard size cap. A body is never a reason to prompt. */
 function readJsonBody(req, limit = 64 * 1024) {
@@ -50,6 +61,13 @@ export function createAuthorityHost({
   presence, now = () => Date.now(), store = null,
   ownerControlsOrigin = process.env.CONTINUITY_OWNER_CONTROLS_ORIGIN || null,
   apiOrigin = null,
+  // THE TRANSACTION. Supplied by the composing host, which owns the durable
+  // journal, the receipt store and the private exception adapter.
+  //
+  // `transaction` is null when the host is composed without them, and the
+  // mutation routes then answer 501 rather than pretending. That is the state
+  // this file shipped in until now.
+  transaction = null,
 } = {}) {
   if (!presence || typeof presence.forSubsystem !== "function") {
     throw new Error("the authority host requires the host's owner-presence coordinator");
@@ -159,6 +177,20 @@ export function createAuthorityHost({
 
   return {
     sessions,
+
+    /**
+     * What this host can be ASKED to do, over HTTP.
+     *
+     * Stated as data so it can be asserted against rather than described. The
+     * private exception adapter is deliberately absent: it is reached only by
+     * the journal, from inside a transaction, and there is no route, operation
+     * name or CLI that addresses it.
+     */
+    operations: [
+      "unlock_read", "lock_read", "status",
+      ...(transaction ? ["prepare", "commit"] : []),
+    ],
+
     /** The request-scoped principal, or a named refusal. */
     authenticate: (req) => authenticateRequest({ store: sessions, cookieHeader: req.headers.cookie }),
 
@@ -188,12 +220,49 @@ export function createAuthorityHost({
         return true;
       }
 
-      // Every other authority route is authenticated. They do not exist yet, so
-      // the honest answer is 501 rather than a 404 that implies "wrong URL".
+      // Every other authority route is authenticated.
       const auth = this.authenticate(req);
       if (!auth.ok) {
         return ctx.send(res, 401, { error: auth.failure, detail: auth.reason }, ctx.origin), true;
       }
+
+      if (req.method === "POST" && (route === "prepare" || route === "commit")) {
+        if (!transaction) {
+          return ctx.send(res, 501, {
+            error: "not_implemented",
+            detail: "This host was composed without an authority transaction.",
+          }, ctx.origin), true;
+        }
+        const authenticate = () => authenticateRequest({ store: sessions, cookieHeader: req.headers.cookie });
+        let body;
+        try { body = await readJsonBody(req); }
+        catch (error) { return ctx.send(res, 400, { error: "invalid_body", detail: error.message }, ctx.origin), true; }
+
+        if (route === "prepare") {
+          const prepared = transaction.prepare({ body, authenticate });
+          return ctx.send(res, prepared.ok ? 200 : 409, prepared, ctx.origin), true;
+        }
+
+        const result = await commitAuthority({
+          body,
+          authenticate,
+          operations: transaction.operations,
+          receipts: transaction.receipts,
+          presence: mine,
+          currentRevision: transaction.currentRevision,
+          now,
+        });
+        // A refusal is not a server error and must not read like one: every
+        // failure here is a named, reviewable outcome she or the surface can
+        // act on. 409 for "the world moved", 400 for "that wire is not
+        // allowed", 200 only for a real or replayed commit.
+        const status = result.ok ? 200
+          : ["browser_authoritative_field", "unknown_commit_field", "invalid_commit"].includes(result.failure) ? 400
+            : ["no_read_session", "read_session_invalid", "read_session_lost"].includes(result.failure) ? 401
+              : 409;
+        return ctx.send(res, status, result, ctx.origin), true;
+      }
+
       return ctx.send(res, 501, {
         error: "not_implemented",
         detail: "This authority operation is not part of the released host yet.",

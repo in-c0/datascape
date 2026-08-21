@@ -17,7 +17,6 @@
 
 import { verifyGoalAuthority } from "./goal.js";
 import { authorize, authorCanary, policyIdentityOf as policyIdentity } from "./authority-draft.js";
-import { bridge } from "./bridge.js";
 import { createAuthorityJournal, createMemoryStorage } from "./authority-journal.js";
 
 export const AUTH_ACTIONS = ["authorize_goal", "authorize_bounded_task", "narrow_authority", "revoke_authority"];
@@ -181,6 +180,23 @@ export function createAuthorityStore({ boundary, exceptions, now, verifier = ver
      * asserted, via a fault injector supplied when this store is constructed —
      * never by anything in a request.
      */
+    /**
+     * Build the authority record WITHOUT transacting.
+     *
+     * The V6.1.6 commit path owns its own durable transaction — the pre-prompt
+     * claim, the presence consume and the final CAS all have to sit inside one
+     * `transact`, and calling `commit()` from within it would nest a
+     * transaction inside a transaction. This exposes the record construction on
+     * its own so there is still exactly ONE way a record is built, and exactly
+     * one journal it lands in.
+     *
+     * It writes nothing. The caller supplies the transaction.
+     */
+    buildFor(request, at = now()) {
+      const amending = request.action === "narrow_authority" || request.action === "revoke_authority";
+      return amending ? buildAmend(request, at) : buildGrant(request, at);
+    },
+
     commit(request) {
       if (!request.operation_id) return { ok: false, reason: "an authorization requires an operation_id" };
 
@@ -243,9 +259,19 @@ export function createAuthorityStore({ boundary, exceptions, now, verifier = ver
      * The V5 bridge (§8). Granting, narrowing and revoking are history; draft
      * edits and preview navigation emit nothing at all.
      */
-    materialEvents() {
-      return bridge(materialMutations(), { source_system: "continuity.authority" });
-    },
+    /**
+     * The material mutations, as DATA (V5 §8).
+     *
+     * The `bridge()` projection used to happen here. That put `bridge.js` — and
+     * through it the event schema outside `control/` — into the deployed
+     * authority subsystem's import closure, which the runtime gate refuses.
+     * It is right to refuse: a reviewed security set should not span the tree
+     * for a history projection the authority host never calls.
+     *
+     * So the store still produces the mutations and `authority-events.js` does
+     * the projection. Nothing is lost and the boundary stays where it belongs.
+     */
+    materialMutations,
   };
 }
 

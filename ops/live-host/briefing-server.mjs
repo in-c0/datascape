@@ -282,11 +282,52 @@ export async function startLiveHost({
   if (authorityGate.ok) {
     try {
       const mod = await import(pathToFileURL(path.resolve(liveDir, authorityGate.entry)).href);
+
+      // THE TRANSACTION, composed here rather than inside the authority
+      // subsystem, because the pieces it needs cross the artifact boundary:
+      // `atomic` is the writer that touches her real exception files and lives
+      // in `_continuity/`, while the journal and the record construction live
+      // in `_authority/`. Importing across those directories from either side
+      // is how a module ends up resolvable in the repo and absent in the
+      // release, so the composition happens at the one point that can see both.
+      let transaction = null;
+      try {
+        const txMod = await import(pathToFileURL(
+          path.resolve(liveDir, "_authority", "authority-transaction.mjs")).href);
+        const atomicMod = await import(pathToFileURL(
+          path.resolve(liveDir, "_continuity", "exception-atomic.js")).href);
+        // The inbox comes from the DEPLOYED exception store, not from a
+        // constant here. Two places naming her exception directory is two
+        // places that can disagree about which one the host is ruling on.
+        const storeMod = await import(pathToFileURL(
+          path.resolve(liveDir, "exception.mjs")).href);
+        transaction = txMod.createAuthorityTransaction({
+          fs,
+          journalFile: path.join(stateDir, "authority-journal.json"),
+          inbox: storeMod.INBOX,
+          // The whole module: the adapter needs the writer, the path resolver
+          // and the parser, and checks for all three rather than trusting one.
+          atomic: atomicMod,
+          now: deps.now,
+          // No domain resolver yet: the real-data read surface is the next
+          // step, and until it exists `prepare` refuses by name rather than
+          // letting the browser nominate a lineage.
+          resolveDomain: () => null,
+        });
+      } catch (error) {
+        // NAMED, and surfaced in the startup state below. A host whose
+        // unlock/status routes work while prepare and commit answer 501 is
+        // partially available, and reporting it as simply "available" is the
+        // same defect the topology gate was just corrected for.
+        authorityReason = `the authority transaction could not be composed: ${error.message}`;
+      }
+
       authority = mod.createAuthorityHost({
         presence: deps.presence,
         now: deps.now,
         ownerControlsOrigin: process.env.CONTINUITY_OWNER_CONTROLS_ORIGIN || null,
         apiOrigin: `http://${host}:${port || PORT}`,
+        transaction,
       });
       if (!authority.topology.ok) authorityReason = authority.topology.reason;
       // AVAILABILITY MUST FOLLOW THE TOPOLOGY GATE.
@@ -315,6 +356,12 @@ export async function startLiveHost({
     mode: "owner_rulings", gate, server, core, deps, port: server.address().port,
     owner_rulings: true, security_runtime_imported: true,
     authority_available: Boolean(authority) && authority.topology.ok === true,
+    // Distinct from availability: the read/unlock surface can be live while the
+    // mutation transaction is not composed. Stating both beats a single flag
+    // that has to mean two things.
+    authority_transaction: Boolean(authority?.operations?.includes("commit")),
+    // Stated as data so it can be asserted against rather than described.
+    authority_operations: authority?.operations ?? [],
     authority_reason: authorityReason,
     close: () => new Promise((resolve) => server.close(resolve)),
   };

@@ -1018,6 +1018,95 @@ test("preflight: a wrong loopback origin gets NO CORS headers on OPTIONS either"
   } finally { await world.close(); }
 });
 
+test("transaction: the commit route is served, authenticated, and refuses browser authority", async () => {
+  const world = await deployedWorld();
+  try {
+    const started = await world.launch();
+    const base = `http://127.0.0.1:${started.port}/__continuity/authority`;
+    assert.equal(started.authority_available, true);
+
+    // Unauthenticated: 401, and no hint about what exists behind it.
+    const anon = await fetch(`${base}/commit`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ operation_id: "op-1", preview_receipt: "r-1" }),
+    });
+    assert.equal(anon.status, 401);
+    assert.equal(world.broker.calls.length, 0, "and it costs her no prompt");
+
+    // Authenticated, via a real verified unlock.
+    world.broker.answer = "verified";
+    const unlock = await fetch(`${base}/unlock_read`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+    });
+    assert.equal(unlock.status, 200);
+    const cookie = unlock.headers.getSetCookie().join("; ");
+
+    // The commit wire is two identifiers. Anything authoritative is REFUSED by
+    // name, over HTTP, not merely in the unit under it.
+    const promptsBefore = world.broker.calls.length;
+    const overspecified = await fetch(`${base}/commit`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Cookie: cookie },
+      body: JSON.stringify({
+        operation_id: "op-1", preview_receipt: "r-1",
+        authority_domain: "somebody-elses-blocker", scope_refs: ["scope:everything"],
+      }),
+    });
+    assert.equal(overspecified.status, 400);
+    const refused = await overspecified.json();
+    assert.equal(refused.failure, "browser_authoritative_field");
+    assert.deepEqual(refused.fields.sort(), ["authority_domain", "scope_refs"]);
+    assert.equal(world.broker.calls.length, promptsBefore,
+      "a refused wire must not reach a verification");
+  } finally { await world.close(); }
+});
+
+test("transaction: the private exception adapter is not addressable", async () => {
+  // The invariant that replaces the temporary "authority-host imports adapter:
+  // 0". The adapter IS imported now — it has to be, the transaction resolves
+  // her blockers — so the property that matters is that nothing outside the
+  // journal can reach it.
+  const world = await deployedWorld();
+  try {
+    const started = await world.launch();
+    const base = `http://127.0.0.1:${started.port}/__continuity/authority`;
+    world.broker.answer = "verified";
+    const unlock = await fetch(`${base}/unlock_read`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+    });
+    const cookie = unlock.headers.getSetCookie().join("; ");
+
+    // No route addresses it, authenticated or not.
+    for (const route of ["resolve", "exceptions", "adapter", "resolve_exception"]) {
+      const response = await fetch(`${base}/${route}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Cookie: cookie },
+        body: JSON.stringify({ exception_id: "anything", ruling_ref: "ruling:invented" }),
+      });
+      assert.equal(response.status, 501, route);
+      assert.equal((await response.json()).error, "not_implemented", route);
+    }
+
+    // And the host states its own operation surface, which does not include it.
+    const mod = await import(pathToFileURL(
+      path.join(world.live, "_authority", "authority-host.mjs")).href);
+    const host = mod.createAuthorityHost({
+      presence: { forSubsystem: () => ({ verifier: {}, budget: {} }) },
+      ownerControlsOrigin: "http://127.0.0.1:5313",
+      apiOrigin: "http://127.0.0.1:5319",
+      transaction: { operations: {}, receipts: {}, currentRevision: () => null, prepare: () => ({ ok: false }) },
+    });
+    assert.deepEqual(host.operations.sort(),
+      ["commit", "lock_read", "prepare", "status", "unlock_read"]);
+    for (const name of host.operations) {
+      assert.ok(!/resolve|exception|adapter/.test(name), `${name} must not address the adapter`);
+    }
+
+    // And no ruling was made along the way.
+    assert.equal(world.broker.calls.length, 1, "only the unlock asked her anything");
+  } finally { await world.close(); }
+});
+
 test("topology: an incompatible host reports the subsystem UNAVAILABLE", async () => {
   // The startup state used to say `authority_available: true` while every
   // authority request answered 503. The route failing closed is what protects

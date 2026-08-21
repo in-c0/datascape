@@ -95,6 +95,19 @@ export const AUTHORITY_ARTIFACT = [
   { dest: "_authority/authority-operation.js", source: "src/continuity/control/authority-operation.js" },
   { dest: "_authority/authority-exception-port.js", source: "src/continuity/control/authority-exception-port.js" },
   { dest: "_authority/authority-journal.js", source: "src/continuity/control/authority-journal.js" },
+  // The transaction composition, and the record construction it reuses. The
+  // closure below is what `createAuthorityStore` actually pulls in; the runtime
+  // gate verifies it exactly, so this list is the authority on what ships
+  // rather than a description of it.
+  { dest: "_authority/authority-transaction.mjs", source: "ops/live-host/authority-transaction.mjs" },
+  { dest: "_authority/authority-receipt.js", source: "src/continuity/control/authority-receipt.js" },
+  { dest: "_authority/authority-store.js", source: "src/continuity/control/authority-store.js" },
+  { dest: "_authority/authority-draft.js", source: "src/continuity/control/authority-draft.js" },
+  { dest: "_authority/declaration.js", source: "src/continuity/control/declaration.js" },
+  { dest: "_authority/goal.js", source: "src/continuity/control/goal.js" },
+  { dest: "_authority/intent.js", source: "src/continuity/control/intent.js" },
+  { dest: "_authority/scope.js", source: "src/continuity/control/scope.js" },
+  { dest: "_authority/topic.js", source: "src/continuity/control/topic.js" },
 ];
 
 /** The one module the host imports to reach the authority subsystem. */

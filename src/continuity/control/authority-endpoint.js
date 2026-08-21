@@ -15,6 +15,7 @@
 import { createAuthorityStore, createOwnerBoundary, shadowReauditRequest } from "./authority-store.js";
 import { sanitizeClientRequest } from "./authority-request.js";
 import { composeEnvelope, renderPreview } from "./authority-draft.js";
+import { materialEvents } from "./authority-events.js";
 import { createReceiptStore, receiptPreview } from "./authority-receipt.js";
 
 /** The small, explicit failure taxonomy (§17). No stack traces cross this line. */
@@ -298,7 +299,9 @@ export function createAuthorityEndpoint({
     history: store.history,
     observableState: store.observableState,
     recoveredOnOpen: store.recoveredOnOpen,
-    materialEvents: store.materialEvents,
+    // The projection moved out of the store so the deployed authority set
+    // does not carry the event schema. The endpoint still offers it.
+    materialEvents: () => materialEvents(store),
   };
 }
 

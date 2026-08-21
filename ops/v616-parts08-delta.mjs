@@ -108,6 +108,30 @@ async function measureHost() {
     row("CORS", "wrong loopback origin OPTIONS receives CORS headers", String(leaked));
     row("CORS", "wrong loopback origin can reach authority POST", String(reached));
 
+    // ADAPTER REACHABILITY — the invariant that replaces the temporary
+    // "authority-host imports adapter: 0". The adapter IS imported now; it has
+    // to be, the transaction resolves her blockers. What matters is that
+    // nothing outside the journal can address it.
+    row("ADAPTER", "authority transaction composed", started.authority_transaction ? "yes" : "NO");
+    const unlocked = await fetch(`${base}/__continuity/authority/unlock_read`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+    });
+    const cookie = unlocked.headers.getSetCookie?.().join("; ") ?? "";
+    let addressable = 0;
+    for (const route of ["resolve", "exceptions", "adapter", "resolve_exception"]) {
+      const r = await fetch(`${base}/__continuity/authority/${route}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Cookie: cookie },
+        body: JSON.stringify({ exception_id: "x", ruling_ref: "ruling:invented" }),
+      });
+      if (r.status !== 501 && r.status !== 401) addressable += 1;
+    }
+    row("ADAPTER", "browser cannot address adapter", addressable === 0 ? "yes" : "NO");
+    row("ADAPTER", "adapter exported as HTTP operation",
+      String((started.authority_operations ?? []).filter((o) => /resolve|exception|adapter/.test(o)).length));
+    row("ADAPTER", "verified journal owns it",
+      (started.authority_operations ?? []).includes("commit") ? "yes" : "NO");
+
     await world.close();
 
     // A SECOND world, deliberately misconfigured.
