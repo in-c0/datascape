@@ -324,3 +324,77 @@ test("V6 acceptance: the full deterministic run holds every invariant", async ()
   assert.ok(report.immutable_events_emitted > 0, "material work must still produce history");
   assert.equal(report.all_invariants_passed, true, JSON.stringify(report.violations));
 });
+
+// ---- §16: the shadow control-plane mapping (PR B) ----------------------------
+
+const LANES = [
+  { lane: "datascape-continuity-governance", label: "DataScape / Continuity", status: "active", registeredAt: "2026-08-21T12:00:00+10:00" },
+  { lane: "cat-intent", label: "Cat Intent Signals", status: "done", registeredAt: "2026-08-21T04:05:00+10:00" },
+];
+const EXCEPTIONS = [
+  { id: "gate-a", loop: "datascape/shadow-proposer", status: "blocked-on-owner", title: "needs a credential" },
+  { id: "gate-b", loop: "datascape/governance", status: "blocked-on-owner", title: "needs a ruling" },
+  { id: "gate-c", loop: "sumzup/digest-budget", status: "blocked-on-owner", title: "unrelated lane" },
+  { id: "gate-d", loop: "datascape/old", status: "resolved", title: "already answered" },
+];
+
+test("V6 shadow: a lane is a container of intents, not one intent", async () => {
+  const { laneToIntents } = await import("../src/continuity/control/shadow-map.js");
+  const intents = laneToIntents(LANES[0], EXCEPTIONS);
+
+  const trunk = intents.find((i) => i.kind === "trunk");
+  const gates = intents.filter((i) => i.kind === "owner_gate");
+  assert.equal(gates.length, 2, "one intent per open gate under this lane");
+  assert.deepEqual(trunk.owner_gate_ids, [],
+    "one open gate must not make the whole lane forbidden — that is the mapping error V6 section 1 exists to prevent");
+  assert.equal(trunk.state, "ready");
+  assert.ok(gates.every((g) => g.state === "blocked_on_owner"));
+
+  // A resolved exception is not a gate, and another lane's gate is not ours.
+  const ids = gates.flatMap((g) => g.owner_gate_ids);
+  assert.equal(ids.includes("gate-c"), false);
+  assert.equal(ids.includes("gate-d"), false);
+});
+
+test("V6 shadow: an unanswerable question is reported as unobservable, never as a pass", async () => {
+  const { buildShadowReport } = await import("../src/continuity/control/shadow-map.js");
+  const observations = {
+    "shadow:datascape-continuity-governance": { state: "active", continuing: true, polling: true, condition_based: false },
+  };
+  const report = buildShadowReport(LANES, EXCEPTIONS, observations);
+  assert.equal(report.unobservable.length, 2, "each open gate raises a question the registry cannot answer");
+  assert.equal(report.divergences.some((d) => d.kind === "progressed_owner_gated_work"), false,
+    "no bypass may be asserted from a source that could not have shown one");
+
+  // And when the evidence DOES exist, the bypass is reported.
+  const witnessed = buildShadowReport(LANES, EXCEPTIONS, {
+    ...observations,
+    "shadow:datascape-continuity-governance:gate-a": { gate_topics_progressed: ["gate-a"] },
+  });
+  assert.equal(witnessed.divergences.some((d) => d.kind === "progressed_owner_gated_work"), true);
+});
+
+test("V6 shadow: an invented owner gate fails the audit", async () => {
+  const { auditOwnerGates, buildShadowReport } = await import("../src/continuity/control/shadow-map.js");
+  const report = buildShadowReport(LANES, EXCEPTIONS, {});
+  assert.equal(report.owner_gate_audit.ok, true);
+  assert.deepEqual(report.owner_gate_audit.invented, []);
+  assert.equal(report.owner_gate_audit.unmapped_count, 1, "gate-c belongs to a lane with no continuation loop");
+
+  // Negative control: a gate with no authoritative exception behind it.
+  const fabricated = auditOwnerGates([{ owner_gate_ids: ["gate-imaginary"] }], EXCEPTIONS);
+  assert.equal(fabricated.ok, false);
+  assert.deepEqual(fabricated.invented, ["gate-imaginary"]);
+});
+
+test("V6 shadow: the mapping observes and never acts", async () => {
+  const { buildShadowReport } = await import("../src/continuity/control/shadow-map.js");
+  const report = buildShadowReport(LANES, EXCEPTIONS, {});
+  assert.equal(report.executed_intents, 0);
+  assert.equal(report.continuation_messages_sent, 0);
+  assert.equal(report.owner_state_mutations, 0);
+  const surface = await import("../src/continuity/control/shadow-map.js");
+  for (const forbidden of ["send", "execute", "claim", "run", "post"]) {
+    assert.equal(typeof surface[forbidden], "undefined", `${forbidden} must not exist in the shadow mapping`);
+  }
+});
