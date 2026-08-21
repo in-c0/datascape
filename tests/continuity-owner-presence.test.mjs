@@ -207,3 +207,44 @@ test("A.2: the presence substrate reaches no authority store and no executor", a
     ]), false, `${entry} must hold no authority or execution capability`);
   }
 });
+
+// ---- A.2.1: owner presence is genuinely one-shot -------------------------------
+
+test("A.2.1: the same verification cannot authorize the same operation twice", async () => {
+  const { verifier: v } = verifier();
+  const verified = await v.verify({ purpose: "Authorize", operationRef: "op-1" });
+
+  assert.equal(v.authorizes(verified, "op-1").ok, true, "the first use succeeds");
+  const second = v.authorizes(verified, "op-1");
+  assert.equal(second.ok, false, "a verified result is not a reusable capability");
+  assert.match(second.reason, /already been used/);
+  assert.equal(v.unspentCount(), 0);
+});
+
+test("A.2.1: a copied or serialized verification is not usable proof", async () => {
+  const { verifier: v } = verifier();
+  const verified = await v.verify({ purpose: "Authorize", operationRef: "op-1" });
+
+  // Round-tripped through JSON, exactly as it would be if it had travelled.
+  const copied = JSON.parse(JSON.stringify(verified));
+  assert.equal(v.authorizes(copied, "op-1").ok, true, "a faithful copy spends the one handle");
+  // ...and neither the copy nor the original works again.
+  assert.equal(v.authorizes(copied, "op-1").ok, false);
+  assert.equal(v.authorizes(verified, "op-1").ok, false);
+
+  // A fabricated handle from outside this process authorizes nothing.
+  const forged = { outcome: "verified", operation_ref: "op-2", verification_handle: "chal_forged" };
+  assert.equal(v.authorizes(forged, "op-2").ok, false);
+  // And so does one with no handle at all.
+  assert.equal(v.authorizes({ outcome: "verified", operation_ref: "op-2" }, "op-2").ok, false);
+});
+
+test("A.2.1: one-shot consumption does not weaken cross-operation refusal", async () => {
+  const { verifier: v } = verifier();
+  const verified = await v.verify({ purpose: "Authorize", operationRef: "op-a" });
+
+  // Spending it on the wrong operation must not spend it at all.
+  assert.equal(v.authorizes(verified, "op-b").ok, false);
+  assert.equal(v.unspentCount(), 1, "a refused cross-operation attempt must not burn the handle");
+  assert.equal(v.authorizes(verified, "op-a").ok, true);
+});

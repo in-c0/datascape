@@ -49,7 +49,12 @@ export async function recordAction({ id, action, note = "", until = null }) {
     body: JSON.stringify({ id, action, note, until }),
   });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload?.error || `HTTP ${response.status}`);
+  if (!response.ok) {
+    // Prefer the host's explanation over its error CODE. A refusal that reads
+    // "owner_presence_required" tells her nothing she can act on; the detail
+    // says what changed and what to do instead.
+    throw new Error(payload?.detail || payload?.error || `HTTP ${response.status}`);
+  }
   return payload;
 }
 

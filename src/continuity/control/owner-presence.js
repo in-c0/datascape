@@ -84,6 +84,14 @@ export function createOwnerPresenceVerifier({
   let outstanding = null;
   let cooldownUntil = 0;
   const consumed = new Set();
+  /**
+   * Handles issued and not yet spent.
+   *
+   * Membership here IS the authorization. Nothing outside this process can add
+   * to it, so a serialized verification object is a name for something that is
+   * no longer there.
+   */
+  const unspent = new Set();
 
   return {
     availability: () => broker.availability(),
@@ -143,11 +151,20 @@ export function createOwnerPresenceVerifier({
         }
 
         consumed.add(challenge);
+        // A one-shot HANDLE, not a reusable capability. The verified object
+        // itself is inert: `authorizes` looks the handle up in this process and
+        // burns it, so a copied or serialized result proves nothing. Previously
+        // the same verified object could authorize the same operation
+        // repeatedly, which made it exactly the transferable proof this design
+        // exists to avoid.
+        const handle = randomChallenge();
+        unspent.add(handle);
         return {
           outcome: "verified",
           // Bound to the exact operation. A verification for one ruling can
           // never be carried to another.
           operation_ref: operationRef,
+          verification_handle: handle,
           verified_at: now(),
         };
       } finally {
@@ -156,18 +173,34 @@ export function createOwnerPresenceVerifier({
     },
 
     /**
-     * Is this verification good for THIS operation?
+     * Is this verification good for THIS operation, ONCE?
      *
-     * Checked at the mutation site so a verification cannot be transferred,
-     * replayed, or pointed at a different exception or receipt.
+     * Consuming rather than merely checking. A verified result must not be a
+     * reusable authorization capability: the shape the spec asks for is
+     * prepare → verify → consume exactly once → perform immediately, and a
+     * second consumption of the same verification for the same operation has to
+     * fail. Cross-operation use remains impossible.
+     *
+     * A committed operation may still be replayed later from durable mutation
+     * state without another prompt. That is replay of a ruling, not reuse of
+     * presence, and it happens elsewhere — never through this function.
      */
     authorizes(verification, operationRef) {
       if (verification?.outcome !== "verified") return { ok: false, reason: "no verified owner presence" };
       if (verification.operation_ref !== operationRef) {
         return { ok: false, reason: "this verification was for a different operation" };
       }
+      const handle = verification.verification_handle;
+      if (!handle || !unspent.has(handle)) {
+        // Either already spent, or a copy fabricated outside this process.
+        return { ok: false, reason: "this owner verification has already been used or did not originate here" };
+      }
+      unspent.delete(handle);
       return { ok: true };
     },
+
+    /** For assertions only. */
+    unspentCount: () => unspent.size,
 
     // Structural: this object issues nothing a browser could hold.
     issues_transferable_token: false,
