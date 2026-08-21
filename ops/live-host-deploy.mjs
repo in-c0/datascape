@@ -86,6 +86,7 @@ export const ARTIFACT = [
 export const AUTHORITY_ARTIFACT = [
   { dest: "_authority/authority-host.mjs", source: "ops/live-host/authority-host.mjs" },
   { dest: "_authority/authority-read-session.js", source: "src/continuity/control/authority-read-session.js" },
+  { dest: "_authority/authority-exception-adapter.js", source: "src/continuity/control/authority-exception-adapter.js" },
 ];
 
 /** The one module the host imports to reach the authority subsystem. */

@@ -719,8 +719,10 @@ test("authority: rollback deletes authority files that had no predecessor", asyn
 
     const rolled = world.deployMod.rollback({ toBackupSet: world.deployed.backup_set, dryRun: false });
     assert.equal(rolled.ok, true);
+    // Derived from the artifact set rather than listed by hand, so adding an
+    // authority module does not silently leave this assertion stale.
     assert.deepEqual(rolled.deleted_authority.sort(),
-      ["_authority/authority-host.mjs", "_authority/authority-read-session.js"]);
+      world.deployMod.AUTHORITY_ARTIFACT.map((e) => e.dest).sort());
     assert.equal(fs.existsSync(path.join(world.live, "_authority", "authority-host.mjs")), false);
 
     // And the host comes up fail-closed, with authority simply absent.

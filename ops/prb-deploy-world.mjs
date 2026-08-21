@@ -40,6 +40,7 @@ const REPO_SOURCES = [
   "ops/live-host/briefing-server-core.mjs",
   "ops/live-host/authority-host.mjs",
   "src/continuity/control/authority-read-session.js",
+  "src/continuity/control/authority-exception-adapter.js",
   "ops/exception-guard-patch.mjs",
   "src/continuity/control/owner-ruling.js",
   "src/continuity/control/owner-presence.js",
