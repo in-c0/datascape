@@ -58,12 +58,21 @@ export function createOwnerPresenceCoordinator({
       return { name, verifier: sharedVerifier, budget: sharedBudget, now };
     },
 
-    /** For assertions and for the host's own health reporting. */
-    stats: () => ({
-      verifier_instances: 1,
-      budget_instances: 1,
-      subsystems: [...consumers].sort(),
-    }),
+    /**
+     * Diagnostics — NOT evidence.
+     *
+     * This used to report `verifier_instances: 1` and `budget_instances: 1` as
+     * literals. Those numbers were constants dressed as measurements: a second
+     * verifier constructed anywhere else in the host would not have changed
+     * them, so no implementation could ever have disagreed with the claim. That
+     * is the hard-coded governance counter this lane has already been caught
+     * publishing once.
+     *
+     * What is actually checkable is object IDENTITY — whether two subsystems
+     * hold the same verifier and the same budget — and that is what the gate
+     * asserts, against the objects themselves.
+     */
+    stats: () => ({ subsystems: [...consumers].sort() }),
 
     // Structural: there is no way to ask this object for a SECOND verifier.
     // A caller that wants one has to construct another coordinator, which the

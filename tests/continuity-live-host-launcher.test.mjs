@@ -446,18 +446,18 @@ test("presence: every route that can prompt shares ONE verifier and ONE budget",
     assert.equal(started.mode, "owner_rulings");
 
     const stats = started.deps.presence.stats();
-    // Two independently-constructed verifiers could each honour "one
-    // outstanding prompt" and still put two Windows dialogs on screen; two
-    // independent budgets could each be evaded by alternating routes.
-    assert.equal(stats.verifier_instances, 1);
-    assert.equal(stats.budget_instances, 1);
     assert.ok(stats.subsystems.includes("owner_rulings"));
+    // Deliberately NOT asserting a reported instance count. A literal `1` in a
+    // stats object is a constant dressed as a measurement — a second verifier
+    // built anywhere else would not have changed it. Object identity is the
+    // thing an implementation can actually fail.
+    assert.equal(stats.verifier_instances, undefined, "no fake instance counter");
+    assert.equal(stats.budget_instances, undefined);
 
     // A second subsystem takes a HANDLE, not a new device.
     const authority = started.deps.presence.forSubsystem("authority");
     assert.equal(authority.verifier, started.deps.verifier, "same verifier object");
     assert.equal(authority.budget, started.deps.budget, "same budget object");
-    assert.equal(started.deps.presence.stats().verifier_instances, 1);
 
     // And the budget really is shared: a refusal on one route cools down the
     // other, which is the property that makes lockout unevadable.
@@ -608,5 +608,124 @@ test("authority: an unauthenticated request reaches no authority operation", asy
     const body = await status.json();
     assert.equal(body.open, false);
     assert.ok(!JSON.stringify(body).includes("session"), "no session material in a public status");
+  } finally { await world.close(); }
+});
+
+test("presence: the authority runtime constructs no verifier or budget of its own", async () => {
+  const world = await deployedWorld();
+  try {
+    // Measured against the DEPLOYED authority bytes: a subsystem that called
+    // the factories directly would have its own device and its own budget,
+    // whatever the coordinator reports about itself.
+    for (const file of ["_authority/authority-host.mjs", "_authority/authority-read-session.js"]) {
+      const source = fs.readFileSync(path.join(world.live, file), "utf8")
+        .replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+      assert.ok(!/createOwnerPresenceVerifier\s*\(/.test(source), `${file} constructs a verifier`);
+      assert.ok(!/createPromptBudget\s*\(/.test(source), `${file} constructs a prompt budget`);
+      assert.ok(!/createWindowsOwnerPresenceBroker\s*\(/.test(source), `${file} constructs a broker`);
+    }
+
+    // And the host builds exactly one coordinator on the way up.
+    const core = fs.readFileSync(path.join(world.live, "_continuity", "briefing-server-core.mjs"), "utf8")
+      .replace(/^\s*\/\/.*$/gm, "");
+    assert.equal((core.match(/createOwnerPresenceCoordinator\(/g) ?? []).length, 1,
+      "one coordinator factory call in the production startup path");
+  } finally { await world.close(); }
+});
+
+// ---------------------------------------------------------------------------
+// The authority gate needs an exact closure, not the manifest's word for it
+// ---------------------------------------------------------------------------
+
+test("authority: an omitted dependency makes the subsystem unavailable", async () => {
+  const world = await deployedWorld();
+  try {
+    // The failure the recorded-entries-only check would have missed: every
+    // recorded file hash-matches, but the manifest forgot a sibling the entry
+    // imports, so the gate would open on a module whose import falls through.
+    const manifestPath = path.join(world.state, "deployed.json");
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+    manifest.authority_files = manifest.authority_files
+      .filter((f) => f.dest === "_authority/authority-host.mjs");
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+
+    const started = await world.launch();
+    assert.equal(started.authority_available, false);
+    assert.match(started.authority_reason, /unrecorded authority code is present/);
+    assert.equal(started.mode, "owner_rulings", "/api/act is unaffected");
+  } finally { await world.close(); }
+});
+
+test("authority: an extra stale file makes the subsystem unavailable", async () => {
+  const world = await deployedWorld();
+  try {
+    fs.writeFileSync(path.join(world.live, "_authority", "left-behind.mjs"),
+      "export const stale = 1\n");
+    const started = await world.launch();
+    assert.equal(started.authority_available, false);
+    assert.match(started.authority_reason, /unrecorded authority code/);
+    assert.equal(started.mode, "owner_rulings");
+  } finally { await world.close(); }
+});
+
+test("authority: hash drift makes the subsystem unavailable", async () => {
+  const world = await deployedWorld();
+  try {
+    fs.writeFileSync(path.join(world.live, "_authority", "authority-read-session.js"),
+      "export const tampered = 1\n");
+    const started = await world.launch();
+    assert.equal(started.authority_available, false);
+    assert.match(started.authority_reason, /does not match this deployment/);
+    assert.equal(started.mode, "owner_rulings");
+
+    // In every one of these three cases her rulings still work.
+    const id = world.fixture("2026-08-22-drift-still-rules");
+    const ruled = await world.act({ id, action: "reply_done", operation_id: "op-drift" });
+    assert.equal(ruled.status, 200, JSON.stringify(ruled.body));
+  } finally { await world.close(); }
+});
+
+test("authority: deployment removes stale authority code and rollback restores the world", async () => {
+  const world = await deployedWorld();
+  try {
+    // A file from an imagined earlier authority release.
+    fs.writeFileSync(path.join(world.live, "_authority", "old-release.mjs"), "export const old = 1\n");
+
+    const redeploy = await world.deployMod.deploy({
+      commit: world.commit, dryRun: false, liveDir: world.live,
+    });
+    assert.equal(redeploy.ok, true, JSON.stringify(redeploy));
+    assert.deepEqual(redeploy.removed_authority, ["_authority/old-release.mjs"],
+      "stale authority code must not survive a release");
+    assert.equal(fs.existsSync(path.join(world.live, "_authority", "old-release.mjs")), false);
+
+    // Rolling back restores what was there — including the stale file, which
+    // WAS the previous world — and deletes anything this release introduced.
+    const rolled = world.deployMod.rollback({ toBackupSet: redeploy.backup_set, dryRun: false });
+    assert.equal(rolled.ok, true);
+    assert.equal(fs.readFileSync(path.join(world.live, "_authority", "old-release.mjs"), "utf8"),
+      "export const old = 1\n", "the previous authority world comes back exactly");
+  } finally { await world.close(); }
+});
+
+test("authority: rollback deletes authority files that had no predecessor", async () => {
+  const world = await deployedWorld();
+  try {
+    // The world's first deploy introduced the authority set; before it there
+    // was no _authority directory at all. Rolling that deploy back must leave
+    // none behind, or candidate authority code sits beside rolled-back base
+    // code.
+    assert.ok(fs.existsSync(path.join(world.live, "_authority", "authority-host.mjs")));
+
+    const rolled = world.deployMod.rollback({ toBackupSet: world.deployed.backup_set, dryRun: false });
+    assert.equal(rolled.ok, true);
+    assert.deepEqual(rolled.deleted_authority.sort(),
+      ["_authority/authority-host.mjs", "_authority/authority-read-session.js"]);
+    assert.equal(fs.existsSync(path.join(world.live, "_authority", "authority-host.mjs")), false);
+
+    // And the host comes up fail-closed, with authority simply absent.
+    const started = await world.launch();
+    assert.equal(started.mode, "read_only");
+    assert.equal(started.authority_available, false);
   } finally { await world.close(); }
 });

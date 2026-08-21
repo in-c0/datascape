@@ -95,10 +95,15 @@ export function planSync(document, text = canonicalText()) {
 
   if (found.state === "present") {
     if (found.current === block) {
-      return { ok: true, changed: false, action: "already_current", document };
+      return { ok: true, changed: false, action: "already_current", document, region: null };
     }
     const next = document.slice(0, found.start) + block + document.slice(found.stop);
-    return { ok: true, changed: true, action: "updated", document: next };
+    return {
+      ok: true, changed: true, action: "updated", document: next,
+      // Exactly where this plan wrote, so a caller can prove it wrote nowhere
+      // else without normalising anything away.
+      region: { action: "updated", start: found.start, stop: found.stop, newStop: found.start + block.length },
+    };
   }
 
   // First install. Place it after the anchor paragraph, or refuse.
@@ -113,8 +118,12 @@ export function planSync(document, text = canonicalText()) {
     return { ok: false, failure: "anchor_ambiguous", reason: "the first-install anchor appears more than once" };
   }
   const insertAt = at + FIRST_INSTALL_ANCHOR.length;
-  const next = `${document.slice(0, insertAt)}\n\n${block}${document.slice(insertAt)}`;
-  return { ok: true, changed: true, action: "installed", document: next };
+  const inserted = `\n\n${block}`;
+  const next = document.slice(0, insertAt) + inserted + document.slice(insertAt);
+  return {
+    ok: true, changed: true, action: "installed", document: next,
+    region: { action: "installed", insertAt, insertedLength: inserted.length },
+  };
 }
 
 /**
@@ -124,16 +133,27 @@ export function planSync(document, text = canonicalText()) {
  * block and comparing the remainder, so a sync that nudged a byte elsewhere is
  * visible rather than trusted.
  */
-export function unmanagedDelta(before, after) {
-  const strip = (doc) => {
-    const found = locateBlock(doc);
-    return found.state === "present" ? doc.slice(0, found.start) + doc.slice(found.stop) : doc;
-  };
-  const a = strip(before);
-  const b = strip(after);
-  // First install inserts the block plus surrounding blank lines; normalise the
-  // whitespace that insertion alone introduces.
-  return a.replace(/\n{3,}/g, "\n\n") === b.replace(/\n{3,}/g, "\n\n") ? 0 : 1;
+export function unmanagedDelta(before, after, region) {
+  // EXACT prefix/suffix comparison, with no whitespace normalisation anywhere.
+  //
+  // The first version stripped each document's block and then collapsed every
+  // run of three-or-more newlines to two, because insertion introduces blank
+  // lines. That normalisation also hid any UNRELATED blank-line change: a sync
+  // that disturbed somebody's spacing three sections away would still have
+  // reported "unmanaged bytes changed: 0".
+  //
+  // The plan knows exactly where it wrote. Compare against that, byte for byte.
+  if (!region) return before === after ? 0 : 1;
+
+  if (region.action === "installed") {
+    const { insertAt, insertedLength } = region;
+    if (before.slice(0, insertAt) !== after.slice(0, insertAt)) return 1;
+    return before.slice(insertAt) === after.slice(insertAt + insertedLength) ? 0 : 1;
+  }
+
+  const { start, stop, newStop } = region;
+  if (before.slice(0, start) !== after.slice(0, start)) return 1;
+  return before.slice(stop) === after.slice(newStop) ? 0 : 1;
 }
 
 /**
@@ -161,7 +181,7 @@ export function sync({ file = CLAUDE_MD, text = canonicalText(), dryRun = true, 
     dry_run: dryRun,
     before_hash: sha(document),
     after_hash: sha(plan.document),
-    unmanaged_bytes_changed: unmanagedDelta(document, plan.document),
+    unmanaged_bytes_changed: unmanagedDelta(document, plan.document, plan.region),
     wrote: false,
   };
   if (result.unmanaged_bytes_changed !== 0) {

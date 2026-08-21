@@ -115,13 +115,71 @@ export function manifestAuthorityGate({ liveDir = HERE, stateDir = STATE_DIR() }
   if (!recorded || !Array.isArray(recorded) || recorded.length === 0) {
     return { ok: false, reason: "this host has no reviewed authority subsystem deployed" };
   }
-  const bad = recorded.filter((entry) => {
+
+  // EXACT CLOSURE, not "every file the manifest happened to list".
+  //
+  // Checking only the recorded entries passes a manifest that forgot a
+  // dependency: authority-host.mjs imports a sibling, the manifest records only
+  // the host, every recorded file hash-matches, and the gate opens on a module
+  // whose import falls through to an unrecorded — possibly stale — file.
+  //
+  // So the live set must EQUAL the recorded set, and every authority-relative
+  // import must resolve inside it. Imports into the already-reviewed
+  // `_continuity` base artifact are fine; anything else is not.
+  const expected = new Set(recorded.map((entry) => entry.dest));
+  const actual = new Set(listLiveAuthorityFiles(liveDir));
+
+  const missing = [...expected].filter((dest) => !actual.has(dest));
+  if (missing.length) {
+    return { ok: false, reason: `the authority artifact is incomplete: missing ${missing.join(", ")}` };
+  }
+  const stale = [...actual].filter((dest) => !expected.has(dest));
+  if (stale.length) {
+    return { ok: false, reason: `unrecorded authority code is present: ${stale.join(", ")}` };
+  }
+  const drifted = recorded.filter((entry) => {
     const live = read(path.join(liveDir, entry.dest));
     return live === null || sha(live) !== entry.hash;
   }).map((entry) => entry.dest);
-  return bad.length
-    ? { ok: false, reason: `the authority artifact does not match this deployment: ${bad.join(", ")}` }
-    : { ok: true };
+  if (drifted.length) {
+    return { ok: false, reason: `the authority artifact does not match this deployment: ${drifted.join(", ")}` };
+  }
+
+  const entry = manifest.authority_entry ?? "_authority/authority-host.mjs";
+  if (!expected.has(entry)) {
+    return { ok: false, reason: `the recorded authority entry ${entry} is not part of the recorded set` };
+  }
+
+  // Every authority-relative import must land inside the closed set.
+  for (const dest of expected) {
+    const source = read(path.join(liveDir, dest)) ?? "";
+    for (const match of source.matchAll(/(?:from|import)\s*\(?\s*["'](\.[^"']+)["']/g)) {
+      const target = path.posix.normalize(path.posix.join(path.posix.dirname(dest), match[1]));
+      if (target.startsWith("_continuity/")) continue;
+      if (!expected.has(target)) {
+        return { ok: false, reason: `${dest} imports ${match[1]}, which is not part of the reviewed authority set` };
+      }
+    }
+  }
+
+  return { ok: true, entry, files: [...expected].sort() };
+}
+
+/** The authority code files actually present, as opposed to those recorded. */
+function listLiveAuthorityFiles(liveDir) {
+  const root = path.join(liveDir, "_authority");
+  const out = [];
+  const walk = (dir, prefix) => {
+    let entries = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const item of entries) {
+      const rel = `${prefix}${item.name}`;
+      if (item.isDirectory()) { walk(path.join(dir, item.name), `${rel}/`); continue; }
+      if (/\.(mjs|js|cjs)$/.test(item.name)) out.push(rel);
+    }
+  };
+  walk(root, "_authority/");
+  return out.sort();
 }
 
 function isLoopbackHost(hostHeader) {
@@ -200,6 +258,10 @@ export async function startLiveHost({
     return {
       mode: "read_only", gate, server, port: server.address().port,
       owner_rulings: false, security_runtime_imported: false,
+      // Stated on this path too: a fail-closed host has no authority route
+      // either, and a caller should not have to infer that from an absence.
+      authority_available: false,
+      authority_reason: "the base security layer is not verified, so no subsystem is served",
       close: () => new Promise((resolve) => server.close(resolve)),
     };
   }
@@ -219,7 +281,7 @@ export async function startLiveHost({
   const authorityGate = manifestAuthorityGate({ liveDir, stateDir });
   if (authorityGate.ok) {
     try {
-      const mod = await import(pathToFileURL(path.resolve(liveDir, "_authority", "authority-host.mjs")).href);
+      const mod = await import(pathToFileURL(path.resolve(liveDir, authorityGate.entry)).href);
       authority = mod.createAuthorityHost({ presence: deps.presence, now: deps.now });
     } catch (error) {
       authority = null;

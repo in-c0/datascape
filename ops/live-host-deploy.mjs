@@ -88,6 +88,9 @@ export const AUTHORITY_ARTIFACT = [
   { dest: "_authority/authority-read-session.js", source: "src/continuity/control/authority-read-session.js" },
 ];
 
+/** The one module the host imports to reach the authority subsystem. */
+export const AUTHORITY_ENTRY = "_authority/authority-host.mjs";
+
 /**
  * Host dependencies: not ours to version, but they decide whether an owner
  * ruling actually lands, so their bytes are recorded as deployment evidence.
@@ -283,6 +286,28 @@ async function reviewedGuard(commit) {
   fs.writeFileSync(file, bytes);
   const module = await import(pathToFileURL(file).href);
   return { ok: true, patch: module.patchExceptionSource, hash: sha(bytes) };
+}
+
+/**
+ * Every code file currently sitting in the live `_authority/` directory.
+ *
+ * The actual set, not the manifest's idea of it — the two disagreeing is the
+ * failure this exists to detect.
+ */
+export function listAuthorityFiles(liveDir = liveDir_()) {
+  const root = path.join(liveDir, "_authority");
+  const out = [];
+  const walk = (dir, prefix) => {
+    let entries = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      const rel = `${prefix}${entry.name}`;
+      if (entry.isDirectory()) { walk(path.join(dir, entry.name), `${rel}/`); continue; }
+      if (/\.(mjs|js|cjs)$/.test(entry.name)) out.push(rel);
+    }
+  };
+  walk(root, "_authority/");
+  return out.sort();
 }
 
 /** The live store's bytes, and whether the owner gate is installed in them. */
@@ -520,6 +545,21 @@ export async function deploy({ commit, at = null, dryRun = true, liveDir = liveD
     if (!fs.existsSync(target)) fs.writeFileSync(target, bytes);
   }
 
+  // The WHOLE previous authority world, whatever was in it. Recorded by name so
+  // a rollback can tell "this file existed before" from "this file is ours and
+  // had no predecessor" — the second must be DELETED on rollback, or a
+  // rolled-back host ends up with candidate authority code sitting beside old
+  // base code.
+  const previousAuthority = listAuthorityFiles(liveDir);
+  for (const dest of previousAuthority) {
+    const bytes = read(path.join(liveDir, dest));
+    if (bytes === null) continue;
+    const target = path.join(backupDir, dest);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    if (!fs.existsSync(target)) fs.writeFileSync(target, bytes);
+  }
+  fs.writeFileSync(path.join(backupDir, "authority-world.json"), JSON.stringify(previousAuthority, null, 2));
+
   for (const file of staged) {
     if (file.live !== null) {
       const backup = path.join(backupDir, file.dest);
@@ -548,6 +588,7 @@ export async function deploy({ commit, at = null, dryRun = true, liveDir = liveD
     // Recorded separately so the authority subsystem can be gated on its own.
     authority_files: staged.filter((f) => f.dest.startsWith("_authority/"))
       .map((f) => ({ dest: f.dest, source: f.source, hash: f.hash })),
+    authority_entry: AUTHORITY_ENTRY,
     previous: { backup_set: backupSet, files: staged.map((f) => ({ dest: f.dest, hash: f.live_hash })) },
     // The guard is part of the release record: what it was, what transformed
     // it, and what it must hash to for the preflight to let the host serve.
@@ -565,6 +606,16 @@ export async function deploy({ commit, at = null, dryRun = true, liveDir = liveD
     host_dependencies: hostDependencyEvidence(liveDir),
   }, null, 2));
 
+  // Stale authority code must not survive a release: an unrecorded file left
+  // beside the new set is exactly what a fall-through import would reach.
+  const installedAuthority = new Set(AUTHORITY_ARTIFACT.map((e) => e.dest));
+  const removedAuthority = [];
+  for (const dest of listAuthorityFiles(liveDir)) {
+    if (installedAuthority.has(dest)) continue;
+    fs.rmSync(path.join(liveDir, dest));
+    removedAuthority.push(dest);
+  }
+
   // Only now that the store no longer imports it.
   const retired = [];
   for (const dest of RETIRED_ARTIFACT) {
@@ -574,6 +625,7 @@ export async function deploy({ commit, at = null, dryRun = true, liveDir = liveD
 
   return {
     ok: true, dry_run: false, commit: resolved, backup_set: backupSet, retired,
+    removed_authority: removedAuthority,
     // Split the same way the manifest splits them: "authority is broken" and
     // "the host is broken" have to stay different sentences everywhere, not
     // only in the file we wrote.
@@ -595,8 +647,10 @@ export function rollback({ toBackupSet, at = null, dryRun = true, liveDir = live
   if (!toBackupSet || !fs.existsSync(backupDir)) {
     return { ok: false, reason: `no backup set ${toBackupSet}` };
   }
+  const previousAuthority = JSON.parse(read(path.join(backupDir, "authority-world.json")) || "[]");
   const restore = [...ARTIFACT, { dest: GUARDED_STORE, source: null },
-    ...RETIRED_ARTIFACT.map((dest) => ({ dest, source: null }))]
+    ...RETIRED_ARTIFACT.map((dest) => ({ dest, source: null })),
+    ...previousAuthority.map((dest) => ({ dest, source: null }))]
     .map((entry) => ({ ...entry, bytes: read(path.join(backupDir, entry.dest)) }))
     .filter((entry) => entry.bytes !== null);
   if (!restore.length) return { ok: false, reason: `backup set ${toBackupSet} contains nothing to restore` };
@@ -612,6 +666,17 @@ export function rollback({ toBackupSet, at = null, dryRun = true, liveDir = live
     fs.writeFileSync(tmp, file.bytes);
     fs.renameSync(tmp, target);
   }
+
+  // Authority files THIS release introduced had no predecessor, so restoring
+  // the previous world means deleting them. Leaving them would strand candidate
+  // authority code beside rolled-back base code.
+  const keep = new Set(previousAuthority);
+  const deleted = [];
+  for (const dest of listAuthorityFiles(liveDir)) {
+    if (keep.has(dest)) continue;
+    fs.rmSync(path.join(liveDir, dest));
+    deleted.push(dest);
+  }
   const manifest = JSON.parse(read(MANIFEST()) || "{}");
   fs.writeFileSync(MANIFEST(), JSON.stringify({
     ...manifest,
@@ -619,11 +684,18 @@ export function rollback({ toBackupSet, at = null, dryRun = true, liveDir = live
     // are known-good, not known-reviewed, and pretending otherwise would make
     // `matches_reviewed_source` mean two different things.
     commit: null,
+    // The rolled-back world's authority set, so the startup gate does not go on
+    // expecting files this rollback just deleted.
+    authority_files: [],
     rolled_back_to: toBackupSet,
     rolled_back_at: at,
     files: restore.map((f) => ({ dest: f.dest, hash: sha(f.bytes) })),
   }, null, 2));
-  return { ok: true, dry_run: false, restored: restore.map((f) => ({ dest: f.dest, hash: sha(f.bytes) })) };
+  return {
+    ok: true, dry_run: false,
+    restored: restore.map((f) => ({ dest: f.dest, hash: sha(f.bytes) })),
+    deleted_authority: deleted,
+  };
 }
 
 // Run directly: report only. Deployment is an explicit, non-default act.

@@ -52,7 +52,7 @@ test("policy: first install lands after the anchor and changes nothing else", ()
   const plan = planSync(DOCUMENT);
   assert.equal(plan.ok, true);
   assert.equal(plan.action, "installed");
-  assert.equal(unmanagedDelta(DOCUMENT, plan.document), 0, "nothing outside the block may move");
+  assert.equal(unmanagedDelta(DOCUMENT, plan.document, plan.region), 0, "nothing outside the block may move");
 
   const found = locateBlock(plan.document);
   assert.equal(found.state, "present");
@@ -82,7 +82,7 @@ test("policy: a stale block is replaced in place, and only the block", () => {
   const plan = planSync(stale);
   assert.equal(plan.action, "updated");
   assert.equal(plan.document, installed);
-  assert.equal(unmanagedDelta(stale, plan.document), 0);
+  assert.equal(unmanagedDelta(stale, plan.document, plan.region), 0);
 });
 
 test("policy: hand edits outside the block survive a sync", () => {
@@ -166,4 +166,39 @@ test("policy: the real CLAUDE.md is never a test target", () => {
   assert.ok(!/sync\(\{\s*dryRun:\s*false\s*\}\)/.test(source),
     "every write in this suite must name an explicit temporary file");
   assert.ok(!/D:\\\\Projects\\\\CLAUDE\.md/.test(source), "and never the real path");
+});
+
+test("policy: a blank-line change far from the block is NOT hidden", () => {
+  // The first comparison stripped the block and then collapsed every run of
+  // three-or-more newlines to two. That normalisation also swallowed unrelated
+  // spacing changes anywhere in the file, so "unmanaged bytes changed: 0" could
+  // be true of a document the sync had in fact disturbed.
+  const plan = planSync(DOCUMENT);
+  const meddled = plan.document.replace("## 4. Money", "\n## 4. Money");
+  assert.notEqual(meddled, plan.document);
+  assert.equal(unmanagedDelta(DOCUMENT, meddled, plan.region), 1,
+    "a blank line added three sections away must be visible");
+
+  // And the same in the update path.
+  const stale = plan.document.replace(canonicalText(), "older");
+  const update = planSync(stale);
+  const meddledUpdate = update.document.replace("Some preamble", "\nSome preamble");
+  assert.equal(unmanagedDelta(stale, update.document, update.region), 0, "the clean update is clean");
+  assert.equal(unmanagedDelta(stale, meddledUpdate, update.region), 1, "the meddled one is not");
+});
+
+test("policy: a planned real-file sync would not duplicate the existing rule", () => {
+  // That file was reconciled BY HAND earlier in this lane, so it already
+  // contains the owner-gate rule unmarked. Installing a marked block without
+  // checking would leave the same instruction twice, disagreeing subtly.
+  const real = fs.readFileSync("D:/Projects/CLAUDE.md", "utf8");
+  const plan = planSync(real);
+  assert.equal(plan.ok, true, plan.reason);
+  assert.equal(unmanagedDelta(real, plan.document, plan.region), 0);
+
+  const marker = "Never move a `blocked-on-owner` exception";
+  const occurrences = plan.document.split(marker).length - 1;
+  assert.equal(occurrences, 2,
+    "the hand-written paragraph is still there beside the managed block — "
+    + "it must be removed by hand before the post-merge sync, not by this tool");
 });
