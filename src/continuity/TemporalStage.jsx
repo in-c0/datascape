@@ -142,7 +142,12 @@ export default function TemporalStage({ timeline, children, rows = [], width = 1
         <i />
         <span>{hhmm(scale.from + scale.spanMs / 2)}</span>
         <i />
-        <span className="bf-field__orient-now">{nowInWindow ? "now" : hhmm(scale.to)}</span>
+        {/* In a rewound scene the mobile cue must never say "now": the manifest
+            said historical while the field said otherwise, and the UI
+            contradicting its own state is worse than having no cue. */}
+        <span className="bf-field__orient-now">
+          {timeline.label === "as of" ? `as of ${hhmm(scale.to)}` : (nowInWindow ? "now" : hhmm(scale.to))}
+        </span>
       </div>
 
       {/* NOW crosses the whole stage; a live branch intersects it. */}

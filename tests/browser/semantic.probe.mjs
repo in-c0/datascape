@@ -202,6 +202,109 @@ try {
       && String(crumbText).includes("The first-three-second reveal is the strongest hook."),
     String(crumbText).slice(0, 120));
 
+  // ---- V4 PR B review: the four clean assertions the lane asked for ----
+  const V4 = `${BASE}/?view=briefing&fixture=v3-projection&centre=reliability`;
+
+  // 1. Revision advancement genuinely moves the historical position.
+  await tab.goto(V4);
+  await wait(1500);
+  await tab.eval('window.__continuity.select("reliability")');
+  await wait(200);
+  await tab.eval("window.__continuity.history()");
+  await wait(420);
+  const back1 = await tab.eval("JSON.stringify(window.__continuity.state())").then(JSON.parse);
+  await tab.eval("window.__continuity.previousRevision()");
+  await wait(420);
+  const back2 = await tab.eval("JSON.stringify(window.__continuity.state())").then(JSON.parse);
+  await tab.eval("window.__continuity.nextRevision()");
+  await wait(420);
+  const fwd = await tab.eval("JSON.stringify(window.__continuity.state())").then(JSON.parse);
+  ok("next revision advances the historical position when one exists",
+    Date.parse(fwd.historicalPosition) > Date.parse(back2.historicalPosition),
+    JSON.stringify({ back1: back1.historicalPosition, back2: back2.historicalPosition, fwd: fwd.historicalPosition }));
+
+  // Same, but while semantically zoomed: history is owned by an ancestor, and
+  // keying it off the focal concept is what made two frames stall at rev 1.
+  await tab.goto(V4);
+  await wait(1400);
+  await tab.eval('window.__continuity.select("reliability")');
+  await wait(160);
+  await tab.eval("window.__continuity.history()");
+  await wait(420);
+  // Step back to the EARLIEST revision first, so "next" has a genuine
+  // intermediate to advance to rather than landing straight back on the live
+  // world (which is correct behaviour but proves nothing about advancement).
+  await tab.eval("window.__continuity.previousRevision()");
+  await wait(420);
+  await tab.eval("window.__continuity.plus()");
+  await wait(420);
+  const zoomed = await tab.eval("JSON.stringify(window.__continuity.state())").then(JSON.parse);
+  const advanced = await tab.eval("window.__continuity.nextRevision()");
+  await wait(460);
+  const afterZoomNav = await tab.eval("JSON.stringify(window.__continuity.state())").then(JSON.parse);
+  ok("revision navigation works from a descendant, not only from the owner",
+    advanced === true && Date.parse(afterZoomNav.historicalPosition || 0) > Date.parse(zoomed.historicalPosition),
+    JSON.stringify({ altitude: zoomed.semanticAltitude, before: zoomed.historicalPosition, after: afterZoomNav.historicalPosition }));
+
+  // 2. The focal ring stays put while the interpretation changes.
+  await tab.goto(V4);
+  await wait(1400);
+  await tab.eval('window.__continuity.select("reliability")');
+  await wait(200);
+  const morph = JSON.parse(await tab.eval(`(async () => {
+    const ring = () => {
+      const e = document.querySelector(".sem__concept--centre .sem__ring");
+      if (!e) return null;
+      const r = e.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    };
+    const before = ring();
+    window.__continuity.history();
+    await new Promise((r) => setTimeout(r, 500));
+    const after = ring();
+    return JSON.stringify({ before, after });
+  })()`));
+  const drift = Math.hypot(morph.after.x - morph.before.x, morph.after.y - morph.before.y);
+  ok("the focal ring stays anchored while the interpretation changes",
+    drift <= 2, `moved ${drift.toFixed(1)}px`);
+
+  // 3. Mobile historical says AS OF and never now.
+  await tab.send("Emulation.setDeviceMetricsOverride", {
+    width: 375, height: 812, deviceScaleFactor: 1, mobile: true, screenWidth: 375, screenHeight: 812,
+  });
+  await tab.goto(V4);
+  await wait(1500);
+  await tab.eval('window.__continuity.select("reliability")');
+  await wait(200);
+  await tab.eval("window.__continuity.history()");
+  await wait(520);
+  const mobile = JSON.parse(await tab.eval(`(() => {
+    const visible = (e) => {
+      const r = e.getBoundingClientRect();
+      return r.width > 0 && r.height > 0 && getComputedStyle(e).display !== "none";
+    };
+    const cues = [...document.querySelectorAll(".bf-field__orient span, .bf-now span")]
+      .filter(visible).map((e) => e.innerText.trim().toLowerCase());
+    const controls = [...document.querySelectorAll(".sem__controls button")].filter(visible)
+      .map((e) => { const r = e.getBoundingClientRect(); return { t: e.innerText.trim(), x1: r.left, x2: r.right, y1: r.top, y2: r.bottom }; });
+    let overlaps = 0;
+    for (let i = 0; i < controls.length; i++) {
+      for (let j = i + 1; j < controls.length; j++) {
+        const a = controls[i], b = controls[j];
+        if (a.x1 < b.x2 && b.x1 < a.x2 && a.y1 < b.y2 && b.y1 < a.y2) overlaps += 1;
+      }
+    }
+    return JSON.stringify({ cues, overlaps, controlCount: controls.length,
+      historical: !!document.querySelector(".sem__asof") });
+  })()`));
+  ok("mobile historical shows an AS OF cue and zero NOW markers",
+    mobile.historical && mobile.cues.some((c) => c.includes("as of")) && !mobile.cues.some((c) => c === "now"),
+    JSON.stringify(mobile.cues));
+  ok("no mobile control bounding boxes intersect",
+    mobile.overlaps === 0 && mobile.controlCount >= 4, JSON.stringify(mobile));
+
+  await tab.send("Emulation.clearDeviceMetricsOverride", {});
+
   ok("PROBE CONTROL: the error collector survived every navigation", await tab.armed());
   const errors = await tab.errors();
   ok("no page errors", errors.length === 0, JSON.stringify(errors));

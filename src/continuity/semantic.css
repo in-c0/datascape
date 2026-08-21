@@ -106,7 +106,12 @@
    * surface: the ring IS the record. `--anchor-x` carries that offset so the
    * emerge animation can compose with it instead of overwriting it. */
   --anchor-x: -12px;
-  transform: translate(var(--anchor-x), -50%);
+  /* Anchor by the RING, not by centring the box. translateY(-50%) meant a
+   * two-line label made the box taller and pulled the ring upward, so the
+   * focal ring drifted ~8px purely because an interpretation got wordier.
+   * The ring is the concept's position; its label length must not move it. */
+  --anchor-y: -13px;
+  transform: translate(var(--anchor-x), var(--anchor-y));
   /* Scale about the RING, not the box centre. Scaling a 460px box about its
    * middle displaced the ring ~23px, so a child measured 22px from its parent
    * at t=0 while claiming to start on top of it. */
@@ -114,7 +119,7 @@
   max-width: 460px;
   z-index: 4;
 }
-.sem__concept--centre { --anchor-x: -17px; }
+.sem__concept--centre { --anchor-x: -17px; --anchor-y: -18px; }
 .sem__concept--atemporal { --anchor-x: 0px; }
 /* Near NOW there is no room to the right, and a clipped label is worse than a
  * mirrored one. The box hangs to the LEFT of its moment and the ring stays on
@@ -143,13 +148,13 @@
 @keyframes sem-emerge {
   from {
     opacity: 0.15;
-    transform: translate(calc(var(--anchor-x) + var(--dx)), calc(-50% + var(--dy))) scale(0.9);
+    transform: translate(calc(var(--anchor-x) + var(--dx)), calc(var(--anchor-y) + var(--dy))) scale(0.9);
   }
-  to { opacity: 1; transform: translate(var(--anchor-x), -50%) scale(1); }
+  to { opacity: 1; transform: translate(var(--anchor-x), var(--anchor-y)) scale(1); }
 }
 @keyframes sem-converge {
-  from { opacity: 0.35; transform: translate(var(--anchor-x), -50%) scale(0.94); }
-  to { opacity: 1; transform: translate(var(--anchor-x), -50%) scale(1); }
+  from { opacity: 0.35; transform: translate(var(--anchor-x), var(--anchor-y)) scale(0.94); }
+  to { opacity: 1; transform: translate(var(--anchor-x), var(--anchor-y)) scale(1); }
 }
 @media (prefers-reduced-motion: reduce) {
   .sem__concept, .sem__origin, .sem__ray { animation: none !important; }
@@ -170,6 +175,10 @@
 }
 
 .sem__ring {
+  /* Positioned, so the working halo anchors to the RING. Without this it
+   * escaped to the concept box and a 5px inset became a 300px dashed arc
+   * sweeping through empty space, reading as an unexplained graph edge. */
+  position: relative;
   flex: none;
   width: 24px;
   height: 24px;
@@ -268,7 +277,7 @@
   /* No horizontal time on 375px: semantic readability outranks exact temporal
    * geometry, and the field keeps its vertical orientation cue. */
   .sem__concepts { position: relative; display: flex; flex-direction: column; gap: 16px; padding: 12px 0; }
-  .sem__concept { position: static; transform: none; --anchor-x: 0px; max-width: none; }
+  .sem__concept { position: static; transform: none; --anchor-x: 0px; --anchor-y: 0px; max-width: none; }
   /* x carries no meaning on 375px, so the near-NOW mirror carries none either
    * — it only made two of four rows read right-to-left for no reason. */
   .sem__concept--flip .sem__hit { flex-direction: row; }
@@ -311,9 +320,11 @@
 
 /* Cognition is ongoing; the meaning has not changed. An unfinished ring, not
  * a badge saying "1 pending observation". */
+/* A whisper, not a competing edge. The first version drew a long dashed arc
+ * through empty space that read as an unexplained graph relationship. */
 .sem__working {
   position: absolute;
-  inset: -6px;
+  inset: -5px;
   border-radius: 50%;
   border: 1px dashed rgba(125, 211, 252, 0.55);
   border-right-color: transparent;
@@ -323,31 +334,48 @@
 @keyframes sem-working { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .sem__working { animation: none; } }
 
-/* Change annotations. Deliberately bracket-like and translucent so they can
- * never be mistaken for permanent graph nodes. */
-.sem__diff {
-  max-width: 1180px;
-  margin: 0 auto 10px;
-  width: 100%;
-  padding: 10px 16px;
-  border-left: 2px solid rgba(167, 139, 250, 0.4);
-  background: rgba(24, 22, 48, 0.42);
-  border-radius: 0 8px 8px 0;
+/* Change annotations, in the semantic space. Bracketed and translucent so
+ * they cannot read as permanent nodes, and anchored to the concept they
+ * describe rather than collected into a panel beneath the graph. */
+.sem__diffaperture {
+  position: absolute;
+  /* Below the concept it describes, not through it. */
+  transform: translateY(30px);
+  /* Annotations fan away from the node into open space. At NOW there is none
+   * to the right, so they mirror exactly as the labels do. */
+  z-index: 5;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding-left: 34px;
+  max-width: 460px;
 }
 .sem__diff-cap {
-  font-size: 10px;
+  font-size: 9.5px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: rgba(167, 139, 250, 0.7);
+  color: rgba(167, 139, 250, 0.62);
 }
-.sem__diff ul { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
 .sem__change {
-  font-size: 13.5px;
-  color: rgba(226, 232, 250, 0.82);
-  opacity: 0.92;
+  font-size: 12px;
+  line-height: 1.28;
+  color: rgba(226, 232, 250, 0.72);
+  opacity: 0.88;
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.85);
+  /* Each annotation offsets slightly further out, so they fan from the node. */
+  margin-left: calc(var(--i) * 14px);
 }
-.sem__change::before { content: "["; color: rgba(167, 139, 250, 0.5); margin-right: 5px; }
-.sem__change::after { content: "]"; color: rgba(167, 139, 250, 0.5); margin-left: 5px; }
+.sem__change::before { content: "["; color: rgba(167, 139, 250, 0.45); margin-right: 4px; }
+.sem__change::after { content: "]"; color: rgba(167, 139, 250, 0.45); margin-left: 4px; }
+
+.sem__diffaperture--flip {
+  align-items: flex-end;
+  text-align: right;
+  padding-left: 0;
+  padding-right: 34px;
+}
+.sem__diffaperture--flip .sem__change { margin-left: 0; margin-right: calc(var(--i) * 14px); }
 
 .sem__hist-btn, .sem__diff-btn, .sem__nowbtn {
   padding: 0 10px;
@@ -357,12 +385,29 @@
 .sem__histnav { display: inline-flex; align-items: center; gap: 6px; }
 
 @media (max-width: 900px) {
-  /* The critical mobile message is "I am in the past", not eleven controls. */
+  /* The critical mobile message is "I am in the past", not eleven controls.
+   * The desktop row overlapped itself at 375px: three affordances competing
+   * for one line while the manifest said the scene was historical. */
   .sem__asof { margin-left: 6px; font-size: 9.5px; padding: 1px 6px; }
   .sem__diff-btn { display: none; }
-  .sem__nowbtn { font-size: 10px !important; padding: 0 6px; }
-  .sem__diff { margin-bottom: 6px; padding: 8px 12px; }
-  .sem__change { font-size: 12.5px; }
+  .sem__hist-btn { font-size: 10px !important; padding: 0 6px; }
+  .sem__controls {
+    flex-wrap: wrap;
+    row-gap: 8px;
+    column-gap: 8px;
+    padding: 10px 0 18px;
+  }
+  /* Historical controls take their own row so nothing can collide. */
+  .sem__histnav {
+    flex-basis: 100%;
+    justify-content: center;
+    gap: 10px;
+    order: 2;
+  }
+  .sem__nowbtn { font-size: 10px !important; padding: 0 8px; }
+  .sem__inspect-btn { font-size: 10px !important; padding: 0 6px; }
+  .sem__diffaperture { padding-left: 30px; max-width: calc(100vw - 70px); }
+  .sem__change { font-size: 12px; margin-left: 0; }
 }
 
 /* The structural cursor is one short word and must never wrap. "AS OF" broke

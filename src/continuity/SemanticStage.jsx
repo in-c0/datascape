@@ -177,9 +177,20 @@ export default function SemanticStage({ initialLens = [], initialCentre = null, 
 
   // Revision context for whichever concept is focal. `↶ history` appears only
   // when meaningful prior material revisions exist.
+  // History belongs to whichever ancestor OWNS revisions, not to whatever is
+  // focal. Keying off the centre meant that once the operator zoomed into a
+  // descendant, `next revision` silently did nothing — the manifest caught it:
+  // two frames named rev1-to-rev2 both stayed at rev 1's as-of position.
+  const owningId = useMemo(() => {
+    for (const id of [centreId, ...[...lens].reverse()]) {
+      if (id && revisionTimeline(world, id).length > 1) return id;
+    }
+    return null;
+  }, [centreId, lens, world]);
+
   const revisions = useMemo(
-    () => (centreId ? revisionTimeline(world, centreId) : []),
-    [world, centreId],
+    () => (owningId ? revisionTimeline(world, owningId) : []),
+    [world, owningId],
   );
   const currentRevision = useMemo(() => {
     if (!revisions.length) return null;
@@ -195,16 +206,36 @@ export default function SemanticStage({ initialLens = [], initialCentre = null, 
   // ONLY in the live view: historical rev 3 means what rev 3 meant when it
   // settled, which is a different state from rev 3 as it stands now (§6).
   const overlay = useMemo(() => {
-    if (historical || !centreId || !hasHistory) return null;
-    const o = workingOverlay(world.revisions, centreId, world.sources, { now });
+    if (historical || !owningId || !hasHistory) return null;
+    const o = workingOverlay(world.revisions, owningId, world.sources, { now });
     return o.working_evidence_count > 0 ? o : null;
-  }, [historical, centreId, hasHistory, world, now]);
+  }, [historical, owningId, hasHistory, world, now]);
 
   const diff = useMemo(() => {
     if (!diffOpen || !currentRevision || revIndex < 1) return null;
-    return semanticDiff(world.revisions, centreId, revisions[revIndex - 1].revision, currentRevision.revision,
+    return semanticDiff(world.revisions, owningId, revisions[revIndex - 1].revision, currentRevision.revision,
       { labels: Object.fromEntries(graph.nodes.map((n) => [n.id, n.label])) });
-  }, [diffOpen, currentRevision, revIndex, revisions, world, centreId, graph]);
+  }, [diffOpen, currentRevision, revIndex, revisions, world, owningId, graph]);
+
+  /**
+   * Reconcile the semantic referent into a reconstructed scene.
+   *
+   * The concept the operator is inspecting may not exist at the new revision.
+   * Rather than silently doing nothing, follow the lens upward to the nearest
+   * concept that does exist there — the referent degrades gracefully instead
+   * of the navigation failing.
+   */
+  const reconcile = useCallback((nextAsOf) => {
+    const next = buildV4Graph(world, nextAsOf);
+    const present = new Set(next.nodes.map((n) => n.id));
+    const nextLens = [];
+    for (const id of lens) {
+      if (!present.has(id)) break;
+      nextLens.push(id);
+    }
+    setLens(nextLens);
+    setCentre(present.has(centreId) && nextLens.length === lens.length ? centreId : null);
+  }, [world, lens, centreId]);
 
   const goRevision = useCallback((delta) => {
     if (revIndex < 0) return false;
@@ -213,17 +244,24 @@ export default function SemanticStage({ initialLens = [], initialCentre = null, 
     // Moving to the newest revision returns to the live world rather than
     // pinning an as-of at its effective time, so "current" is never a
     // historical scene that happens to be up to date.
-    setAsOf(next.revision === revisions[revisions.length - 1].revision && delta > 0 ? null : next.effective_at);
+    const nextAsOf = next.revision === revisions[revisions.length - 1].revision && delta > 0
+      ? null : next.effective_at;
+    setAsOf(nextAsOf);
+    reconcile(nextAsOf);
+    settle({ kind: "revision", from: owningId, to: [owningId], origin: positions.current.get(centreId) || null });
     setDiffOpen(false);
     return true;
-  }, [revIndex, revisions]);
+  }, [revIndex, revisions, reconcile, settle, owningId, centreId]);
 
   const enterHistory = useCallback(() => {
     if (!hasHistory || revIndex < 1) return false;
-    setAsOf(revisions[revIndex - 1].effective_at);
+    const nextAsOf = revisions[revIndex - 1].effective_at;
+    setAsOf(nextAsOf);
+    reconcile(nextAsOf);
+    settle({ kind: "revision", from: owningId, to: [owningId], origin: positions.current.get(centreId) || null });
     setDiffOpen(false);
     return true;
-  }, [hasHistory, revIndex, revisions]);
+  }, [hasHistory, revIndex, revisions, reconcile, settle, owningId, centreId]);
 
   const returnToNow = useCallback(() => {
     // Preserve the semantic referent. The centre and lens are untouched, so
@@ -280,6 +318,7 @@ export default function SemanticStage({ initialLens = [], initialCentre = null, 
     return () => window.removeEventListener("keydown", onKey);
   }, [zoomIn, zoomOut]);
 
+  const focalRow = rows.find((r) => r.key === centreId) || null;
   const emerging = motion?.kind === "decompose";
   const origin = emerging ? motion.origin : null;
   const stageHeight = Math.max(360, TOP + visible.length * ROW + 40);
@@ -362,6 +401,29 @@ export default function SemanticStage({ initialLens = [], initialCentre = null, 
           </div>
         )}
 
+        {/* Change annotations inhabit the semantic space and fan locally from
+            the concept they describe. A full-width bottom sheet was a report
+            ABOUT the graph, which is the interaction Continuity is escaping. */}
+        {diff?.available && focalRow && (
+          <div
+            className={`sem__diffaperture${focalRow.flip ? " sem__diffaperture--flip" : ""}`}
+            style={focalRow.flip
+              ? { right: `calc(100% - ${focalRow.x}px)`, top: focalRow.y }
+              : { left: focalRow.x, top: focalRow.y }}
+          >
+            <span className="sem__diff-cap">rev {diff.from_revision} → rev {diff.to_revision}</span>
+            {diff.changes.slice(0, 3).map((c, i) => (
+              <span
+                key={i}
+                className="sem__change"
+                style={{ "--i": i, "--n": Math.min(3, diff.changes.length) }}
+              >
+                {c.kind === "interpretation_revised" ? c.after : (c.concept || c.kind.replace(/_/g, " "))}
+              </span>
+            ))}
+          </div>
+        )}
+
         <ul className="sem__concepts">
           {rows.map((row, index) => {
             const node = row.node;
@@ -411,24 +473,6 @@ export default function SemanticStage({ initialLens = [], initialCentre = null, 
           })}
         </ul>
       </section>
-
-      {/* Change annotations, not permanent graph nodes: translucent, bracketed
-          and captioned with the exact revisions they came from. They render
-          semantic_diff objects and never author a summary of their own. */}
-      {diff?.available && (
-        <aside className="sem__diff">
-          <span className="sem__diff-cap">rev {diff.from_revision} → rev {diff.to_revision}</span>
-          <ul>
-            {diff.changes.map((c, i) => (
-              <li key={i} className={`sem__change sem__change--${c.kind}`}>
-                {c.kind === "interpretation_revised"
-                  ? <span>{c.after}</span>
-                  : <span>{c.concept || c.kind.replace(/_/g, " ")}</span>}
-              </li>
-            ))}
-          </ul>
-        </aside>
-      )}
 
       {inspecting && centreNode && (
         <aside className="sem__inspect">
