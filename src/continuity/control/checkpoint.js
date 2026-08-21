@@ -22,6 +22,12 @@ const FIELDS = [
   "dependency_refs",
   "owner_gate_ids",
   "next_safe_action",
+  // Scope observability (spec V6.1.2 section 11). Without these, "the scope
+  // changed materially during work" is a matter of opinion; with them it is a
+  // hash comparison.
+  "scope_hash",
+  "scope_provenance_refs",
+  "gate_overlap_evaluation",
 ];
 
 /** Fields that would smuggle a transcript or hidden reasoning back in. */
@@ -36,7 +42,7 @@ export function createCheckpoint(fields) {
     const value = fields[key];
     checkpoint[key] = Array.isArray(value) ? [...value] : value ?? null;
   }
-  for (const key of ["last_settled_event_ids", "produced_event_ids", "unresolved_questions", "dependency_refs", "owner_gate_ids"]) {
+  for (const key of ["last_settled_event_ids", "produced_event_ids", "unresolved_questions", "dependency_refs", "owner_gate_ids", "scope_provenance_refs"]) {
     if (!Array.isArray(checkpoint[key])) checkpoint[key] = [];
   }
   return checkpoint;
@@ -110,5 +116,25 @@ export function reconstructable(checkpoint, intent, resolve) {
     ok: Boolean(answers.goal && answers.settled && answers.attempting && answers.next_safe_action) && unresolved.length === 0,
     answers,
     unresolved_refs: unresolved,
+  };
+}
+
+/**
+ * Did the scope change materially between dispatch and checkpoint? (§11)
+ *
+ * A changed hash is not automatically wrong — work legitimately narrows. It
+ * means the old dispatch may not silently continue into the new shape: the
+ * intent returns for re-evaluation and re-dispatch. The rule being enforced is
+ * that an executor may narrow its task and may not widen its authority.
+ */
+export function scopeDrift(dispatch, checkpoint) {
+  if (!checkpoint.scope_hash) {
+    return { drifted: true, requires_redispatch: true, reason: "the checkpoint records no scope identity" };
+  }
+  const drifted = checkpoint.scope_hash !== dispatch.scope_hash;
+  return {
+    drifted,
+    requires_redispatch: drifted,
+    reason: drifted ? "the working scope no longer matches the dispatched scope" : null,
   };
 }

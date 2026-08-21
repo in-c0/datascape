@@ -44,6 +44,9 @@ export function simulate({ intents, openGates, budgets = {}, startMs, hours = 8,
   for (let at = startMs; at < endMs; at += tickMs) {
     for (const intent of intents) {
       if (intent.state === "completed" || intent.state === "cancelled") continue;
+      // A container is organizational context, never a unit of work. It is not
+      // a low-priority candidate; it is not a candidate (V6.1.2 section 1).
+      if (intent.role === "container" || intent.executable === false) continue;
 
       // 1. Is it owner-gated at all?
       if (intent.state === "blocked_on_owner") {
@@ -157,6 +160,29 @@ export function simulate({ intents, openGates, budgets = {}, startMs, hours = 8,
  * than assumed. A dispatch missing any one of its six identity fields is
  * counted as unattributed, not quietly dropped.
  */
+/**
+ * The non-vacuous release criterion — spec V6.1.2 §15.
+ *
+ * Zero dispatches can no longer pass. And blocking EVERYTHING can no longer
+ * pass either: the firewall must be shown to distinguish cases, which is why
+ * all three shadow categories must have been exercised. A system that denies
+ * uniformly looks identical to a correct one until the day it matters.
+ */
+export function releaseCriterion(metrics, dangerous, exercised) {
+  const reasons = [];
+  if (metrics.would_dispatch === 0) reasons.push("no dispatch occurred; the attribution claim would be vacuous");
+  if (metrics.fully_attributed !== metrics.would_dispatch) reasons.push("some dispatch was not fully attributed");
+  if (metrics.scope_unknown_dispatches > 0) reasons.push("a dispatch proceeded with unknown scope");
+  if (metrics.authority_unknown_dispatches > 0) reasons.push("a dispatch proceeded with unknown authority");
+  for (const [name, count] of Object.entries(dangerous)) {
+    if (count !== 0) reasons.push(`dangerous counter ${name} is ${count}`);
+  }
+  if (!exercised.dispatch_beside_unrelated_gate) reasons.push("no dispatch was allowed beside an unrelated owner gate");
+  if (!exercised.owner_gate_block) reasons.push("no owner-gate block was exercised");
+  if (!exercised.unknown_scope_block) reasons.push("no unknown-scope block was exercised");
+  return { met: reasons.length === 0, reasons };
+}
+
 export function attributionMetrics(result) {
   const required = ["dispatch_id", "intent_id", "lease_id", "lease_generation", "wake_reason", "budget"];
   const fully = result.dispatches.filter((d) =>
@@ -173,8 +199,27 @@ export function attributionMetrics(result) {
     budget_blocked: result.outcomes.would_exhaust_budget,
     dependency_wakeups: result.outcomes.would_wake_dependency,
     waits: result.outcomes.would_wait,
-    // Unknowns MAY exist. They simply must not execute — which is what the
-    // blocked counters above record.
+    // A dispatch that PROCEEDED despite an unknown. Distinct from the blocked
+    // counters above: those are refusals, these would be failures.
+    scope_unknown_dispatches: result.dispatches.filter((d) => d.scope_resolution !== "resolved").length,
+    authority_unknown_dispatches: result.dispatches.filter((d) => d.authority_resolved === false).length,
+    // Vacuity is named here rather than left for a caller to notice: with zero
+    // dispatches this is 0 === 0, true, and evidence of nothing.
     gate_passes: result.outcomes.would_dispatch === fully.length,
+    vacuous: result.outcomes.would_dispatch === 0,
+  };
+}
+
+/**
+ * Which shadow categories did this run actually exercise? (§12, §15)
+ *
+ * Proving the firewall DISCRIMINATES. Blocking everything is not evidence of
+ * safety, it is evidence of not having been tested.
+ */
+export function exercisedCategories(result) {
+  return {
+    dispatch_beside_unrelated_gate: result.dispatches.some((d) => (d.open_owner_gates || []).length > 0),
+    owner_gate_block: result.outcomes.would_block_owner > 0,
+    unknown_scope_block: result.outcomes.would_block_scope_unknown > 0,
   };
 }
