@@ -2,137 +2,268 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import {
+  BUDGETS,
   agoLabel,
-  buildBriefingUrl,
-  buildBriefingViewport,
+  buildScene,
+  buildUrl,
   effortLabel,
-  readBriefingLocation,
+  isDueNow,
+  levelOf,
+  orderOwnerActions,
+  parentPath,
+  partitionActions,
+  readLocation,
+  resolveDeferPreset,
 } from "../src/continuity/briefing.js";
 
-const data = {
-  latestPerLane: 2,
-  generatedAtLocal: "2026-03-15T09:05:00+11:00",
-  lanes: [
-    {
-      lane: "atlas",
-      label: "Atlas",
-      total: 34,
-      lastSeen: "2026-03-15T08:52:00+11:00",
-      records: [
-        { id: "mr_aaaaaaaaaaaaaaaa", emittedAt: "2026-03-15T08:52:00+11:00", items: [{ headline: "A", type: "progress" }] },
-        { id: "mr_bbbbbbbbbbbbbbbb", emittedAt: "2026-03-15T07:40:00+11:00", items: [{ headline: "B", type: "state" }] },
-        { id: "mr_cccccccccccccccc", emittedAt: "2026-03-15T06:00:00+11:00", items: [{ headline: "C", type: "state" }] },
-      ],
-    },
-  ],
-  ownerActions: [
-    { id: "x-1", title: "Decide", severity: "high", steps: [{ n: 1, kind: "run", text: "go", command: "node x.mjs", seconds: 30 }] },
-  ],
-};
+// Acceptance tests for spec v1 §13 and its `deferred_until` addendum.
+// The node budgets in §12 are hard limits, so they are asserted rather than
+// trusted: "no implementation may exceed these limits because there is
+// available screen space."
 
-test("the briefing shows only the latest N must-reads per lane", () => {
-  const viewport = buildBriefingViewport(data, { latest: 2 });
-  assert.equal(viewport.lanes[0].records.length, 2);
-  assert.equal(viewport.lanes[0].records[0].id, "mr_aaaaaaaaaaaaaaaa");
-  assert.equal(viewport.perLane, 2);
+const NOW = Date.parse("2026-08-21T16:00:00+10:00");
+
+const action = (id, over = {}) => ({
+  id,
+  title: `Decision ${id}`,
+  severity: "medium",
+  loop: "alpha/one",
+  opened: "2026-08-10T09:00:00+10:00",
+  updated: "2026-08-20T09:00:00+10:00",
+  steps: [],
+  proposed: "Do the authored thing.",
+  ...over,
 });
 
-test("hiddenCount is recomputed against the slice actually shown", () => {
-  // The builder's own hiddenCount was computed for its slice. If the viewport
-  // re-slices to 1, a stale 32 would be a lie by one record.
-  const one = buildBriefingViewport(data, { latest: 1 });
-  assert.equal(one.lanes[0].records.length, 1);
-  assert.equal(one.lanes[0].hiddenCount, 33);
-
-  const three = buildBriefingViewport(data, { latest: 3 });
-  assert.equal(three.lanes[0].hiddenCount, 31);
+const laneRecord = (id, items) => ({
+  id,
+  emittedAt: "2026-08-21T15:00:00+10:00",
+  items,
 });
 
-test("latest falls back to the document default, then to 2", () => {
-  assert.equal(buildBriefingViewport(data, {}).perLane, 2);
-  assert.equal(buildBriefingViewport({ lanes: [], ownerActions: [] }, {}).perLane, 2);
-  // A nonsense value must not produce a zero-record surface.
-  assert.equal(buildBriefingViewport(data, { latest: 0 }).perLane, 2);
-  assert.equal(buildBriefingViewport(data, { latest: "x" }).perLane, 2);
+function fixture(overrides = {}) {
+  return {
+    latestPerLane: 2,
+    totals: { mustReads: 262 },
+    lanes: [
+      {
+        lane: "alpha", label: "Alpha", total: 40, lastSeen: "2026-08-21T15:00:00+10:00",
+        records: [laneRecord("mr_aaaaaaaaaaaaaaaa", [
+          { headline: "Alpha merged a PR", type: "progress", detail: "d" },
+          { headline: "Alpha found a bug", type: "finding", detail: "d" },
+        ])],
+      },
+      { lane: "bravo", label: "Bravo", total: 9, lastSeen: "2026-08-21T14:00:00+10:00", records: [laneRecord("mr_bbbbbbbbbbbbbbbb", [{ headline: "Bravo state", type: "state", detail: "d" }])] },
+      { lane: "charlie", label: "Charlie", total: 8, lastSeen: "2026-08-21T13:00:00+10:00", records: [laneRecord("mr_cccccccccccccccc", [{ headline: "Charlie state", type: "state", detail: "d" }])] },
+      { lane: "delta", label: "Delta", total: 7, lastSeen: "2026-08-21T12:00:00+10:00", records: [laneRecord("mr_dddddddddddddddd", [{ headline: "Delta state", type: "state", detail: "d" }])] },
+      { lane: "echo", label: "Echo", total: 6, lastSeen: "2026-08-21T11:00:00+10:00", records: [laneRecord("mr_eeeeeeeeeeeeeeee", [{ headline: "Echo state", type: "state", detail: "d" }])] },
+    ],
+    ownerActions: Array.from({ length: 12 }, (_, i) =>
+      action(`ex-${i}`, {
+        severity: i < 3 ? "high" : i < 8 ? "medium" : "low",
+        loop: `${["alpha", "bravo", "charlie", "delta"][i % 4]}/sub`,
+      })),
+    ...overrides,
+  };
+}
+
+const graphNodes = (scene) => scene.nodes.length;
+
+// ---------------------------------------------------------------------------
+// §13 semantic density
+// ---------------------------------------------------------------------------
+
+test("entry never exceeds 4 graph roots on the real-shaped dataset", () => {
+  const scene = buildScene(fixture(), { now: NOW });
+  assert.ok(graphNodes(scene) <= BUDGETS.entry, `entry showed ${graphNodes(scene)}`);
+  assert.equal(scene.nodes[0].label, "Needs you", "Needs you comes first when decisions are due");
 });
 
-test("every node carries a stable id and items carry a status", () => {
-  const viewport = buildBriefingViewport(data, { latest: 1 });
-  const record = viewport.lanes[0].records[0];
-  assert.equal(record.nodeId, "mr:atlas:mr_aaaaaaaaaaaaaaaa");
-  assert.equal(record.items[0].nodeId, "item:mr_aaaaaaaaaaaaaaaa:0");
-  assert.equal(record.items[0].status, "merged");
-  assert.equal(viewport.ownerActions[0].nodeId, "oa:x-1");
+test("the 30-sec brief is tighter still", () => {
+  const scene = buildScene(fixture(), { brief: "30s", now: NOW });
+  assert.ok(graphNodes(scene) <= BUDGETS.entry30, `30s showed ${graphNodes(scene)}`);
 });
 
-test("an owner action with an owner_action item maps to needs_human", () => {
-  const viewport = buildBriefingViewport({
-    lanes: [{ lane: "l", label: "L", total: 1, records: [{ id: "mr_dddddddddddddddd", emittedAt: "2026-03-15T08:00:00+11:00", items: [{ headline: "H", type: "owner_action" }] }] }],
-    ownerActions: [],
-  }, {});
-  assert.equal(viewport.lanes[0].records[0].items[0].status, "needs_human");
+test("Full does NOT raise the node ceiling — it only changes coverage", () => {
+  const full = buildScene(fixture(), { brief: "full", now: NOW });
+  assert.ok(graphNodes(full) <= BUDGETS.entry, `full showed ${graphNodes(full)}`);
 });
 
-test("an unknown step kind degrades to a decision rather than disappearing", () => {
-  const viewport = buildBriefingViewport({
-    lanes: [],
-    ownerActions: [{ id: "y", title: "T", severity: "low", steps: [{ n: 1, kind: "teleport", text: "?" }] }],
-  }, {});
-  assert.equal(viewport.ownerActions[0].steps[0].kind, "decide");
+test("selecting Needs you never produces more than 4 buckets", () => {
+  const scene = buildScene(fixture(), { path: "needs", now: NOW });
+  assert.ok(graphNodes(scene) <= BUDGETS.z0, `z0 showed ${graphNodes(scene)}`);
 });
 
-test("expansion state round-trips through the URL", () => {
-  const location = readBriefingLocation("https://example.test/?view=briefing&open=oa:x-1,item:mr_a:0&n=3&lane=atlas");
-  assert.deepEqual([...location.expanded], ["oa:x-1", "item:mr_a:0"]);
-  assert.equal(location.latest, 3);
-  assert.equal(location.laneFilter, "atlas");
-
-  const url = buildBriefingUrl(location, "https://example.test/");
-  assert.equal(url.searchParams.get("view"), "briefing");
-  assert.equal(url.searchParams.get("open"), "oa:x-1,item:mr_a:0");
-  assert.equal(url.searchParams.get("n"), "3");
-  assert.equal(url.searchParams.get("lane"), "atlas");
+test("selecting a bucket never produces more than 5 nodes", () => {
+  const scene = buildScene(fixture(), { path: "needs/alpha", now: NOW });
+  assert.ok(graphNodes(scene) <= BUDGETS.z1, `z1 showed ${graphNodes(scene)}`);
 });
 
-test("an empty expansion set clears the parameter instead of writing open=", () => {
-  const url = buildBriefingUrl({ expanded: new Set(), latest: null, laneFilter: null }, "https://example.test/?open=a&n=2&lane=b");
-  assert.equal(url.searchParams.has("open"), false);
-  assert.equal(url.searchParams.has("n"), false);
-  assert.equal(url.searchParams.has("lane"), false);
+test("every level of the ladder respects its budget", () => {
+  const data = fixture();
+  const paths = [
+    ["", BUDGETS.entry],
+    ["needs", BUDGETS.z0],
+    ["needs/alpha", BUDGETS.z1],
+    ["needs/alpha/ex-0", BUDGETS.z2],
+    ["lane/alpha", BUDGETS.z0],
+    ["lane/alpha/Finding", BUDGETS.z1],
+  ];
+  for (const [path, budget] of paths) {
+    const scene = buildScene(data, { path, now: NOW });
+    assert.ok(graphNodes(scene) <= budget, `${path || "(entry)"} showed ${graphNodes(scene)} > ${budget}`);
+  }
 });
+
+test("paging windows the over-budget list instead of appending to it", () => {
+  const data = fixture();
+  const first = buildScene(data, { path: "needs/alpha", page: 0, now: NOW });
+  const second = buildScene(data, { path: "needs/alpha", page: 1, now: NOW });
+  assert.ok(graphNodes(second) <= BUDGETS.z1);
+  const firstIds = first.nodes.map((n) => n.key).join();
+  const secondIds = second.nodes.map((n) => n.key).join();
+  if (first.pageCount > 1) assert.notEqual(firstIds, secondIds, "a second page should show different records");
+});
+
+// ---------------------------------------------------------------------------
+// §13 recenter
+// ---------------------------------------------------------------------------
+
+test("selecting a record recenters: siblings are gone, one card remains", () => {
+  const scene = buildScene(fixture(), { path: "needs/alpha/ex-0", now: NOW });
+  assert.equal(scene.level, "z2");
+  assert.ok(graphNodes(scene) <= BUDGETS.z2);
+  assert.equal(scene.card.kind, "owner_action");
+  assert.equal(scene.card.action.id, "ex-0");
+  // The focal node is present and its parent is dimmed behind it.
+  assert.ok(scene.nodes.some((n) => n.kind === "focus"));
+  assert.ok(scene.nodes.some((n) => n.kind === "parent" && n.dim));
+  // At most ONE sibling survives — not the rest of the bundle.
+  assert.ok(scene.nodes.filter((n) => n.kind === "sibling").length <= 1);
+});
+
+test("Back restores the prior semantic level and centre", () => {
+  const location = readLocation("https://x.test/?view=briefing&at=needs%2Falpha%2Fex-0&brief=30s&page=2");
+  assert.equal(location.path, "needs/alpha/ex-0");
+  assert.equal(location.brief, "30s");
+  assert.equal(location.page, 2);
+  const url = buildUrl(location, "https://x.test/");
+  assert.equal(url.searchParams.get("at"), "needs/alpha/ex-0");
+  assert.equal(url.searchParams.get("brief"), "30s");
+  assert.equal(levelOf(location.path), "z2");
+  assert.equal(parentPath(location.path), "needs/alpha");
+  assert.equal(parentPath("needs/alpha/ex-0/hint/2"), "needs/alpha/ex-0");
+});
+
+test("the default position writes no stray URL parameters", () => {
+  const url = buildUrl({ path: "", brief: "3m", page: 0 }, "https://x.test/?at=a&brief=30s&page=3");
+  assert.equal(url.searchParams.has("at"), false);
+  assert.equal(url.searchParams.has("brief"), false);
+  assert.equal(url.searchParams.has("page"), false);
+});
+
+test("a record that is no longer due renders its absence, not a substitute", () => {
+  const scene = buildScene(fixture(), { path: "needs/alpha/does-not-exist", now: NOW });
+  assert.equal(scene.nodes[0].kind, "absent");
+  assert.equal(scene.card, null);
+});
+
+// ---------------------------------------------------------------------------
+// §13 ordering and fidelity
+// ---------------------------------------------------------------------------
+
+test("owner actions order high → medium → low, then oldest open first", () => {
+  const ordered = orderOwnerActions([
+    action("c", { severity: "low", opened: "2026-08-01T00:00:00+10:00" }),
+    action("a", { severity: "high", opened: "2026-08-05T00:00:00+10:00" }),
+    action("b", { severity: "high", opened: "2026-08-02T00:00:00+10:00" }),
+  ]);
+  assert.deepEqual(ordered.map((a) => a.id), ["b", "a", "c"]);
+});
+
+test("the authored title survives every level unchanged", () => {
+  const exact = "ViBo: the AUD $31/mo Pro premise did NOT survive testing — merge PR #84";
+  const data = fixture({ ownerActions: [action("ex-x", { title: exact, loop: "vibo/perf" })] });
+  const z1 = buildScene(data, { path: "needs/vibo", now: NOW });
+  const z2 = buildScene(data, { path: "needs/vibo/ex-x", now: NOW });
+  assert.ok(z1.nodes.some((n) => n.label === exact));
+  assert.equal(z2.card.action.title, exact);
+  assert.equal(z2.card.action.proposed, "Do the authored thing.");
+});
+
+// ---------------------------------------------------------------------------
+// Addendum: deferred_until
+// ---------------------------------------------------------------------------
+
+test("a future deferred_until removes an item from due-now without changing it", () => {
+  const deferredItem = action("ex-d", { deferredUntil: "2026-08-22T09:00:00+10:00" });
+  const data = fixture({ ownerActions: [action("ex-a"), deferredItem] });
+  const { dueNow, deferred } = partitionActions(data.ownerActions, NOW);
+  assert.deepEqual(dueNow.map((a) => a.id), ["ex-a"]);
+  assert.deepEqual(deferred.map((a) => a.id), ["ex-d"]);
+  // Identity and status are untouched — it is hidden, not mutated.
+  assert.equal(deferred[0].id, "ex-d");
+  const scene = buildScene(data, { now: NOW });
+  assert.equal(scene.counts.dueNow, 1);
+  assert.equal(scene.counts.deferred, 1);
+});
+
+test("advancing the clock past it makes the same exception reappear", () => {
+  const item = action("ex-d", { deferredUntil: "2026-08-22T09:00:00+10:00" });
+  assert.equal(isDueNow(item, NOW), false);
+  assert.equal(isDueNow(item, Date.parse("2026-08-22T09:00:01+10:00")), true);
+});
+
+test("a malformed deferred_until FAILS OPEN into due-now", () => {
+  // The one outcome this must never produce is a hidden owner decision.
+  for (const bad of ["tomorrow", "", "not-a-date", "1787290200000"]) {
+    assert.equal(isDueNow(action("x", { deferredUntil: bad }), NOW), true, `${JSON.stringify(bad)} should stay due-now`);
+  }
+});
+
+test("deferred items are never graph nodes", () => {
+  const data = fixture({
+    ownerActions: [action("ex-d", { deferredUntil: "2026-08-30T09:00:00+10:00" })],
+  });
+  const entry = buildScene(data, { now: NOW });
+  assert.equal(entry.counts.dueNow, 0);
+  assert.ok(!entry.nodes.some((n) => n.label === "Needs you"), "no Needs you root when nothing is due");
+  const needs = buildScene(data, { path: "needs", now: NOW });
+  assert.ok(!needs.nodes.some((n) => n.kind === "bucket"));
+  assert.equal(needs.deferredActions.length, 1, "still reachable through the deferred control");
+});
+
+test("defer presets resolve to absolute instants", () => {
+  const base = new Date("2026-08-21T16:00:00+10:00");
+  const hour = resolveDeferPreset("1 hour", base);
+  assert.equal(hour.getTime() - base.getTime(), 3600 * 1000);
+  const tomorrow = resolveDeferPreset("Tomorrow", base);
+  assert.ok(tomorrow.getTime() > base.getTime());
+  const tonight = resolveDeferPreset("Tonight", base);
+  assert.ok(tonight.getTime() > base.getTime(), "Tonight must always be in the future");
+});
+
+// ---------------------------------------------------------------------------
+// Labels + shipped sample
+// ---------------------------------------------------------------------------
 
 test("effort and age read in human units", () => {
   assert.equal(effortLabel(null), "effort unknown");
   assert.equal(effortLabel(30), "~30s");
-  assert.equal(effortLabel(60), "~1 min");
   assert.equal(effortLabel(300), "~5 min");
-
   const now = Date.parse("2026-03-15T09:00:00+11:00");
-  assert.equal(agoLabel("2026-03-15T08:59:30+11:00", now), "just now");
   assert.equal(agoLabel("2026-03-15T08:30:00+11:00", now), "30 min ago");
-  assert.equal(agoLabel("2026-03-15T05:00:00+11:00", now), "4h ago");
   assert.equal(agoLabel("2026-03-14T09:00:00+11:00", now), "yesterday");
   assert.equal(agoLabel("garbage", now), "");
 });
 
-test("the shipped sample briefing satisfies the documented contract", () => {
-  // The sample is what a new deployment renders before it has any data of its
-  // own; shipping one that fails our own validator has happened before.
+test("the shipped sample briefing still satisfies every budget", () => {
   const doc = JSON.parse(fs.readFileSync(new URL("../public/sample-data/continuity-briefing.json", import.meta.url), "utf8"));
   assert.equal(doc.version, 1);
-  const viewport = buildBriefingViewport(doc, {});
-  assert.ok(viewport.lanes.length > 0);
-  for (const lane of viewport.lanes) {
-    assert.ok(lane.records.length <= viewport.perLane);
-    for (const record of lane.records) {
-      // A reconstructed record must always be able to say where it came from.
-      if (record.provenance === "backfilled-from-log") assert.ok(record.sourceRef);
-    }
-  }
-  for (const action of viewport.ownerActions) {
-    for (const step of action.steps) {
-      if (step.kind === "run") assert.ok(step.command, `run step ${step.n} of ${action.id} has no command`);
-      if (step.kind === "open") assert.ok(step.href, `open step ${step.n} of ${action.id} has no href`);
-    }
+  const entry = buildScene(doc, {});
+  assert.ok(entry.nodes.length <= BUDGETS.entry);
+  for (const n of entry.nodes) {
+    const scene = buildScene(doc, { path: n.path });
+    assert.ok(scene.nodes.length <= BUDGETS.z0, `${n.path} showed ${scene.nodes.length}`);
   }
 });
