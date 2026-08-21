@@ -493,6 +493,38 @@ async function measureTransaction() {
 // EXCEPTION PORT and RECOVERY
 // ---------------------------------------------------------------------------
 
+/**
+ * THE LIVE CLIENT. Measured against the shipped source, not against intent.
+ *
+ * The visible Authorize, Narrow and Revoke controls spoke a protocol the host
+ * had stopped accepting, so they could not have used the secured transaction at
+ * all. These rows exist because "the client was updated" is exactly the kind of
+ * claim that is easy to believe and easy to get wrong.
+ */
+function measureLiveClient() {
+  const client = code(path.resolve(process.cwd(), "src/continuity/control/authority-endpoint-client.js"));
+  const session = code(path.resolve(process.cwd(), "src/continuity/control/authority-session.js"));
+  const shell = code(path.resolve(process.cwd(), "src/continuity/AuthorityShell.jsx"));
+
+  row("LIVE CLIENT", "live browser calls /authorize",
+    /call\(\s*"authorize"/.test(client) || /adapter\.authorize\s*\(/.test(session) ? "1" : "0", "0");
+
+  // The commit call site must mention the two fields and nothing else.
+  const commitCall = client.match(/commitAuthority[\s\S]{0,320}?\}\),/);
+  const forbidden = ["draft", "policy_identity", "goal_id", "expected_authority_revision",
+    "authorization_action", "scope_refs", "source_exception_id"];
+  row("LIVE CLIENT", "new commit sends fields beyond op_id + receipt",
+    commitCall ? forbidden.filter((f) => commitCall[0].includes(f)).length : "no commit call found", "0");
+
+  // The prepared review must be dropped by the UI on an authoritative edit,
+  // rather than left live for the host to reject.
+  row("LIVE CLIENT", "edit after prepare leaves confirm actionable",
+    /invalidatesPreparedReview\(/.test(shell) && /setPrepared\(null\)/.test(shell) ? "0" : "1", "0");
+
+  row("LIVE CLIENT", "shell composes its own authority description",
+    /prepared\?\.preview \?\? preview/.test(shell) ? "0" : "1", "0");
+}
+
 function measurePort() {
   const calls = [];
   const native = {
@@ -577,6 +609,7 @@ await measureHost();
 await measureTransaction();
 measurePort();
 measureRecovery();
+measureLiveClient();
 
 const after = Object.fromEntries(
   Object.entries(REAL_SURFACES).map(([k, v]) => [k, surfaceHash(v)]),

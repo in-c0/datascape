@@ -99,6 +99,27 @@ export function createAuthorityStore({ boundary, exceptions, now, verifier = ver
     const { draft } = request;
     if (!draft) return { ok: false, reason: "no draft supplied", outcome: "transaction_failed" };
 
+    // ABSENCE IS A REVISION, and an initial grant asserts it.
+    //
+    // The grant path built revision 1 unconditionally, so a second initial
+    // grant on a domain that already had authority created a RIVAL lineage
+    // rather than being refused — two revision-1 records for one domain, with
+    // nothing to say which governed.
+    //
+    // This surfaced when the operation id stopped being derived from the draft:
+    // the old id was deterministic, so a duplicate grant replayed the first one
+    // and hid the missing check. Idempotency was doing a job that belonged to a
+    // compare-and-swap.
+    if (request.source_exception_id) {
+      const governing = journal.currentForDomain(request.source_exception_id);
+      if (governing) {
+        return {
+          ok: false, outcome: "stale_revision",
+          reason: "this authority domain already has a grant; amend it or review again",
+        };
+      }
+    }
+
     const identity = policyIdentity(draft);
     if (request.policy_identity !== identity) {
       return { ok: false, outcome: "stale_preview", reason: "the draft changed after the preview; review is required again" };
