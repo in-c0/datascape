@@ -472,3 +472,90 @@ test("a root prefers the authored outcome over the worker's name", () => {
   const ticking = laneWith({ records: [laneRecord("mr_6666666666666666", [{ headline: "tick: still generating", type: "state" }])] });
   assert.equal(materialOutcome(ticking), null);
 });
+
+// ---------------------------------------------------------------------------
+// Spec v2.2 — the stage IS the field.
+//
+// v2.1 satisfied "time is spatial" with a strip above the graph, and the review
+// named the failure exactly: a timeline dashboard rather than one semantic
+// space. These lock the properties a strip cannot have.
+
+test("v2.2: a live lane zooms through to now, not to its last record", () => {
+  const now = Date.parse("2026-08-21T18:40:00+10:00");
+  const data = {
+    generatedAt: new Date(now).toISOString(),
+    lanes: [{
+      lane: "live-lane", label: "Live lane", supervision: "unattended", execution: "live",
+      lastSeen: "2026-08-21T18:03:00+10:00",
+      records: [{ id: "r1", lane: "live-lane", headline: "still open", emittedAt: "2026-08-21T18:03:00+10:00", trigger: { kind: "scheduler" } }],
+      runs: [{ id: "run_live", startedAt: "2026-08-21T15:26:00+10:00", endedAt: "2026-08-21T18:03:00+10:00", execution: "live", hours: 2.6 }],
+    }],
+    ownerActions: [],
+  };
+  const scene = buildScene(data, { path: "lane/live-lane", now });
+  assert.ok(scene.timeline, "a zoomed lane keeps its temporal window");
+  assert.equal(Date.parse(scene.timeline.to), now,
+    "an open run must be drawn through NOW; ending the window at the last record put NOW off-scale");
+
+  // Negative control: a COMPLETED lane must NOT be stretched to now, or every
+  // finished run would falsely appear to reach the present.
+  const done = JSON.parse(JSON.stringify(data));
+  done.lanes[0].execution = "completed";
+  done.lanes[0].runs[0].execution = "completed";
+  const doneScene = buildScene(done, { path: "lane/live-lane", now });
+  assert.ok(Date.parse(doneScene.timeline.to) < now,
+    "a completed lane's window must terminate before now");
+});
+
+test("v2.2: envelope geometry separates live from completed without a badge", () => {
+  const now = Date.parse("2026-08-21T18:40:00+10:00");
+  const scale = timeScale({ from: "2026-08-21T10:00:00+10:00", to: "2026-08-21T18:40:00+10:00", width: 1110 });
+  const nowX = scale.x(new Date(now));
+
+  const live = envelopeGeometry(
+    { id: "a", startedAt: "2026-08-21T15:26:00+10:00", endedAt: "2026-08-21T18:03:00+10:00", execution: "live" },
+    scale, now,
+  );
+  const completed = envelopeGeometry(
+    { id: "b", startedAt: "2026-08-21T10:05:00+10:00", endedAt: "2026-08-21T13:37:00+10:00", execution: "completed" },
+    scale, now,
+  );
+  assert.equal(live.x2, nowX, "a live envelope terminates exactly at the NOW cursor");
+  assert.ok(completed.x2 < nowX, "a completed envelope terminates to the LEFT of NOW");
+  assert.equal(live.intersectsNow, true);
+  assert.equal(completed.intersectsNow, false);
+});
+
+test("v2.2: unknown provenance is never assigned a temporal position", () => {
+  const now = Date.parse("2026-08-21T18:40:00+10:00");
+  const data = {
+    generatedAt: new Date(now).toISOString(),
+    lanes: [
+      { lane: "sched", label: "Scheduled", supervision: "unattended", execution: "completed",
+        lastSeen: "2026-08-21T12:00:00+10:00",
+        records: [{ id: "s1", lane: "sched", headline: "ran", emittedAt: "2026-08-21T12:00:00+10:00", trigger: { kind: "scheduler" } }],
+        runs: [{ id: "run_s", startedAt: "2026-08-21T11:00:00+10:00", endedAt: "2026-08-21T12:00:00+10:00", execution: "completed", hours: 1 }] },
+      { lane: "mystery", label: "Mystery", supervision: "unknown", execution: "completed",
+        lastSeen: "2026-08-21T13:00:00+10:00",
+        records: [{ id: "m1", lane: "mystery", headline: "who ran this", emittedAt: "2026-08-21T13:00:00+10:00" }],
+        runs: [] },
+    ],
+    ownerActions: [],
+  };
+  const scene = buildScene(data, { path: "", now });
+  const mystery = scene.nodes.find((n) => n.key === "mystery");
+  const sched = scene.nodes.find((n) => n.key === "sched");
+  assert.equal(mystery.supervision, "unknown");
+  assert.equal(mystery.run ?? null, null,
+    "an unknown-provenance lane carries no run, so the view has no honest x for it");
+  assert.ok(sched.run, "a scheduler-triggered lane keeps the run that positions it");
+});
+
+test("v2.2: node budgets are unchanged by the temporal rework", () => {
+  assert.equal(BUDGETS.entry, 4);
+  assert.equal(BUDGETS.z0, 4);
+  assert.equal(BUDGETS.z1, 5);
+  assert.equal(BUDGETS.z2, 3);
+  assert.equal(BUDGETS.z3, 4);
+  assert.equal(BUDGETS.z4, 2);
+});

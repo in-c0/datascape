@@ -3,8 +3,9 @@ import { store } from "../store.js";
 import { config } from "../../datascape.config.js";
 import { actionsAvailable, recordAction } from "./actions.js";
 import Authored from "./authored.jsx";
-import TemporalAxis from "./TemporalAxis.jsx";
+import TemporalStage, { MARGIN_X, STAGE_RIGHT } from "./TemporalStage.jsx";
 import { excerptAuthored, parseAuthored } from "./authored.js";
+import { timeScale } from "./briefing.js";
 import {
   agoLabel,
   awayLabel,
@@ -467,6 +468,29 @@ function BriefingSurface({ data }) {
   const focalNodes = scene.nodes.filter((n) => n.kind === "origin");
   const childNodes = scene.nodes.filter((n) => n.kind !== "origin");
   const hasFocalColumn = focalNodes.length > 0;
+
+  // Place entry roots on the shared temporal scale. A node whose provenance is
+  // untrustworthy gets NO temporal position — it sits in the non-temporal
+  // margin rather than being assigned a fake time.
+  const temporalRows = useMemo(() => {
+    if (!scene.timeline || scene.level !== "entry") return [];
+    const scale = timeScale({
+      from: scene.timeline.from, to: scene.timeline.to, width: STAGE_RIGHT - MARGIN_X,
+    });
+    const ROW = 92;
+    return scene.nodes.map((n, index) => {
+      const at = n.run?.endedAt || (n.supervision === "unattended" ? n.at : null);
+      const x = at ? scale.x(at) : null;
+      return {
+        key: n.key,
+        laneKey: n.key,
+        node: n,
+        x: x == null ? 24 : MARGIN_X + x,
+        y: 96 + index * ROW,
+        temporal: x != null,
+      };
+    });
+  }, [scene.timeline, scene.level, scene.nodes]);
   const focalPoint = geometry.points.find((p) => p.key === focalNodes[0]?.key)
     || { x: 64, y: Math.max(70, geometry.height / 2) };
 
@@ -575,16 +599,6 @@ function BriefingSurface({ data }) {
         </div>
       </header>
 
-      {scene.timeline && (
-        <div className="bf-axiswrap">
-          <TemporalAxis
-            timeline={scene.timeline}
-            width={1088}
-            onSelectRun={(run) => go(`lane/${run.laneKey}`)}
-          />
-        </div>
-      )}
-
       {scene.breadcrumb.length > 0 && (
         <nav className={`bf-crumbs${["z0","z1"].includes(scene.level) ? " bf-crumbs--secondary" : ""}`} aria-label="Semantic position">
           {scene.breadcrumb.map((crumb, index) => (
@@ -596,13 +610,40 @@ function BriefingSurface({ data }) {
         </nav>
       )}
 
-      {/* Without a card the stage is a single centred column — the spec warns
-          against "an enormous empty right-side stage". */}
-      <section className={`bf-stage${scene.card ? "" : " bf-stage--nocard"}`} ref={containerRef}>
+      {/* The stage IS the temporal field — no strip above it, no card edge.
+          x = when, y = semantic topology. */}
+      <section
+        className={`bf-stage${scene.card ? "" : " bf-stage--nocard"}${scene.timeline ? " bf-stage--temporal" : ""}`}
+        ref={containerRef}
+        // The field ends where the content ends. A fixed 620px stage left a
+        // third of the screen as empty gradient with a hard edge under it,
+        // which read as a panel again.
+        style={scene.timeline ? { minHeight: temporalRows.length ? Math.max(...temporalRows.map((r) => r.y)) + 150 : 260 } : undefined}
+      >
+        {scene.timeline && <TemporalStage timeline={scene.timeline} rows={temporalRows} />}
         <ThreadFan geometry={geometry} origin={focalPoint} enabled={hasFocalColumn} />
         {/* The focal node IS the fan origin, in its own column. Drawing it as
             the first child (with the fan starting from an invisible point) was
             the visual review's P0: the eye could not tell what it was inside. */}
+        {temporalRows.length > 0 ? (
+          <div className="bf-placed">
+            {temporalRows.map(({ key, node: n, x, y, temporal }) => (
+              <div
+                key={key}
+                className={`bf-placed__node${temporal ? "" : " bf-placed__node--atemporal"}`}
+                style={{ left: x, top: y }}
+              >
+                <Node
+                  node={n}
+                  now={sceneNow}
+                  keyboard={kbKey === n.key}
+                  refCallback={ringRef(n.key)}
+                  onSelect={n.kind === "absent" ? undefined : () => go(n.path)}
+                />
+              </div>
+            ))}
+          </div>
+        ) : (
         <div className={`bf-stage__nodes${hasFocalColumn ? " bf-stage__nodes--split" : ""}`}>
           {hasFocalColumn && (
             <div className="bf-focalcol">
@@ -633,6 +674,7 @@ function BriefingSurface({ data }) {
             ))}
           </div>
         </div>
+        )}
 
         {scene.card?.kind === "owner_action" && <OwnerCard action={scene.card.action} onDone={onRuled} api={ctaApi} />}
         {scene.card?.kind === "record" && (

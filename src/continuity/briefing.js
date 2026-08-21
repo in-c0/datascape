@@ -293,16 +293,27 @@ const FOCAL_KINDS = new Set(["origin", "parent", "focus"]);
  * state, and nothing is summarised — this is verbatim authored text or nothing.
  */
 export function materialOutcome(lane) {
-  const weight = { finding: 0, progress: 1, owner_action: 2, state: 3 };
+  // Ranking is SELECTION among authored records, never summarisation:
+  // decision/outcome > state transition > progress/finding > (lane name).
+  const weight = { owner_action: 0, state: 1, progress: 2, finding: 3 };
   const items = (lane?.records || [])
     .flatMap((r) => (r.items || []).map((i) => ({ ...i, at: r.emittedAt })))
     .filter((i) => i.headline && i.headline.length > 12)
     .sort((a, b) => (weight[a.type] ?? 9) - (weight[b.type] ?? 9)
       || String(b.at).localeCompare(String(a.at)));
-  const best = items[0];
-  // A routine tick is not an outcome; fall back to the lane name rather than
-  // dressing up "still generating" as a material change.
-  if (!best || /^tick[:\s]/i.test(best.headline)) return null;
+  // A routine tick should almost never become a return root - but rejecting the
+  // whole lane because its TOP-ranked record happens to be a tick threw away
+  // the real outcomes underneath it. Skip ticks and take the best survivor.
+  //
+  // Plain string tests, deliberately: this predicate has been silently
+  // corrupted three times today by shell-escaped regex literals, and a filter
+  // that quietly stops filtering is worse than a blunt one.
+  const isRoutineTick = (headline) => {
+    const head = String(headline).slice(0, 40).toLowerCase()
+    return head.startsWith("tick") || head.includes(" tick:") || head.includes("still generating")
+  };
+  const best = items.find((i) => !isRoutineTick(i.headline));
+  if (!best) return null;
   return best.headline.length > 68 ? `${best.headline.slice(0, 66).trimEnd()}…` : best.headline;
 }
 
@@ -506,6 +517,28 @@ export function buildScene(data, { path = "", brief = "3m", now = Date.now(), pa
   }
   scene.breadcrumb.push({ label: lane.label, path: `lane/${lane.lane}` });
   const items = laneRecordItems(lane);
+
+  // Time never disappears merely because semantic resolution increased. The
+  // window zooms to this lane's own runs so its envelope becomes clearer while
+  // unrelated temporal detail falls away.
+  const laneRuns = (lane.runs || []).map((run) => ({ ...run, laneKey: lane.lane, laneLabel: lane.label }));
+  if (laneRuns.length) {
+    const starts = laneRuns.map((r) => Date.parse(r.startedAt)).filter(Number.isFinite);
+    const ends = laneRuns.map((r) => Date.parse(r.endedAt || new Date(now).toISOString())).filter(Number.isFinite);
+    const pad = 20 * 60 * 1000;
+    // A lane with a live run is zoomed THROUGH to now, never to its last
+    // record. Ending the window at 18:23 while the run was still open drew an
+    // envelope reaching a NOW that was off-scale and therefore not drawn.
+    const hasLive = laneRuns.some((r) => r.execution === "live" || !r.endedAt);
+    scene.timeline = {
+      from: new Date(Math.min(...starts) - pad).toISOString(),
+      to: new Date(hasLive ? now : Math.min(now, Math.max(...ends) + pad)).toISOString(),
+      now,
+      ownerLastPresentAt: data?.ownerLastPresentAt || null,
+      runs: laneRuns,
+      zoomed: true,
+    };
+  }
 
   if (level === "z0") {
     const byFacet = new Map();
