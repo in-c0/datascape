@@ -267,6 +267,10 @@
    * geometry, and the field keeps its vertical orientation cue. */
   .sem__concepts { position: relative; display: flex; flex-direction: column; gap: 16px; padding: 12px 0; }
   .sem__concept { position: static; transform: none; --anchor-x: 0px; max-width: none; }
+  /* x carries no meaning on 375px, so the near-NOW mirror carries none either
+   * — it only made two of four rows read right-to-left for no reason. */
+  .sem__concept--flip .sem__hit { flex-direction: row; }
+  .sem__concept--flip .sem__text { align-items: flex-start; text-align: left; }
   .sem--decompose .sem__concept--emerging,
   .sem--recompose .sem__concept { animation-name: sem-converge; }
   .sem__rays, .sem__origin { display: none; }
@@ -276,4 +280,11 @@
   .sem__concept--centre .sem__label { font-size: 15.5px; }
   .sem__crumb { max-width: 20ch; }
   .sem__inspect-btn { margin-left: 8px; }
+  /* "more detail" wrapped onto two lines at 375px and made the control row
+   * ragged. The controls stay on one line and the wordier label gives way
+   * first; the affordance is the +/- pair, not the caption. */
+  .sem__controls { gap: 6px; flex-wrap: nowrap; font-size: 11px; }
+  .sem__controls > span { white-space: nowrap; }
+  .sem__controls > span:nth-of-type(3) { display: none; }
+  .sem__inspect-btn { white-space: nowrap; }
 }
