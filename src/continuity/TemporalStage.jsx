@@ -146,7 +146,13 @@ export default function TemporalStage({ timeline, children, rows = [], width = 1
       </div>
 
       {/* NOW crosses the whole stage; a live branch intersects it. */}
-      {nowX != null && <div className="bf-now" style={{ left: nowX }}><span>now</span></div>}
+      {/* One strong structural cursor, never two. While rewound this reads AS
+          OF rather than NOW, and the reconstructed world simply ends here. */}
+      {nowX != null && (
+        <div className={`bf-now${timeline.label === "as of" ? " bf-now--asof" : ""}`} style={{ left: nowX }}>
+          <span>{timeline.label || "now"}</span>
+        </div>
+      )}
 
       {children}
     </div>

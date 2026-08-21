@@ -14,6 +14,9 @@ import {
 import { timeScale } from "./briefing.js";
 import TemporalStage, { MARGIN_X, STAGE_RIGHT } from "./TemporalStage.jsx";
 import { FIXTURE_CLOCK, buildProjectionGraph, buildRuns } from "./fixtures/v3-projection.js";
+import { buildHistoryWorld, buildV4Graph, revisionTimeline } from "./fixtures/v4-graph.js";
+import { affordances, semanticDiff, semanticScene } from "./history/asof.js";
+import { workingOverlay } from "./history/revision.js";
 
 // The semantic-zoom vertical slice — spec v3.1 §8-§12, §15.
 //
@@ -55,11 +58,21 @@ function compressLens(lens, byId, expanded) {
   ];
 }
 
-export default function SemanticStage({ initialLens = [], initialCentre = null, onStateChange }) {
-  const graph = useMemo(() => buildProjectionGraph(), []);
+export default function SemanticStage({ initialLens = [], initialCentre = null, initialAsOf = null, onStateChange }) {
+  // History is a THIRD axis (V4 §1): selection is what, altitude is how
+  // abstract, and this is when. It is deliberately not another altitude, so
+  // zooming out never means "older".
+  const world = useMemo(() => buildHistoryWorld(), []);
+  const [asOf, setAsOf] = useState(initialAsOf);
+  const [diffOpen, setDiffOpen] = useState(false);
+
+  const graph = useMemo(() => buildV4Graph(world, asOf), [world, asOf]);
   const byId = useMemo(() => new Map(graph.nodes.map((n) => [n.id, n])), [graph]);
   const runs = useMemo(() => buildRuns(), []);
   const now = useMemo(() => Date.parse(FIXTURE_CLOCK.now), []);
+  const historical = asOf != null;
+  const scene = useMemo(() => semanticScene(world, asOf), [world, asOf]);
+  const can = useMemo(() => affordances(scene), [scene]);
 
   const [lens, setLens] = useState(initialLens);
   const [centre, setCentre] = useState(initialCentre);
@@ -76,12 +89,18 @@ export default function SemanticStage({ initialLens = [], initialCentre = null, 
   const centreNode = centreId ? byId.get(centreId) : null;
   const parentNode = lens.length ? byId.get(lens[lens.length - 1]) : null;
 
+  // While rewound the field IS the reconstructed temporal world, not a
+  // translucent layer over the present: the cursor becomes AS OF and nothing
+  // to the right of it carries semantic future state (§12).
+  const cursorAt = historical ? Date.parse(asOf) : now;
   const timeline = useMemo(() => ({
     from: FIXTURE_CLOCK.since,
-    to: FIXTURE_CLOCK.now,
-    now,
-    runs: runs.filter((r) => r.supervision === "unattended"),
-  }), [now, runs]);
+    to: new Date(cursorAt).toISOString(),
+    now: cursorAt,
+    label: historical ? "as of" : "now",
+    runs: runs.filter((r) => r.supervision === "unattended"
+      && Date.parse(r.startedAt) <= cursorAt),
+  }), [cursorAt, historical, runs]);
 
   const scale = useMemo(
     () => timeScale({ from: timeline.from, to: timeline.to, width: STAGE_RIGHT - MARGIN_X }),
@@ -156,6 +175,64 @@ export default function SemanticStage({ initialLens = [], initialCentre = null, 
 
   const select = useCallback((id) => { setCentre(id); setInspecting(false); }, []);
 
+  // Revision context for whichever concept is focal. `↶ history` appears only
+  // when meaningful prior material revisions exist.
+  const revisions = useMemo(
+    () => (centreId ? revisionTimeline(world, centreId) : []),
+    [world, centreId],
+  );
+  const currentRevision = useMemo(() => {
+    if (!revisions.length) return null;
+    const cut = historical ? Date.parse(asOf) : Infinity;
+    let found = null;
+    for (const r of revisions) if (Date.parse(r.effective_at) <= cut) found = r;
+    return found;
+  }, [revisions, historical, asOf]);
+  const revIndex = currentRevision ? revisions.findIndex((r) => r.revision === currentRevision.revision) : -1;
+  const hasHistory = revisions.length > 1;
+
+  // The working overlay is evidence newer than the settled revision. It exists
+  // ONLY in the live view: historical rev 3 means what rev 3 meant when it
+  // settled, which is a different state from rev 3 as it stands now (§6).
+  const overlay = useMemo(() => {
+    if (historical || !centreId || !hasHistory) return null;
+    const o = workingOverlay(world.revisions, centreId, world.sources, { now });
+    return o.working_evidence_count > 0 ? o : null;
+  }, [historical, centreId, hasHistory, world, now]);
+
+  const diff = useMemo(() => {
+    if (!diffOpen || !currentRevision || revIndex < 1) return null;
+    return semanticDiff(world.revisions, centreId, revisions[revIndex - 1].revision, currentRevision.revision,
+      { labels: Object.fromEntries(graph.nodes.map((n) => [n.id, n.label])) });
+  }, [diffOpen, currentRevision, revIndex, revisions, world, centreId, graph]);
+
+  const goRevision = useCallback((delta) => {
+    if (revIndex < 0) return false;
+    const next = revisions[revIndex + delta];
+    if (!next) return false;
+    // Moving to the newest revision returns to the live world rather than
+    // pinning an as-of at its effective time, so "current" is never a
+    // historical scene that happens to be up to date.
+    setAsOf(next.revision === revisions[revisions.length - 1].revision && delta > 0 ? null : next.effective_at);
+    setDiffOpen(false);
+    return true;
+  }, [revIndex, revisions]);
+
+  const enterHistory = useCallback(() => {
+    if (!hasHistory || revIndex < 1) return false;
+    setAsOf(revisions[revIndex - 1].effective_at);
+    setDiffOpen(false);
+    return true;
+  }, [hasHistory, revIndex, revisions]);
+
+  const returnToNow = useCallback(() => {
+    // Preserve the semantic referent. The centre and lens are untouched, so
+    // the operator lands on the current state of the same idea rather than
+    // being dumped at A0 (§13).
+    setAsOf(null);
+    setDiffOpen(false);
+  }, []);
+
   const state = useMemo(() => ({
     semanticAltitude: lens.length,
     semanticCentre: centreId,
@@ -164,7 +241,11 @@ export default function SemanticStage({ initialLens = [], initialCentre = null, 
     visibleConceptCount: visible.length,
     transition: motion ? motion.kind : "settled",
     atSource: Boolean(centreNode && isAuthoredSource(centreNode)),
-  }), [lens, centreId, visible, motion, centreNode]);
+    historicalPosition: asOf,
+    projectionRevision: currentRevision?.revision ?? null,
+    workingOverlayPresent: Boolean(overlay),
+    readOnly: can.ownerActions === false,
+  }), [lens, centreId, visible, motion, centreNode, asOf, currentRevision, overlay, can]);
 
   useEffect(() => { onStateChange?.(state); }, [state, onStateChange]);
 
@@ -179,10 +260,15 @@ export default function SemanticStage({ initialLens = [], initialCentre = null, 
       plus: zoomIn,
       minus: zoomOut,
       inspect: (on = true) => setInspecting(on),
+      history: enterHistory,
+      previousRevision: () => goRevision(-1),
+      nextRevision: () => goRevision(1),
+      returnToNow,
+      whatChanged: (on = true) => { setDiffOpen(on); return Boolean(revIndex >= 1); },
       transitionMs: TRANSITION_MS,
     };
     return () => { delete window.__continuity; };
-  }, [state, rows, motion, select, zoomIn, zoomOut]);
+  }, [state, rows, motion, select, zoomIn, zoomOut, enterHistory, goRevision, returnToNow, revIndex]);
 
   useEffect(() => {
     const onKey = (event) => {
@@ -234,6 +320,13 @@ export default function SemanticStage({ initialLens = [], initialCentre = null, 
             )}
           </span>
         ))}
+        {/* One compact marker, near the breadcrumb, not a banner or a mode
+            bar. History should read as a temporary lens state. */}
+        {historical && (
+          <span className="sem__asof">Historical · {new Intl.DateTimeFormat("en-GB", {
+            timeZone: "Australia/Sydney", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+          }).format(new Date(asOf))}</span>
+        )}
       </nav>
 
       {/* The frozen v2.3 field, beneath the projection aperture. Altitude
@@ -287,7 +380,13 @@ export default function SemanticStage({ initialLens = [], initialCentre = null, 
                   + (emerging ? " sem__concept--emerging" : "")
                 }
                 style={{
-                  left: row.x,
+                  // A flipped node anchors its RIGHT edge to its moment, so the
+                  // label extends leftward into open space. Anchoring `left`
+                  // let the container's right edge decide the width, which
+                  // wrapped a one-line label into five at NOW.
+                  ...(row.flip
+                    ? { right: `calc(100% - ${row.x}px)`, left: "auto" }
+                    : { left: row.x }),
                   top: row.y,
                   "--i": index,
                   // Each child animates FROM the parent's position to its own.
@@ -296,7 +395,12 @@ export default function SemanticStage({ initialLens = [], initialCentre = null, 
                 }}
               >
                 <button type="button" className="sem__hit" onClick={() => select(row.key)}>
-                  <span className="sem__ring" aria-hidden="true"><i /></span>
+                  <span className="sem__ring" aria-hidden="true">
+                    <i />
+                    {/* Cognition is ongoing; the meaning has not changed. A
+                        faint incomplete halo says that without a badge. */}
+                    {overlay && row.key === centreId && <em className="sem__working" />}
+                  </span>
                   <span className="sem__text">
                     <span className="sem__label">{node.label}</span>
                     {source && <span className="sem__kicker">Exact source</span>}
@@ -307,6 +411,24 @@ export default function SemanticStage({ initialLens = [], initialCentre = null, 
           })}
         </ul>
       </section>
+
+      {/* Change annotations, not permanent graph nodes: translucent, bracketed
+          and captioned with the exact revisions they came from. They render
+          semantic_diff objects and never author a summary of their own. */}
+      {diff?.available && (
+        <aside className="sem__diff">
+          <span className="sem__diff-cap">rev {diff.from_revision} → rev {diff.to_revision}</span>
+          <ul>
+            {diff.changes.map((c, i) => (
+              <li key={i} className={`sem__change sem__change--${c.kind}`}>
+                {c.kind === "interpretation_revised"
+                  ? <span>{c.after}</span>
+                  : <span>{c.concept || c.kind.replace(/_/g, " ")}</span>}
+              </li>
+            ))}
+          </ul>
+        </aside>
+      )}
 
       {inspecting && centreNode && (
         <aside className="sem__inspect">
@@ -331,6 +453,12 @@ export default function SemanticStage({ initialLens = [], initialCentre = null, 
                     <dt>Last material revision</dt><dd>{p.lastMaterialRevisionAt}</dd>
                     <dt>Relationships</dt>
                     <dd>{p.relationships.length ? p.relationships.map((r) => r.kind).join(", ") : "contains"}</dd>
+                    {currentRevision && <><dt>Settled revision</dt><dd>{currentRevision.revision}</dd></>}
+                    {overlay && <>
+                      <dt>Working evidence since revision</dt><dd>{overlay.working_evidence_count}</dd>
+                      <dt>Material semantic change</dt><dd>{overlay.material_semantic_change}</dd>
+                    </>}
+                    {historical && <><dt>State</dt><dd>Historical decision state</dd></>}
                   </dl>
                 </>
               );
@@ -357,6 +485,21 @@ export default function SemanticStage({ initialLens = [], initialCentre = null, 
         <button type="button" className="sem__inspect-btn" onClick={() => setInspecting((v) => !v)}>
           {inspecting ? "Hide provenance" : "Why am I seeing this?"}
         </button>
+        {!historical && hasHistory && revIndex >= 1 && (
+          <button type="button" className="sem__hist-btn" onClick={enterHistory}>↶ history</button>
+        )}
+        {historical && (
+          <span className="sem__histnav">
+            <button type="button" onClick={() => goRevision(-1)} disabled={revIndex < 1} aria-label="Previous revision">←</button>
+            <button type="button" onClick={() => goRevision(1)} disabled={revIndex < 0 || revIndex >= revisions.length - 1} aria-label="Next revision">→</button>
+            <button type="button" className="sem__nowbtn" onClick={returnToNow}>Return to now</button>
+          </span>
+        )}
+        {revIndex >= 1 && (
+          <button type="button" className="sem__diff-btn" onClick={() => setDiffOpen((v) => !v)}>
+            {diffOpen ? "Hide changes" : "What changed?"}
+          </button>
+        )}
       </footer>
     </div>
   );

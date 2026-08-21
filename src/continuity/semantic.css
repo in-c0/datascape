@@ -120,8 +120,10 @@
  * mirrored one. The box hangs to the LEFT of its moment and the ring stays on
  * it: anchoring the box's left edge there with row-reverse pushed the ring to
  * the far end of a 460px box, ~150px past the time it claimed. */
-.sem__concept--flip { --anchor-x: calc(-100% + 12px); }
-.sem__concept--flip.sem__concept--centre { --anchor-x: calc(-100% + 17px); }
+/* Right-anchored, so the ring still lands on the moment while the text runs
+ * back into the space that is actually available. */
+.sem__concept--flip { --anchor-x: 12px; max-width: 520px; }
+.sem__concept--flip.sem__concept--centre { --anchor-x: 17px; }
 .sem__concept--flip { transform-origin: right center; }
 .sem__concept--flip .sem__hit { flex-direction: row-reverse; }
 .sem__concept--flip .sem__text { align-items: flex-end; text-align: right; }
@@ -288,3 +290,82 @@
   .sem__controls > span:nth-of-type(3) { display: none; }
   .sem__inspect-btn { white-space: nowrap; }
 }
+
+/* ---------- V4: history as a lens state, not an application mode ---------- */
+
+/* Low contrast, beside the breadcrumb. No banner, no toolbar, no revision
+ * table, no sidebar of timestamps. */
+.sem__asof {
+  margin-left: 10px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(167, 139, 250, 0.28);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  color: rgba(196, 181, 253, 0.8);
+  white-space: nowrap;
+}
+
+.bf-now--asof { background: rgba(167, 139, 250, 0.5); }
+.bf-now--asof span { color: rgba(216, 205, 255, 0.9); }
+
+/* Cognition is ongoing; the meaning has not changed. An unfinished ring, not
+ * a badge saying "1 pending observation". */
+.sem__working {
+  position: absolute;
+  inset: -6px;
+  border-radius: 50%;
+  border: 1px dashed rgba(125, 211, 252, 0.55);
+  border-right-color: transparent;
+  border-bottom-color: transparent;
+  animation: sem-working 3.6s linear infinite;
+}
+@keyframes sem-working { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .sem__working { animation: none; } }
+
+/* Change annotations. Deliberately bracket-like and translucent so they can
+ * never be mistaken for permanent graph nodes. */
+.sem__diff {
+  max-width: 1180px;
+  margin: 0 auto 10px;
+  width: 100%;
+  padding: 10px 16px;
+  border-left: 2px solid rgba(167, 139, 250, 0.4);
+  background: rgba(24, 22, 48, 0.42);
+  border-radius: 0 8px 8px 0;
+}
+.sem__diff-cap {
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(167, 139, 250, 0.7);
+}
+.sem__diff ul { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
+.sem__change {
+  font-size: 13.5px;
+  color: rgba(226, 232, 250, 0.82);
+  opacity: 0.92;
+}
+.sem__change::before { content: "["; color: rgba(167, 139, 250, 0.5); margin-right: 5px; }
+.sem__change::after { content: "]"; color: rgba(167, 139, 250, 0.5); margin-left: 5px; }
+
+.sem__hist-btn, .sem__diff-btn, .sem__nowbtn {
+  padding: 0 10px;
+  font-size: 11px !important;
+  white-space: nowrap;
+}
+.sem__histnav { display: inline-flex; align-items: center; gap: 6px; }
+
+@media (max-width: 900px) {
+  /* The critical mobile message is "I am in the past", not eleven controls. */
+  .sem__asof { margin-left: 6px; font-size: 9.5px; padding: 1px 6px; }
+  .sem__diff-btn { display: none; }
+  .sem__nowbtn { font-size: 10px !important; padding: 0 6px; }
+  .sem__diff { margin-bottom: 6px; padding: 8px 12px; }
+  .sem__change { font-size: 12.5px; }
+}
+
+/* The structural cursor is one short word and must never wrap. "AS OF" broke
+ * across two lines at the field edge and read as two labels. */
+.bf-now span { white-space: nowrap; text-transform: uppercase; }
+.bf-now--asof span { transform: translateX(-100%); padding-right: 6px; }

@@ -815,7 +815,15 @@ export default function BriefingView() {
 function readSemanticLocation(href) {
   const url = new URL(href, "http://datascape.local/");
   const lens = (url.searchParams.get("lens") || "").split(".").filter(Boolean);
-  return { lens, centre: url.searchParams.get("centre") || null };
+  return {
+    lens,
+    centre: url.searchParams.get("centre") || null,
+    // History is a separate axis, so it round-trips beside lens and centre
+    // rather than being folded into either (V4 §15). Absence means the live
+    // world; a settled revision viewed historically is NOT the same URL as
+    // that revision standing as current.
+    asOf: url.searchParams.get("asOf") || null,
+  };
 }
 
 function SemanticFixtureRoute() {
@@ -834,6 +842,8 @@ function SemanticFixtureRoute() {
     const url = new URL(window.location.href);
     url.searchParams.set("lens", state.lensPath.join("."));
     if (state.semanticCentre) url.searchParams.set("centre", state.semanticCentre);
+    if (state.historicalPosition) url.searchParams.set("asOf", state.historicalPosition);
+    else url.searchParams.delete("asOf");
     const next = url.toString();
     if (next === window.location.href || applied.current === next) return;
     applied.current = next;
@@ -843,9 +853,10 @@ function SemanticFixtureRoute() {
   return (
     <main className="bf-root">
       <SemanticStage
-        key={`${restored.lens.join(".")}|${restored.centre || ""}`}
+        key={`${restored.lens.join(".")}|${restored.centre || ""}|${restored.asOf || ""}`}
         initialLens={restored.lens}
         initialCentre={restored.centre}
+        initialAsOf={restored.asOf}
         onStateChange={onStateChange}
       />
     </main>
