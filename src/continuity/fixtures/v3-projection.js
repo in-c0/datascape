@@ -276,6 +276,20 @@ export function buildProjectionGraph() {
   for (const node of nodes) {
     if (node.type !== "projection") continue;
     node.sourceObservationIds = Array.from(new Set(sourcesUnder(node.id)));
+    // A concept sits at the moment its MATERIAL transition happened, never at
+    // its earliest contributing tick (§15). Routine filler is excluded, so a
+    // concept is not dragged back to 10:04 by bookkeeping.
+    const material = node.sourceObservationIds
+      .map((id) => byId.get(id))
+      .filter((r) => r && r.materiality === "material")
+      .map((r) => Date.parse(r.at))
+      .filter(Number.isFinite);
+    node.materialAt = material.length
+      ? new Date(Math.max(...material)).toISOString()
+      : null;
+    // The contributing sessions, so the stage can draw the right envelopes.
+    node.sessionIds = Array.from(new Set(node.sourceObservationIds
+      .map((id) => byId.get(id)?.session).filter(Boolean)));
   }
 
   return {
@@ -292,6 +306,31 @@ export function buildProjectionGraph() {
       { from: "rel-gate-closed", to: "rel-migration-disputed", kind: "depends_on" },
     ],
   };
+}
+
+/**
+ * One autonomy run per session (v3 §15, reusing the frozen v2.3 grammar).
+ *
+ * A run spans its session's records; a live session's run stays open, so its
+ * envelope reaches NOW exactly as the temporal grammar already requires.
+ */
+export function buildRuns() {
+  const records = buildSourceRecords();
+  return SESSIONS.map((session) => {
+    const own = records.filter((r) => r.session === session.id);
+    const times = own.map((r) => Date.parse(r.at)).sort((a, b) => a - b);
+    return {
+      id: `run_${session.id}`,
+      laneKey: session.id,
+      laneLabel: session.lane,
+      supervision: session.supervision,
+      execution: session.execution === "live" ? "live" : "completed",
+      startedAt: new Date(times[0]).toISOString(),
+      endedAt: new Date(times[times.length - 1]).toISOString(),
+      hours: Math.round(((times[times.length - 1] - times[0]) / 3600000) * 10) / 10,
+      records: own.length,
+    };
+  });
 }
 
 /** The canonical descent the visual review must follow (§4, §15). */

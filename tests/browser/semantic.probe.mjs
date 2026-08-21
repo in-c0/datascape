@@ -113,6 +113,95 @@ try {
     /synthesised projection/i.test(inspect) && /underlying source observations/i.test(inspect),
     inspect.slice(0, 70));
 
+  // ---- v3.1 review P0-1: the temporal grammar survives semantic zoom ----
+  await tab.goto(URL_BASE);
+  await wait(1300);
+  const temporal = JSON.parse(await tab.eval(`(() => {
+    const field = document.querySelector(".bf-field");
+    const now = document.querySelector(".bf-now");
+    const rings = [...document.querySelectorAll(".sem__concept")].map((e) => {
+      const r = e.querySelector(".sem__ring").getBoundingClientRect();
+      return { live: e.classList.contains("sem__concept--live"), cx: r.left + r.width / 2 };
+    });
+    return JSON.stringify({ field: !!field, now: now ? now.getBoundingClientRect().left : null, rings });
+  })()`));
+  ok("the v2.3 temporal field is present at semantic altitude 0",
+    temporal.field && temporal.now !== null, JSON.stringify(temporal).slice(0, 90));
+  const live = temporal.rings.filter((r) => r.live);
+  const done = temporal.rings.filter((r) => !r.live);
+  ok("live concepts sit on NOW and completed ones sit in history",
+    live.length > 0 && done.length > 0
+      && live.every((r) => Math.abs(r.cx - temporal.now) <= 3)
+      && done.every((r) => r.cx < temporal.now - 20),
+    JSON.stringify({ live: live.map((r) => Math.round(r.cx)), done: done.map((r) => Math.round(r.cx)), now: Math.round(temporal.now) }));
+
+  // Altitude must change resolution, not switch time off.
+  await tab.goto(`${URL_BASE}&lens=dist.dist-shortform.sf-vibo.vibo-beforeafter&centre=ba-spatial`);
+  await wait(1200);
+  ok("the temporal field survives four semantic transitions",
+    (await tab.eval('!!document.querySelector(".bf-field")')) === true);
+
+  // ---- P0-2: the transition geometry, sampled at 0, 0.5 and 1 ----
+  await tab.goto(`${URL_BASE}&lens=dist&centre=dist-shortform`);
+  await wait(1200);
+  const geoRaw = await tab.eval(`(async () => {
+   try {
+    const centres = () => [...document.querySelectorAll(".sem__concept")].map((e) => {
+      const r = e.querySelector(".sem__ring").getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    });
+    const origin = centres().find((_, i) => i === 0);
+    const parent = document.querySelector(".sem__concept--centre .sem__ring").getBoundingClientRect();
+    const from = { x: parent.left + parent.width / 2, y: parent.top + parent.height / 2 };
+    window.__continuity.plus();
+    // t = 0
+    // An infinite animation (the live pulse) has a non-finite duration, and
+    // assigning currentTime from it throws. Hold only the finite ones.
+    const held = document.getAnimations().filter((a) => {
+      const t = a.effect && a.effect.getComputedTiming();
+      return t && Number.isFinite(t.activeDuration) && t.activeDuration > 0;
+    });
+    for (const a of held) { a.pause(); a.currentTime = 0; }
+    await new Promise((r) => requestAnimationFrame(r));
+    const t0 = centres();
+    // t = 0.5
+    for (const a of held) {
+      const t = a.effect.getComputedTiming();
+      a.currentTime = (t.delay || 0) + t.activeDuration * 0.5;
+    }
+    await new Promise((r) => requestAnimationFrame(r));
+    const tHalf = centres();
+    const rays = document.querySelectorAll(".sem__ray").length;
+    const originVisible = document.querySelectorAll(".sem__origin").length;
+    // t = 1
+    for (const a of held) { a.play(); a.finish(); }
+    await new Promise((r) => setTimeout(r, 320));
+    const t1 = centres();
+    const d = (pts) => pts.map((p) => Math.hypot(p.x - from.x, p.y - from.y));
+    return JSON.stringify({ d0: d(t0), dHalf: d(tHalf), d1: d(t1), rays, originVisible, children: t1.length });
+   } catch (e) { return JSON.stringify({ error: String(e && e.message || e) }); }
+  })()`);
+  const geo = JSON.parse(typeof geoRaw === "string" ? geoRaw : JSON.stringify({ error: "probe returned a non-string" }));
+  if (geo.error) ok("transition geometry probe ran", false, geo.error);
+  const near0 = geo.d0.every((d, i) => d < Math.max(8, geo.d1[i] * 0.25));
+  const between = geo.dHalf.every((d, i) => d > 0 && d < geo.d1[i] + 2);
+  ok("at t=0 each child starts at the parent's own position",
+    near0, JSON.stringify({ d0: geo.d0.map(Math.round), d1: geo.d1.map(Math.round) }));
+  ok("at t=0.5 each child is strictly between the parent and its settled place",
+    between, JSON.stringify({ dHalf: geo.dHalf.map(Math.round), d1: geo.d1.map(Math.round) }));
+  ok("at 50% a connector joins the parent region to every emerging child",
+    geo.rays >= geo.children && geo.originVisible === 1,
+    JSON.stringify({ rays: geo.rays, children: geo.children, origin: geo.originVisible }));
+
+  // ---- P1: deep breadcrumbs compress rather than truncate ----
+  await tab.goto(`${URL_BASE}&lens=dist.dist-shortform.sf-vibo.vibo-beforeafter.ba-spatial.spatial-reveal&centre=S01_r02`);
+  await wait(1200);
+  const crumbText = await tab.eval('[...document.querySelectorAll(".sem__crumb")].map(e=>e.innerText).join("|")');
+  ok("a six-deep lens collapses its middle and keeps the last ancestors readable",
+    /levels/.test(String(crumbText))
+      && String(crumbText).includes("The first-three-second reveal is the strongest hook."),
+    String(crumbText).slice(0, 120));
+
   ok("PROBE CONTROL: the error collector survived every navigation", await tab.armed());
   const errors = await tab.errors();
   ok("no page errors", errors.length === 0, JSON.stringify(errors));

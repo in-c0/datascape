@@ -8,9 +8,12 @@ import {
   inspectProvenance,
   isAuthoredSource,
   isProjection,
+  projectionAnchor,
   projectionExecution,
 } from "./altitude.js";
-import { buildProjectionGraph } from "./fixtures/v3-projection.js";
+import { timeScale } from "./briefing.js";
+import TemporalStage, { MARGIN_X, STAGE_RIGHT } from "./TemporalStage.jsx";
+import { FIXTURE_CLOCK, buildProjectionGraph, buildRuns } from "./fixtures/v3-projection.js";
 
 // The semantic-zoom vertical slice — spec v3.1 §8-§12, §15.
 //
@@ -19,36 +22,99 @@ import { buildProjectionGraph } from "./fixtures/v3-projection.js";
 //   click / Enter  = select + recenter, at the SAME altitude
 //   + / -          = change the semantic resolution of the selected concept
 //
-// A concept is decomposed, not navigated to. On +, the parent leaves the graph
-// and survives as breadcrumb context, so a concept with five children still
-// renders five nodes — the ceiling holds by construction rather than by
-// truncation.
+// And one thing v3 explicitly froze: the v2.3 temporal grammar SURVIVES
+// semantic zoom. Changing altitude changes resolution; it does not switch the
+// temporal system off. So every concept with a trustworthy material transition
+// sits at that time on the same shared scale the field, NOW and the autonomy
+// envelopes already use — x = when, y = semantic topology, at every altitude.
 
 const TRANSITION_MS = 260;   // inside the spec's 220-300ms window
+const ROW = 92;
+const TOP = 108;
 
-/** The visible concepts at the current lens depth. */
 function sceneFor(graph, lens) {
   if (!lens.length) return conceptRoots(graph).slice(0, ATTENTION_BUDGET);
   return decompose(graph, lens[lens.length - 1]) || [];
 }
 
+/**
+ * Deep breadcrumbs compress rather than truncate (§P1).
+ *
+ * Six aggressively-clipped labels across one line record a NAVIGATION; they do
+ * not remind the operator what question they are answering. The root and the
+ * last two ancestors stay readable and the middle collapses into one clickable
+ * span.
+ */
+function compressLens(lens, byId, expanded) {
+  if (expanded || lens.length <= 3) return lens.map((id) => ({ kind: "crumb", id }));
+  return [
+    { kind: "crumb", id: lens[0] },
+    { kind: "collapsed", count: lens.length - 3 },
+    { kind: "crumb", id: lens[lens.length - 2] },
+    { kind: "crumb", id: lens[lens.length - 1] },
+  ];
+}
+
 export default function SemanticStage({ initialLens = [], initialCentre = null, onStateChange }) {
   const graph = useMemo(() => buildProjectionGraph(), []);
   const byId = useMemo(() => new Map(graph.nodes.map((n) => [n.id, n])), [graph]);
+  const runs = useMemo(() => buildRuns(), []);
+  const now = useMemo(() => Date.parse(FIXTURE_CLOCK.now), []);
 
   const [lens, setLens] = useState(initialLens);
   const [centre, setCentre] = useState(initialCentre);
-  // A transition is a first-class state, because the mid-flight frame is the
-  // evidence: it must show a parent RESOLVING into its children rather than one
-  // screen being replaced by another.
-  const [motion, setMotion] = useState(null);   // {kind, from, to[], startedAt}
+  // A transition is first-class state: the mid-flight frame is the evidence,
+  // and it has to show children coming OUT of the parent's own position.
+  const [motion, setMotion] = useState(null);
   const [inspecting, setInspecting] = useState(false);
+  const [lensOpen, setLensOpen] = useState(false);
   const timer = useRef(null);
+  const positions = useRef(new Map());
 
   const visible = useMemo(() => sceneFor(graph, lens), [graph, lens]);
   const centreId = centre && visible.some((n) => n.id === centre) ? centre : visible[0]?.id || null;
   const centreNode = centreId ? byId.get(centreId) : null;
   const parentNode = lens.length ? byId.get(lens[lens.length - 1]) : null;
+
+  const timeline = useMemo(() => ({
+    from: FIXTURE_CLOCK.since,
+    to: FIXTURE_CLOCK.now,
+    now,
+    runs: runs.filter((r) => r.supervision === "unattended"),
+  }), [now, runs]);
+
+  const scale = useMemo(
+    () => timeScale({ from: timeline.from, to: timeline.to, width: STAGE_RIGHT - MARGIN_X }),
+    [timeline.from, timeline.to],
+  );
+
+  // x = when, y = semantic topology. A concept whose provenance gives no
+  // trustworthy moment stays in the non-temporal margin rather than being
+  // assigned a fake one.
+  const rows = useMemo(() => visible.map((node, index) => {
+    const at = isAuthoredSource(node) ? node.at : projectionAnchor(graph, node.id, now);
+    const x = at ? scale.x(at) : null;
+    const sessions = node.sessionIds || (node.session ? [node.session] : []);
+    return {
+      key: node.id,
+      node,
+      laneKey: node.id,
+      // An envelope only where ONE unattended run contributes: a concept
+      // standing on four sessions has no single interval to draw.
+      runId: sessions.length === 1 ? `run_${sessions[0]}` : null,
+      x: x == null ? 28 : MARGIN_X + x,
+      y: TOP + index * ROW,
+      temporal: x != null,
+      // Within ~380px of the right edge there is no room for a label, and a
+      // live concept always lands there because it sits on NOW.
+      flip: x != null && MARGIN_X + x > STAGE_RIGHT - 160,
+      live: isProjection(node) && projectionExecution(graph, node.id) === "live",
+    };
+  }), [visible, graph, now, scale]);
+
+  useEffect(() => {
+    for (const row of rows) positions.current.set(row.key, { x: row.x, y: row.y });
+  }, [rows]);
 
   useEffect(() => () => clearTimeout(timer.current), []);
 
@@ -61,10 +127,17 @@ export default function SemanticStage({ initialLens = [], initialCentre = null, 
   const zoomIn = useCallback(() => {
     if (!centreNode) return false;
     const kids = decompose(graph, centreNode.id);
-    // At a semantic atom there is nothing below. Stopping is the correct
-    // behaviour; silently doing nothing is not.
+    // At a semantic atom there is nothing below. Stopping is correct;
+    // silently doing nothing is not.
     if (!kids || !kids.length) return false;
-    settle({ kind: "decompose", from: centreNode.id, to: kids.map((k) => k.id) });
+    settle({
+      kind: "decompose",
+      from: centreNode.id,
+      to: kids.map((k) => k.id),
+      // The parent's OWN settled position is the origin. Children must appear
+      // to come out of where the parent actually was, not from a layout edge.
+      origin: positions.current.get(centreNode.id) || null,
+    });
     setLens((l) => [...l, centreNode.id]);
     setCentre(kids[0].id);
     setInspecting(false);
@@ -74,21 +147,15 @@ export default function SemanticStage({ initialLens = [], initialCentre = null, 
   const zoomOut = useCallback(() => {
     if (!lens.length) return false;
     const parent = lens[lens.length - 1];
-    settle({ kind: "recompose", from: visible.map((n) => n.id), to: [parent] });
+    settle({ kind: "recompose", from: visible.map((n) => n.id), to: [parent], origin: null });
     setLens((l) => l.slice(0, -1));
     setCentre(parent);
     setInspecting(false);
     return true;
   }, [lens, visible, settle]);
 
-  const select = useCallback((id) => {
-    setCentre(id);
-    setInspecting(false);
-  }, []);
+  const select = useCallback((id) => { setCentre(id); setInspecting(false); }, []);
 
-  // Everything the capture harness and the URL need to reconstruct this exact
-  // scene. Exposed rather than scraped, so a frame's manifest is the view's own
-  // account of itself rather than a guess made from pixels.
   const state = useMemo(() => ({
     semanticAltitude: lens.length,
     semanticCentre: centreId,
@@ -106,6 +173,8 @@ export default function SemanticStage({ initialLens = [], initialCentre = null, 
     // keyboard and buttons do, so a captured sequence exercises real code.
     window.__continuity = {
       state: () => state,
+      geometry: () => rows.map((r) => ({ id: r.key, x: r.x, y: r.y, temporal: r.temporal })),
+      motion: () => motion,
       select,
       plus: zoomIn,
       minus: zoomOut,
@@ -113,7 +182,7 @@ export default function SemanticStage({ initialLens = [], initialCentre = null, 
       transitionMs: TRANSITION_MS,
     };
     return () => { delete window.__continuity; };
-  }, [state, select, zoomIn, zoomOut]);
+  }, [state, rows, motion, select, zoomIn, zoomOut]);
 
   useEffect(() => {
     const onKey = (event) => {
@@ -126,59 +195,107 @@ export default function SemanticStage({ initialLens = [], initialCentre = null, 
   }, [zoomIn, zoomOut]);
 
   const emerging = motion?.kind === "decompose";
-  const converging = motion?.kind === "recompose";
+  const origin = emerging ? motion.origin : null;
+  const stageHeight = Math.max(360, TOP + visible.length * ROW + 40);
+  const crumbs = compressLens(lens, byId, lensOpen);
 
   return (
-    <div className={`sem${motion ? ` sem--${motion.kind}` : ""}`} style={{ "--sem-ms": `${TRANSITION_MS}ms` }}>
-      {/* Ancestry lives in the breadcrumb, never as extra nodes on the stage.
-          That is what keeps five children rendering as five concepts. */}
+    <div
+      className={`sem${motion ? ` sem--${motion.kind}` : ""}`}
+      style={{ "--sem-ms": `${TRANSITION_MS}ms` }}
+    >
       <nav className="sem__lens" aria-label="Semantic lens">
         <button type="button" className="sem__crumb" onClick={() => { setLens([]); setCentre(null); }}>
           Catch-up
         </button>
-        {lens.map((id, index) => (
-          <span key={id}>
+        {crumbs.map((crumb, index) => (
+          <span key={crumb.kind === "collapsed" ? `collapsed-${index}` : crumb.id}>
             <i>›</i>
-            <button
-              type="button"
-              className="sem__crumb"
-              onClick={() => { setLens(lens.slice(0, index)); setCentre(id); }}
-            >
-              {byId.get(id)?.label}
-            </button>
+            {crumb.kind === "collapsed" ? (
+              <button
+                type="button"
+                className="sem__crumb sem__crumb--collapsed"
+                onClick={() => setLensOpen(true)}
+              >
+                … {crumb.count} levels …
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="sem__crumb"
+                onClick={() => {
+                  const at = lens.indexOf(crumb.id);
+                  setLens(lens.slice(0, at));
+                  setCentre(crumb.id);
+                }}
+              >
+                {byId.get(crumb.id)?.label}
+              </button>
+            )}
           </span>
         ))}
       </nav>
 
-      <section className="sem__stage">
-        {/* The parent stays visible THROUGH the transition, fading into
-            breadcrumb context, so the eye can see where the children came
-            from. Removing it on the first frame is what made earlier attempts
-            read as a page replacement. */}
-        {parentNode && (
-          <div className={`sem__origin${emerging ? " sem__origin--resolving" : ""}`}>
+      {/* The frozen v2.3 field, beneath the projection aperture. Altitude
+          changes resolution; it does not turn time off. */}
+      <section className="sem__stage" style={{ minHeight: stageHeight }}>
+        <TemporalStage timeline={timeline} rows={rows} />
+
+        {/* Connectors exist only during motion: at 50% each child is joined to
+            the parent region it came out of, which is what makes the frame say
+            "these were inside that" rather than "a new page arrived". */}
+        {emerging && origin && (
+          <svg className="sem__rays" aria-hidden="true">
+            {rows.map((row) => (
+              <line
+                key={row.key}
+                x1={origin.x} y1={origin.y}
+                x2={row.x} y2={row.y}
+                className="sem__ray"
+              />
+            ))}
+          </svg>
+        )}
+
+        {/* The parent holds its own settled position through the transition
+            instead of jumping to the breadcrumb early. */}
+        {emerging && origin && parentNode && (
+          <div
+            className={`sem__origin${origin.x > STAGE_RIGHT - 160 ? " sem__origin--flip" : ""}`}
+            style={{ left: origin.x, top: origin.y }}
+          >
+            <span className="sem__origin-ring" aria-hidden="true" />
             <span className="sem__origin-label">{parentNode.label}</span>
           </div>
         )}
 
         <ul className="sem__concepts">
-          {visible.map((node, index) => {
-            const live = isProjection(node) && projectionExecution(graph, node.id) === "live";
+          {rows.map((row, index) => {
+            const node = row.node;
             const source = isAuthoredSource(node);
+            const from = emerging && origin ? origin : null;
             return (
               <li
-                key={node.id}
+                key={row.key}
                 className={
                   "sem__concept"
-                  + (node.id === centreId ? " sem__concept--centre" : "")
-                  + (live ? " sem__concept--live" : "")
+                  + (row.key === centreId ? " sem__concept--centre" : "")
+                  + (row.live ? " sem__concept--live" : "")
                   + (source ? " sem__concept--source" : "")
+                  + (row.temporal ? "" : " sem__concept--atemporal")
+                  + (row.flip ? " sem__concept--flip" : "")
                   + (emerging ? " sem__concept--emerging" : "")
-                  + (converging ? " sem__concept--converging" : "")
                 }
-                style={{ "--i": index, "--n": visible.length }}
+                style={{
+                  left: row.x,
+                  top: row.y,
+                  "--i": index,
+                  // Each child animates FROM the parent's position to its own.
+                  "--dx": from ? `${from.x - row.x}px` : "0px",
+                  "--dy": from ? `${from.y - row.y}px` : "0px",
+                }}
               >
-                <button type="button" className="sem__hit" onClick={() => select(node.id)}>
+                <button type="button" className="sem__hit" onClick={() => select(row.key)}>
                   <span className="sem__ring" aria-hidden="true"><i /></span>
                   <span className="sem__text">
                     <span className="sem__label">{node.label}</span>
@@ -191,9 +308,6 @@ export default function SemanticStage({ initialLens = [], initialCentre = null, 
         </ul>
       </section>
 
-      {/* Provenance is available on demand and absent from the default screen:
-          the operator should be able to tell derived from authored without
-          paying that metadata cost at every glance. */}
       {inspecting && centreNode && (
         <aside className="sem__inspect">
           {isAuthoredSource(centreNode) ? (
