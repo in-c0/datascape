@@ -336,8 +336,10 @@ test("one long run is one enclosure, however many events it holds", () => {
     ownerActions: [],
   }, { now: NOW });
   const root = scene.nodes.find((n) => n.kind === "root");
-  // The interval now lives on the axis envelope, not duplicated in the label.
-  assert.equal(root.sub, "unattended");
+  // v2.3 ruling: the interval lives on the envelope and the position, so a
+  // temporally grounded unattended root carries no subtitle at all.
+  assert.equal(root.sub, null);
+  assert.equal(root.quiet, true);
   assert.equal(root.run.hours, 7.9, "97 events must collapse to ONE run");
   assert.equal(root.run.records, 97);
 });
@@ -398,7 +400,7 @@ test("temporal reasoning uses Sydney, not the runner's timezone", () => {
 // Spec v2.1 hard regression invariants
 // ---------------------------------------------------------------------------
 
-import { envelopeGeometry, isReturnWindowChange, materialOutcome, returnWindowLanes, supervisionFromTrigger, timeScale } from "../src/continuity/briefing.js";
+import { canonicalPath, envelopeGeometry, isReturnWindowChange, materialOutcome, returnWindowLanes, supervisionFromTrigger, temporalAnchor, timeScale } from "../src/continuity/briefing.js";
 
 test("an auto-run-capable lane with an owner-triggered record is ATTENDED", () => {
   // Lane capability is not provenance. This is the case the v2 rule got wrong:
@@ -558,4 +560,59 @@ test("v2.2: node budgets are unchanged by the temporal rework", () => {
   assert.equal(BUDGETS.z2, 3);
   assert.equal(BUDGETS.z3, 4);
   assert.equal(BUDGETS.z4, 2);
+});
+
+// ---------------------------------------------------------------------------
+// Spec v2.3.
+
+test("v2.3: a live run anchors its node at NOW, a completed one at its end", () => {
+  const now = Date.parse("2026-08-21T18:40:00+10:00");
+  const live = { id: "a", startedAt: "2026-08-21T15:26:00+10:00", endedAt: "2026-08-21T18:03:00+10:00", execution: "live" };
+  const done = { id: "b", startedAt: "2026-08-21T04:05:00+10:00", endedAt: "2026-08-21T09:37:00+10:00", execution: "completed" };
+  assert.equal(Date.parse(temporalAnchor({ run: live }, now)), now,
+    "an open run reaches the present, so its node must sit ON the cursor");
+  assert.equal(temporalAnchor({ run: done }, now), done.endedAt);
+  // Negative control: no run and no trustworthy provenance means no position.
+  assert.equal(temporalAnchor({ supervision: "unknown", at: "2026-08-21T12:00:00+10:00" }, now), null);
+  assert.equal(temporalAnchor({ supervision: "unattended", at: "2026-08-21T12:00:00+10:00" }, now), "2026-08-21T12:00:00+10:00");
+});
+
+test("v2.3: an invalid semantic path walks up to its nearest valid ancestor", () => {
+  const now = Date.parse("2026-08-21T18:40:00+10:00");
+  const data = {
+    lanes: [{
+      lane: "alpha", label: "Alpha", supervision: "unattended", execution: "completed",
+      lastSeen: "2026-08-21T12:00:00+10:00",
+      records: [{ id: "mr_1111111111111111", lane: "alpha", headline: "a real outcome here", emittedAt: "2026-08-21T12:00:00+10:00", trigger: { kind: "scheduler" }, items: [{ type: "state", headline: "a real outcome here" }] }],
+      runs: [],
+    }],
+    ownerActions: [],
+  };
+  assert.equal(canonicalPath(data, "lane/alpha/z0"), "lane/alpha", "an unknown facet resolves to its lane");
+  assert.equal(canonicalPath(data, "lane/nope"), "", "an unknown lane resolves to catch-up entry");
+  assert.equal(canonicalPath(data, "lane/alpha"), "lane/alpha", "a valid path is left alone");
+
+  // And the scene reports the correction rather than rendering the token.
+  const scene = buildScene(data, { path: "lane/alpha/z0", now });
+  assert.equal(scene.redirect, "lane/alpha");
+  for (const n of scene.nodes) {
+    assert.notEqual(n.label, "z0", "a raw path segment must never become a node label");
+  }
+});
+
+test("v2.3: an authored decision outranks a state transition as the return root", () => {
+  const lane = {
+    lane: "l", label: "L", supervision: "unattended",
+    records: [{
+      id: "mr_2222222222222222", lane: "l", emittedAt: "2026-08-21T09:00:00+10:00",
+      items: [
+        { type: "state", headline: "the deploy pipeline went green again" },
+        { type: "decision", headline: "chose the loopback broker over the LAN one" },
+      ],
+    }],
+  };
+  assert.equal(materialOutcome(lane), "chose the loopback broker over the LAN one");
+  // Negative control: with no decision present, state still wins.
+  const noDecision = { ...lane, records: [{ ...lane.records[0], items: [lane.records[0].items[0]] }] };
+  assert.equal(materialOutcome(noDecision), "the deploy pipeline went green again");
 });

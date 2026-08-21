@@ -5,7 +5,7 @@ import { actionsAvailable, recordAction } from "./actions.js";
 import Authored from "./authored.jsx";
 import TemporalStage, { MARGIN_X, STAGE_RIGHT } from "./TemporalStage.jsx";
 import { excerptAuthored, parseAuthored } from "./authored.js";
-import { timeScale } from "./briefing.js";
+import { temporalAnchor, timeScale } from "./briefing.js";
 import {
   agoLabel,
   awayLabel,
@@ -87,6 +87,21 @@ function useMeasuredThreads(deps) {
   return [containerRef, ringRef, geometry];
 }
 
+/** The run that was open at `at`, if any. */
+function runContaining(runs, at, now) {
+  const t = Date.parse(at);
+  if (!Number.isFinite(t)) return null;
+  return (runs || []).find((r) => {
+    const a = Date.parse(r.startedAt);
+    const live = r.execution === "live" || !r.endedAt;
+    const b = live ? now : Date.parse(r.endedAt);
+    return Number.isFinite(a) && Number.isFinite(b) && t >= a - 1000 && t <= b + 1000;
+  }) || null;
+}
+
+// Which placed kinds read as the branch origin rather than a leaf.
+const FOCAL_PLACED = new Set(["origin", "focus"]);
+
 function ThreadFan({ geometry, origin, enabled }) {
   // No fan at entry: with no origin node the curves degrade into a vertical
   // chain that implies a sequence the roots do not have.
@@ -141,11 +156,16 @@ function Node({ node, onSelect, refCallback, focal, keyboard, now }) {
       </span>
       <span className="bf-node__text">
         <span className="bf-node__label">{node.label}</span>
-        {(node.sub || node.at || node.severity) && (
+        {/* v2.3 ruling: a node whose position and envelope already say when and
+            how carries no time subtitle. `quiet` is set by the model for a
+            temporally grounded unattended node; a node stranded in the
+            non-temporal margin keeps a plain age, because nothing else can say
+            when — and it still never claims attended or unattended. */}
+        {(node.sub || (node.at && !node.quiet) || node.severity) && (
           <span className="bf-node__sub">
             {node.severity && <em className={`bf-sev bf-sev--${node.severity}`}>{SEVERITY_LABEL[node.severity]}</em>}
             {node.sub}
-            {node.at ? `${node.sub ? " · " : ""}${agoLabel(node.at, now)}` : ""}
+            {node.at && !node.quiet ? `${node.sub ? " · " : ""}${agoLabel(node.at, now)}` : ""}
             {/* No overnight pill at entry: once the run occupies the night
                 portion of the axis, position carries the meaning. */}
           </span>
@@ -450,6 +470,16 @@ function BriefingSurface({ data }) {
     writeLocation({ path: nextPath, brief, page: 0 }, mode);
   }, [brief]);
 
+  // An invalid or stale semantic URL resolves to its nearest valid ancestor,
+  // and the URL is REPLACED rather than pushed — so Back returns to wherever
+  // she actually came from instead of bouncing through the broken address.
+  useEffect(() => {
+    if (scene.redirect == null || scene.redirect === path) return;
+    setPath(scene.redirect);
+    setPage(0);
+    writeLocation({ path: scene.redirect, brief, page: 0 }, "replace");
+  }, [scene.redirect, path, brief]);
+
   const setBriefPreset = useCallback((key) => {
     setBrief(key);
     writeLocation({ path, brief: key, page }, "replace");
@@ -468,29 +498,53 @@ function BriefingSurface({ data }) {
   const focalNodes = scene.nodes.filter((n) => n.kind === "origin");
   const childNodes = scene.nodes.filter((n) => n.kind !== "origin");
   const hasFocalColumn = focalNodes.length > 0;
+  const hasPlacedOrigin = focalNodes.length > 0;
+  // Declared here, above temporalRows, which reads it. It used to sit further
+  // down and the memo hit the temporal dead zone, blanking the whole surface
+  // with no console error the probe was armed to catch.
+  const sceneNow = initial.now || Date.now();
 
   // Place entry roots on the shared temporal scale. A node whose provenance is
   // untrustworthy gets NO temporal position — it sits in the non-temporal
   // margin rather than being assigned a fake time.
   const temporalRows = useMemo(() => {
-    if (!scene.timeline || scene.level !== "entry") return [];
+    if (!scene.timeline) return [];
     const scale = timeScale({
       from: scene.timeline.from, to: scene.timeline.to, width: STAGE_RIGHT - MARGIN_X,
     });
     const ROW = 92;
-    return scene.nodes.map((n, index) => {
-      const at = n.run?.endedAt || (n.supervision === "unattended" ? n.at : null);
+    const rows = scene.nodes.map((n, index) => {
+      // v2.3: every level is placed, not just entry. A lane view that fell
+      // back to a column had no node inside its own envelope, so the envelope
+      // read as a free-floating run bar again.
+      const at = temporalAnchor(n, sceneNow);
       const x = at ? scale.x(at) : null;
+      // A node without its own run still belongs to whichever run was open
+      // when its material change happened. That is what lets one envelope
+      // enclose a whole visible branch instead of only its origin.
+      const runId = n.run?.id || (at ? runContaining(scene.timeline.runs, at, sceneNow)?.id : null) || null;
       return {
         key: n.key,
         laneKey: n.key,
+        runId,
         node: n,
+        at,
         x: x == null ? 24 : MARGIN_X + x,
         y: 96 + index * ROW,
         temporal: x != null,
       };
     });
-  }, [scene.timeline, scene.level, scene.nodes]);
+    // Mobile reflows vertically and the field carries an orientation cue that
+    // claims top = older, bottom = newer. That claim has to be TRUE, so each
+    // row carries its rank in time; the mobile stylesheet orders by it while
+    // desktop ignores it and keeps y = semantic topology.
+    const ranked = rows.filter((r) => r.temporal).slice()
+      .sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+    return rows.map((r) => ({
+      ...r,
+      order: r.temporal ? ranked.findIndex((x) => x.key === r.key) + 1 : 0,
+    }));
+  }, [scene.timeline, scene.nodes, sceneNow]);
   const focalPoint = geometry.points.find((p) => p.key === focalNodes[0]?.key)
     || { x: 64, y: Math.max(70, geometry.height / 2) };
 
@@ -545,7 +599,6 @@ function BriefingSurface({ data }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [scene.path, go, selectable, kbIndex]);
 
-  const sceneNow = initial.now || Date.now();
   const away = awayLabel(data.lanes || [], sceneNow, initial.since || data.ownerLastPresentAt);
   const { counts } = scene;
 
@@ -621,24 +674,25 @@ function BriefingSurface({ data }) {
         style={scene.timeline ? { minHeight: temporalRows.length ? Math.max(...temporalRows.map((r) => r.y)) + 150 : 260 } : undefined}
       >
         {scene.timeline && <TemporalStage timeline={scene.timeline} rows={temporalRows} />}
-        <ThreadFan geometry={geometry} origin={focalPoint} enabled={hasFocalColumn} />
+        <ThreadFan geometry={geometry} origin={focalPoint} enabled={hasFocalColumn || hasPlacedOrigin} />
         {/* The focal node IS the fan origin, in its own column. Drawing it as
             the first child (with the fan starting from an invisible point) was
             the visual review's P0: the eye could not tell what it was inside. */}
         {temporalRows.length > 0 ? (
           <div className="bf-placed">
-            {temporalRows.map(({ key, node: n, x, y, temporal }) => (
+            {temporalRows.map(({ key, node: n, x, y, temporal, order }) => (
               <div
                 key={key}
                 className={`bf-placed__node${temporal ? "" : " bf-placed__node--atemporal"}`}
-                style={{ left: x, top: y }}
+                style={{ left: x, top: y, "--t-order": order }}
               >
                 <Node
                   node={n}
+                  focal={FOCAL_PLACED.has(n.kind)}
                   now={sceneNow}
                   keyboard={kbKey === n.key}
                   refCallback={ringRef(n.key)}
-                  onSelect={n.kind === "absent" ? undefined : () => go(n.path)}
+                  onSelect={n.kind === "focus" || n.kind === "absent" ? undefined : () => go(n.path)}
                 />
               </div>
             ))}

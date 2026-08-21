@@ -174,6 +174,53 @@ try {
 
   ok("no independent timeline panel above the graph", geom.axisPanels === 0, `${geom.axisPanels} panel(s)`);
 
+  // ---- spec v2.3 ----
+  ok("no envelope exists without a visible semantic node inside it",
+    geom.envs.length > 0 && geom.envs.every((v) =>
+      temporal.some((n) => n.cx >= v.x1 - 1 && n.cx <= v.x2 + 1 && n.cy >= v.y1 && n.cy <= v.y2)),
+    `${geom.envs.length} envelope(s), ${temporal.length} placed node(s)`);
+
+  const liveNode = JSON.parse(await tab.eval(`(()=>{
+    const e = document.querySelector(".bf-placed__node .bf-exec--live");
+    if (!e) return "null";
+    const r = e.querySelector(".bf-ring").getBoundingClientRect();
+    const now = document.querySelector(".bf-now").getBoundingClientRect();
+    return JSON.stringify({ cx: r.left + r.width/2, now: now.left });
+  })()`));
+  ok("a live semantic node sits on the NOW cursor, not minutes to its left",
+    !!liveNode && Math.abs(liveNode.cx - liveNode.now) <= 2, JSON.stringify(liveNode));
+
+  const quiet = await tab.eval(
+    '[...document.querySelectorAll(".bf-placed__node .bf-exec--completed, .bf-placed__node .bf-exec--live")]' +
+    '.map(e=>e.querySelector(".bf-node__sub")?.innerText||"").join("|")',
+  );
+  ok("a temporally grounded node repeats neither its supervision nor its age",
+    !/unattended|ago/.test(String(quiet)), String(quiet).slice(0, 80));
+
+  // A selected lane must show its live branch reaching NOW through a visible edge.
+  await tab.goto(`${BASE}/?view=briefing&now=${NOW}&since=${SINCE}&at=lane%2Fpersonalos-surface-runtime`);
+  await settle(1600);
+  const branch = JSON.parse(await tab.eval(`(()=>{
+    const origin = document.querySelector(".bf-placed__node .bf-node--focal .bf-ring");
+    const now = document.querySelector(".bf-now");
+    const threads = document.querySelectorAll(".bf-thread");
+    if (!origin || !now) return "null";
+    const r = origin.getBoundingClientRect();
+    return JSON.stringify({ cx: r.left + r.width/2, now: now.getBoundingClientRect().left, threads: threads.length });
+  })()`));
+  ok("the selected live branch reaches NOW and its edges reach the nodes",
+    !!branch && Math.abs(branch.cx - branch.now) <= 2 && branch.threads > 0, JSON.stringify(branch));
+
+  // An invalid deep URL canonicalises rather than rendering its own tokens.
+  await tab.goto(`${BASE}/?view=briefing&now=${NOW}&since=${SINCE}&at=lane%2Fpersonalos-surface-runtime%2Fz0`);
+  await settle(1600);
+  const canon = JSON.parse(await tab.eval(`(()=>JSON.stringify({
+    url: location.search,
+    labels: [...document.querySelectorAll(".bf-node__label")].map(e=>e.innerText),
+  }))()`));
+  ok("an invalid semantic URL resolves to a real position and never shows its token",
+    !canon.url.includes("z0") && !canon.labels.includes("z0"), JSON.stringify(canon).slice(0, 160));
+
   // Recentering must not drop the temporal field — v2.2 rejected time that
   // disappears the moment semantic resolution increases.
   await tab.goto(`${BASE}/?view=briefing&now=${NOW}&since=${SINCE}&at=lane%2Fpersonalos-surface-runtime`);
@@ -205,6 +252,21 @@ try {
     'return (r.top < innerHeight && r.bottom > 0) ? "visible" : "below-fold top="+Math.round(r.top);})()',
   );
   ok("mobile Z2 CTA is reachable without scrolling", inView === "visible", String(inView));
+
+  // v2.3: the mobile field claims top = older, bottom = newer. Prove the claim.
+  await tab.goto(`${BASE}/?view=briefing&now=${encodeURIComponent("2026-08-21T18:40:00+10:00")}&since=${encodeURIComponent("2026-08-21T10:00:00+10:00")}`);
+  await settle(1800);
+  const order = JSON.parse(await tab.eval(`(()=>{
+    const rows = [...document.querySelectorAll(".bf-placed__node")]
+      .filter(e => !e.classList.contains("bf-placed__node--atemporal"))
+      .map(e => ({ y: e.getBoundingClientRect().top, o: Number(getComputedStyle(e).order) }));
+    const cue = !!document.querySelector(".bf-field__orient");
+    return JSON.stringify({ rows, cue });
+  })()`));
+  const byY = order.rows.slice().sort((a, b) => a.y - b.y);
+  ok("mobile orders placed nodes older to newer, matching its orientation cue",
+    order.cue && byY.length > 1 && byY.every((r, i) => i === 0 || r.o > byY[i - 1].o),
+    JSON.stringify(order));
 } finally {
   await edge.close();
 }

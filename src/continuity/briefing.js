@@ -294,8 +294,15 @@ const FOCAL_KINDS = new Set(["origin", "parent", "focus"]);
  */
 export function materialOutcome(lane) {
   // Ranking is SELECTION among authored records, never summarisation:
-  // decision/outcome > state transition > progress/finding > (lane name).
-  const weight = { owner_action: 0, state: 1, progress: 2, finding: 3 };
+  //
+  //   owner action > authored decision/outcome > authored state transition
+  //   > material progress > material finding > lane fallback
+  //
+  // v2.3 inserted the explicit decision/outcome tier above state: a record
+  // type that says what was DECIDED outranks one that says what CHANGED, and
+  // the previous four-tier order silently collapsed them. Nothing here
+  // generates a summary to fill a tier — an absent tier is simply skipped.
+  const weight = { owner_action: 0, decision: 1, outcome: 1, state: 2, progress: 3, finding: 4 };
   const items = (lane?.records || [])
     .flatMap((r) => (r.items || []).map((i) => ({ ...i, at: r.emittedAt })))
     .filter((i) => i.headline && i.headline.length > 12)
@@ -325,8 +332,47 @@ const node = (props) => ({ dashed: false, dim: false, focal: FOCAL_KINDS.has(pro
  * `page` windows an over-budget list; it never appends. `brief` controls
  * COVERAGE (how much is reachable), never density.
  */
+/**
+ * The deepest still-valid prefix of a semantic path.
+ *
+ * The URL is part of Continuity's navigation model, so a stale or hand-typed
+ * one must degrade to the nearest real position rather than render its own
+ * path segments as meaning. `lane/<lane>/z0` used to draw a focal node
+ * labelled "z0" holding zero records — a raw URL token presented as semantics.
+ *
+ * Walk upward: unknown record -> its facet; unknown facet -> the lane; unknown
+ * lane -> catch-up entry.
+ */
+export function canonicalPath(data, path) {
+  const p = parsePath(path);
+  if (p.kind !== "lane") return String(path || "");
+  const lane = (data?.lanes || []).find((l) => l.lane === p.lane);
+  if (!lane) return "";
+  const base = `lane/${p.lane}`;
+  if (!p.facet) return base;
+  const items = laneRecordItems(lane);
+  if (!items.some((i) => i.facet === p.facet)) return base;
+  const facetPath = `${base}/${encodeURIComponent(p.facet)}`;
+  if (!p.record) return facetPath;
+  const decoded = decodeURIComponent(p.record);
+  if (!items.some((i) => i.facet === p.facet && i.key === decoded)) return facetPath;
+  return String(path);
+}
+
 export function buildScene(data, { path = "", brief = "3m", now = Date.now(), page = 0 } = {}) {
   const lanes = data?.lanes || [];
+
+  // Canonicalise before anything reads the position, so no downstream branch
+  // can label a node with a path token. The caller replaces the URL from
+  // scene.redirect, which keeps Back coherent: the invalid entry never becomes
+  // a history step of its own.
+  const canonical = canonicalPath(data, path);
+  if (canonical !== String(path || "")) {
+    const redirected = buildScene(data, { path: canonical, brief, now, page });
+    redirected.redirect = canonical;
+    return redirected;
+  }
+
   const { dueNow, deferred } = partitionActions(data?.ownerActions || [], now);
   const ordered = orderOwnerActions(dueNow);
   const position = parsePath(path);
@@ -385,11 +431,13 @@ export function buildScene(data, { path = "", brief = "3m", now = Date.now(), pa
         key: lane.lane, kind: "root", label: materialOutcome(lane) || lane.label, path: `lane/${lane.lane}`,
         provenanceLabel: lane.label,
         status: "committed",
-        // The envelope on the axis already carries the interval; repeating it
-        // here is the duplication the review flagged. Position is the label.
-        sub: lane.supervision === "unattended"
-          ? "unattended"
-          : `${(lane.records || []).length} changed`,
+        // v2.3 ruling: at entry and Z0, a temporally grounded unattended node
+        // carries NO subtitle at all. x-position, envelope and field already
+        // say when and how; "unattended . 9h ago" only repeats them. A node in
+        // the non-temporal margin keeps a plain relative age, because nothing
+        // else can say when — but it never claims attended or unattended.
+        sub: lane.supervision === "unattended" ? null : `${(lane.records || []).length} changed`,
+        quiet: lane.supervision === "unattended",
         at: lane.lastSeen,
         supervision: lane.supervision,
         execution: lane.execution,
@@ -512,7 +560,9 @@ export function buildScene(data, { path = "", brief = "3m", now = Date.now(), pa
   // ---------- lane branch ----------
   const lane = lanes.find((l) => l.lane === position.lane);
   if (!lane) {
-    scene.nodes.push(node({ key: "absent", kind: "absent", label: `${position.lane} is not reporting`, path: "", status: "committed" }));
+    // Never print the raw path token as a label; the lane id is a URL detail,
+    // not a semantic name.
+    scene.nodes.push(node({ key: "absent", kind: "absent", label: "that lane is not reporting", path: "", status: "committed" }));
     return scene;
   }
   scene.breadcrumb.push({ label: lane.label, path: `lane/${lane.lane}` });
@@ -561,6 +611,11 @@ export function buildScene(data, { path = "", brief = "3m", now = Date.now(), pa
         status: facet === "Needs you" ? "needs_human" : facet === "Finding" ? "live" : facet === "Completed" ? "merged" : "committed",
         dashed: facet === "Needs you" || facet === "Finding",
         sub: `${group.length}`,
+        // A facet is placed at its newest record, so the branch it represents
+        // sits where that work actually happened rather than in a column.
+        at: group[0]?.at || null,
+        supervision: lane.supervision,
+        quiet: lane.supervision === "unattended",
       }));
     }
     return scene;
@@ -578,6 +633,7 @@ export function buildScene(data, { path = "", brief = "3m", now = Date.now(), pa
         path: `lane/${lane.lane}/${encodeURIComponent(position.facet)}/${encodeURIComponent(item.key)}`,
         status: item.facet === "Needs you" ? "needs_human" : item.facet === "Finding" ? "live" : item.facet === "Completed" ? "merged" : "committed",
         at: item.at,
+        supervision: lane.supervision,
       }));
     }
     return scene;
@@ -814,6 +870,30 @@ export function timeScale({ from, to, width = 1000, padding = 0.04 }) {
     return width * padding + ((clamped - a) / span) * usable;
   };
   return { from: a, to: b, width, x, spanMs: span };
+}
+
+/**
+ * Where a node belongs on the shared temporal scale, or null.
+ *
+ * Spec v2.2: "position the semantic outcome at its material-change timestamp
+ * if known; otherwise use the end of the contributing run; if neither is
+ * trustworthy, do not invent a temporal position."
+ *
+ * Spec v2.3 adds the live case: a run that is still open ends at NOW, not at
+ * its last record, so a live semantic node genuinely intersects the cursor
+ * rather than sitting minutes to its left.
+ */
+export function temporalAnchor(node, now = Date.now()) {
+  if (!node) return null;
+  const run = node.run;
+  if (run) {
+    const live = run.execution === "live" || !run.endedAt;
+    return live ? new Date(now).toISOString() : run.endedAt || null;
+  }
+  // Unknown provenance gets no honest x. Anything else with a real timestamp
+  // is placed at it.
+  if (node.supervision === "unknown") return null;
+  return node.at || null;
 }
 
 /**

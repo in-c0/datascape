@@ -679,32 +679,42 @@ body:has(.bf-root) { overflow: auto; }
   position: absolute;
   top: 6px;
   font-size: 9.5px;
-  color: rgba(214, 224, 255, 0.28);
+  color: rgba(214, 224, 255, 0.2);
   transform: translateX(-50%);
   pointer-events: none;
 }
 
 /* An autonomy envelope is a faint region BEHIND the nodes that run produced.
  * No chrome, visually subordinate, and not a semantic node. */
-.bf-env {
+/* v2.3: a region of autonomous activity, not an object. No full stroke and no
+ * pill radius — the fill carries it, the horizontal edges are the faintest
+ * hint of a boundary, and the vertical ends feather into the field. */
+.bf-env { position: absolute; pointer-events: none; }
+.bf-env__wash {
   position: absolute;
-  border-radius: 18px;
-  background: rgba(150, 132, 224, 0.09);
-  border: 1px solid rgba(150, 132, 224, 0.16);
-  pointer-events: none;
+  inset: 0;
+  border-radius: 3px;
+  background: rgba(150, 132, 224, 0.085);
+  border-top: 1px solid rgba(163, 148, 232, 0.11);
+  border-bottom: 1px solid rgba(163, 148, 232, 0.11);
+  /* Both ends feather into the field, so the region has no vertical stroke and
+   * no pill silhouette to read as a bar. */
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 14%, #000 86%, transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 14%, #000 86%, transparent);
 }
-.bf-env--live {
-  border-right-color: transparent;
-  border-top-right-radius: 0;
-  border-bottom-right-radius: 0;
-  background: linear-gradient(90deg, rgba(150, 132, 224, 0.09), rgba(125, 211, 252, 0.14));
+.bf-env--live .bf-env__wash {
+  background: linear-gradient(90deg, rgba(150, 132, 224, 0.07), rgba(125, 211, 252, 0.13));
+  /* A live region is open at the right: it does not feather away before NOW,
+   * because it genuinely continues into it. */
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 14%, #000 100%);
+  mask-image: linear-gradient(90deg, transparent, #000 14%, #000 100%);
 }
 .bf-env__label {
   position: absolute;
-  top: -14px;
-  left: 12px;
+  top: -13px;
+  left: 14px;
   font-size: 9.5px;
-  color: rgba(206, 198, 246, 0.6);
+  color: rgba(206, 198, 246, 0.42);
   white-space: nowrap;
 }
 
@@ -728,22 +738,34 @@ body:has(.bf-root) { overflow: auto; }
   color: rgba(236, 242, 255, 0.7);
 }
 
+/* Mobile orientation cue: hidden on desktop, where x already carries time. */
+.bf-field__orient { display: none; }
+
 /* Nodes live in the field, positioned by time. */
 .bf-placed { position: absolute; inset: 0; }
 .bf-placed__node {
   position: absolute;
-  /* The RING is the record, so the ring's centre — not the node box's left
-   * edge — must land exactly on its moment. The ring is 24px, hence -12px.
-   * Without this every node sat 12px to the right of its own envelope end,
-   * which put two of three nodes outside the run that produced them. */
-  transform: translate(-12px, -50%);
+  transform: translateY(-50%);
+  /* The RING is the record, so the ring's CENTRE — not the node box's left
+   * edge — must land on its moment. Offset by half the ring rather than a
+   * hardcoded 12px: a focal ring is 34px, and the fixed offset left the focal
+   * node 11px outside its own envelope while every leaf sat correctly. */
+  margin-left: -12px;
   max-width: 420px;
   z-index: 3;
 }
+.bf-placed__node:has(.bf-ring--focal) { margin-left: -17px; }
 /* No trustworthy time: an explicitly non-temporal margin, never a fake x. */
-.bf-placed__node--atemporal { transform: translateY(-50%); opacity: 0.95; }
+.bf-placed__node--atemporal { margin-left: 0; opacity: 0.95; }
 .bf-placed__node--atemporal .bf-node__label { text-shadow: 0 1px 6px rgba(0, 0, 0, 0.7); }
-.bf-placed__node .bf-node { padding: 6px 10px 6px 0; }
+/* The wrapper's left edge must BE the ring's left edge, or the half-ring
+ * offset lands the node beside its moment instead of on it. A focal node
+ * carries its own left margin elsewhere in the sheet; zero it here. */
+.bf-placed__node .bf-node { padding: 6px 10px 6px 0; margin: 0; }
+/* .bf-node--focal nudges itself 6px right so it clears the column edge in the
+ * un-placed layout. On the field that nudge is a lie about when the work
+ * happened, so it is cancelled. */
+.bf-placed__node .bf-node--focal { transform: none; }
 .bf-placed__node .bf-node__label { text-shadow: 0 1px 8px rgba(0, 0, 0, 0.75); }
 .bf-placed__node .bf-node__sub { text-shadow: 0 1px 6px rgba(0, 0, 0, 0.8); }
 
@@ -753,14 +775,39 @@ body:has(.bf-root) { overflow: auto; }
 @media (max-width: 900px) {
   /* No horizontal timeline squeezed across 375px: the field stays ambient and
    * the nodes keep their vertical reflow and their readability. */
-  .bf-stage--temporal { min-height: 0; }
+  /* The desktop stage sizes itself from placed row positions via an inline
+   * min-height. Mobile has no rows to place, so that number would strand the
+   * "now" cue hundreds of pixels below the newest node. */
+  .bf-stage--temporal { min-height: 0 !important; }
   /* Nodes reflow vertically and stay ABOVE the wash — a static child has no
    * stacking context, so v2.2's first mobile frame had the gradient painted
    * over every label. */
-  .bf-placed { position: relative; z-index: 3; }
-  .bf-placed__node { position: static; transform: none; max-width: none; margin-bottom: 14px; }
+  .bf-placed { position: relative; z-index: 3; display: flex; flex-direction: column; }
+  /* Ordered by time, so the field's top-to-bottom cue is a true claim rather
+   * than decoration. Desktop ignores --t-order entirely. */
+  .bf-placed__node { order: var(--t-order, 0); }
+  .bf-placed__node { position: static; transform: none; margin-left: 0; max-width: none; margin-bottom: 14px; }
   .bf-now { display: none; }
   .bf-field__hour { display: none; }
+  .bf-field__orient {
+    display: flex;
+    position: absolute;
+    top: 18px;
+    bottom: 18px;
+    right: 8px;
+    flex-direction: column;
+    align-items: center;
+    justify-content: space-between;
+    z-index: 2;
+    pointer-events: none;
+    font-size: 9px;
+    letter-spacing: 0.06em;
+    color: rgba(214, 224, 255, 0.3);
+  }
+  .bf-field__orient i { flex: 1; width: 1px; background: linear-gradient(180deg, transparent, rgba(214, 224, 255, 0.12), transparent); }
+  .bf-field__orient-now { color: rgba(236, 242, 255, 0.6); }
+  /* The nodes must not run under the cue. */
+  .bf-placed__node { padding-right: 34px; }
   /* 9 hours squeezed into 375px is not a readable scale, so mobile keeps the
    * ambient field without pretending its x-axis means anything. */
   .bf-field__wash {

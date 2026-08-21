@@ -69,7 +69,8 @@ export default function TemporalStage({ timeline, children, rows = [], width = 1
     const out = [];
     const start = new Date(scale.from);
     start.setMinutes(0, 0, 0);
-    const step = Math.max(3600 * 1000, Math.round(scale.spanMs / 5 / 3600000) * 3600000);
+    // At most five anchors: more than that and the field becomes an axis again.
+    const step = Math.max(3600 * 1000, Math.ceil(scale.spanMs / 5 / 3600000) * 3600000);
     for (let t = start.getTime(); t <= scale.to; t += step) {
       if (t < scale.from) continue;
       out.push({ t, x: atX(new Date(t)) });
@@ -84,13 +85,18 @@ export default function TemporalStage({ timeline, children, rows = [], width = 1
       if (!geo) continue;
       // Vertically, an envelope covers the band occupied by the nodes it
       // produced — so a node's centre genuinely lies inside its own run.
-      const owned = rows.filter((r) => r.laneKey === run.laneKey);
-      // Deeper levels have no placed rows — semantic resolution increased, but
-      // the run is still the thing being looked at, so it keeps a band rather
-      // than vanishing.
-      const top = owned.length ? Math.min(...owned.map((r) => r.y)) - 26 : 64;
-      const bottom = owned.length ? Math.max(...owned.map((r) => r.y)) + 26 : 64 + 52;
-      out.push({ run, geo, top, height: Math.max(52, bottom - top) });
+      // v2.3 P0: an envelope may not exist without a visible semantic referent.
+      // A run whose material outcome is hidden at this abstraction stays hidden
+      // WITH it — an empty 02:50-04:36 region beside three unrelated nodes is
+      // exactly what pushes the surface back toward a Gantt reading.
+      //
+      // Association is by run id, not by lane: a lane with four runs and one
+      // visible outcome gets ONE envelope, around that outcome.
+      const owned = rows.filter((r) => r.temporal && r.runId && r.runId === run.id);
+      if (!owned.length) continue;
+      const top = Math.min(...owned.map((r) => r.y)) - 30;
+      const bottom = Math.max(...owned.map((r) => r.y)) + 30;
+      out.push({ run, geo, top, height: Math.max(60, bottom - top) });
     }
     return out;
   }, [timeline.runs, scale, timeline.now, rows]);
@@ -111,6 +117,10 @@ export default function TemporalStage({ timeline, children, rows = [], width = 1
           className={`bf-env${geo.live ? " bf-env--live" : ""}`}
           style={{ left: MARGIN_X + geo.x1, width: geo.width, top, height }}
         >
+          {/* The wash carries the mask; the label must sit outside it, or the
+              feathering clips the label along with the region and the envelope
+              loses its only text. */}
+          <span className="bf-env__wash" />
           {/* Subordinate: the interval only. Supervision is already on the
               node, and repeating "unattended" once per run turned four faint
               regions into four labels competing with the outcomes. A run too
@@ -122,6 +132,18 @@ export default function TemporalStage({ timeline, children, rows = [], width = 1
           )}
         </div>
       ))}
+
+      {/* Mobile only: the vertical field has no direction of its own, so the
+          operator cannot tell which way time runs. Two or three anchors on the
+          right edge, top = older, bottom = now. Deliberately not a miniature
+          timeline — no ticks, no bars, no scale. */}
+      <div className="bf-field__orient" aria-hidden="true">
+        <span>{hhmm(scale.from)}</span>
+        <i />
+        <span>{hhmm(scale.from + scale.spanMs / 2)}</span>
+        <i />
+        <span className="bf-field__orient-now">{nowInWindow ? "now" : hhmm(scale.to)}</span>
+      </div>
 
       {/* NOW crosses the whole stage; a live branch intersects it. */}
       {nowX != null && <div className="bf-now" style={{ left: nowX }}><span>now</span></div>}
