@@ -17,6 +17,16 @@ export function createLeaseManager({ now }) {
   if (typeof now !== "function") throw new Error("a clock function is required");
   /** intent_id -> lease */
   const leases = new Map();
+  /**
+   * intent_id -> monotonically increasing generation (spec V6.1 section 9).
+   *
+   * Compare-and-swap at claim time is not sufficient on its own. It stops two
+   * executors claiming at once; it does NOT stop an executor whose result was
+   * already in flight when its lease turned over. That late writer must keep
+   * its evidence and lose its authority, and only a fencing token can tell the
+   * difference between "this arrived late" and "this is current".
+   */
+  const generations = new Map();
   let counter = 0;
 
   const isActive = (lease, at) => lease && lease.released_at === null && lease.expires_at > at;
@@ -52,9 +62,13 @@ export function createLeaseManager({ now }) {
         // A recovered lease is a later ATTEMPT at the same work, not a new
         // piece of work and not a failure of the old one.
         attempt: existing ? existing.attempt + 1 : attempt,
+        // Never reused and never decreasing, including across release and
+        // re-claim by the same executor.
+        generation: (generations.get(intentId) ?? 0) + 1,
         released_at: null,
         ttl_ms: ttlMs,
       };
+      generations.set(intentId, lease.generation);
       leases.set(intentId, lease);
       return { ok: true, lease, recovered: Boolean(existing) };
     },
@@ -97,19 +111,49 @@ export function createLeaseManager({ now }) {
         .map((l) => ({ intent_id: l.intent_id, lease_id: l.lease_id, executor_id: l.executor_id, attempt: l.attempt }));
     },
 
+    /** The current fencing generation for an intent; 0 if never claimed. */
+    generation(intentId) {
+      return generations.get(intentId) ?? 0;
+    },
+
+    /**
+     * Is a write from this generation still authoritative?
+     *
+     * A stale generation may still carry valid evidence — that is the caller's
+     * business — but it may not mutate control-plane state.
+     */
+    fence(intentId, generation) {
+      const current = generations.get(intentId) ?? 0;
+      if (!Number.isFinite(generation)) return { ok: false, current, reason: "no fencing token" };
+      if (generation < current) {
+        return { ok: false, current, stale: true, reason: `generation ${generation} was superseded by ${current}` };
+      }
+      return { ok: true, current };
+    },
+
     holder(intentId) {
       const lease = leases.get(intentId);
       return isActive(lease, now()) ? lease : null;
     },
 
-    /** Only the lease holder may mutate working state. Everyone else may read. */
-    mayMutate(intentId, executorId) {
+    /**
+     * Only the lease holder may mutate working state. Everyone else may read.
+     *
+     * When a generation is supplied it is fenced too, so an executor that still
+     * holds a lease object from an earlier generation is refused even though
+     * its executor id matches.
+     */
+    mayMutate(intentId, executorId, generation = null) {
       const lease = this.holder(intentId);
       if (!lease) return { allowed: false, reason: "no active lease; working state is read-only" };
       if (lease.executor_id !== executorId) {
         return { allowed: false, reason: `working state is owned by ${lease.executor_id}` };
       }
-      return { allowed: true, lease_id: lease.lease_id };
+      if (generation !== null) {
+        const fenced = this.fence(intentId, generation);
+        if (!fenced.ok) return { allowed: false, reason: fenced.reason, stale: true };
+      }
+      return { allowed: true, lease_id: lease.lease_id, generation: lease.generation };
     },
 
     all() {
