@@ -32,25 +32,34 @@ const EXECUTION = ["control/dispatch.js", "control/simulate.js"];
 const FIXTURES = ["control/authority-fixture.js"];
 
 // --- a world that can be restarted --------------------------------------------
-function world({ role = "owner", shadowAudit } = {}) {
+function world({ role = "owner", shadowAudit, fault = null, readContext = null } = {}) {
   const storage = createMemoryStorage();
   const resolved = new Set();
   let principal = role ? { role, id: "fake-owner" } : null;
+  // The exception layer contract recovery depends on: idempotent for the SAME
+  // ruling, and it says who resolved it.
+  const resolvedBy = new Map();
   const exceptions = {
-    resolve(id) {
+    resolve(id, meta) {
       if (id !== BLOCKER) return { ok: false, reason: "refusing a different exception" };
+      const existing = resolvedBy.get(id);
+      if (existing && existing !== meta?.ruling_ref) return { ok: false, resolved_by: existing };
+      resolvedBy.set(id, meta?.ruling_ref ?? "unknown");
       resolved.add(id);
-      return { ok: true };
+      return { ok: true, resolved_by: meta?.ruling_ref ?? "unknown" };
     },
-    isResolved: (id) => resolved.has(id),
+    isResolved: (id) => resolvedBy.has(id),
+    resolvedBy,
   };
+  let faulty = fault;
   const build = () => createAuthorityEndpoint({
     authenticateCaller: () => principal, exceptions, now: () => AT, storage, shadowAudit,
+    faultInjector: faulty, readContext,
   });
   let endpoint = build();
   return {
     get endpoint() { return endpoint; },
-    restart() { endpoint = build(); return endpoint; },
+    restart() { faulty = null; endpoint = build(); return endpoint; },
     setPrincipal: (p) => { principal = p; },
     resolved, storage,
   };
@@ -89,9 +98,33 @@ const liveSource = fs.readFileSync(path.join(SRC, "LiveAuthorityView.jsx"), "utf
 const shellSource = fs.readFileSync(path.join(SRC, "AuthorityShell.jsx"), "utf8");
 record("live_route_accepts_fixture_state_controls",
   /["']state["']/.test(liveSource) || /params\.get\(\s*["']state["']/.test(shellSource) ? 1 : 0);
-// Authorize must go through the adapter, not a local step change.
+// Authorize must go through the real transaction path, not a local step change.
+// The call itself lives in the session module now, so the check follows it
+// there rather than grepping the shell for a string it no longer contains.
+const sessionSource = fs.readFileSync(path.join(SRC, "control/authority-session.js"), "utf8");
 record("authorize_bypasses_adapter_and_changes_local_state",
-  /adapter\.authorize\(/.test(shellSource) ? 0 : 1);
+  /authorizeFromContext\(/.test(shellSource) && /adapter\.authorize\(/.test(sessionSource) ? 0 : 1);
+
+// The management controls must be real transactions on the live route. The
+// previous build bound them to setNarrowed(true) / setRevoked(true), which
+// would have shown an authority change that never happened.
+record("live_simulated_management_mutations",
+  /setNarrowed\(true\)/.test(shellSource) || /setRevoked\(true\)/.test(shellSource) ? 1 : 0);
+record("live_amendments_go_through_transaction",
+  /amendAuthority\(/.test(shellSource) && /adapter\.authorize\(/.test(sessionSource) ? 1 : 0);
+
+// Async adapter reads must not happen during render.
+record("async_adapter_read_during_render",
+  /const (seed|existing|catalogue) = adapter\?\./.test(shellSource) ? 1 : 0);
+record("connected_live_shell_hydrates_async", /loadAuthorityContext\(/.test(shellSource) ? 1 : 0);
+
+// The canary consent fields must be covered by the policy identity.
+const draftSource = fs.readFileSync(path.join(SRC, "control/authority-draft.js"), "utf8");
+const canaryReviewed = { ...CANARY, success_condition: "reviewed condition here", operation: "run_verification" };
+record("canary_success_condition_covered_by_policy_identity",
+  policyIdentityOf(canaryReviewed) !== policyIdentityOf({ ...canaryReviewed, success_condition: "page opened once" }) ? 1 : 0);
+record("canary_operation_covered_by_policy_identity",
+  policyIdentityOf(canaryReviewed) !== policyIdentityOf({ ...canaryReviewed, operation: "prepare_patch" }) ? 1 : 0);
 
 // --- §20 negatives, each an attempt actually made ------------------------------
 const w = world({ role: "agent" });
@@ -116,9 +149,16 @@ record("wrong_exception_resolved", w.endpoint.handle("authorize", body({
   operation_id: "gov-wrongex", source_exception_id: "2026-08-17-sumzup-digest-budget-1747",
 })).ok ? 1 : 0);
 
+// A browser-supplied fault switch must be inert. Measured by sending one and
+// checking the transaction committed normally rather than stopping mid-phase.
+const faultProbe = world();
+const faultAttempt = faultProbe.endpoint.handle("authorize", { ...body({ operation_id: "gov-fault" }), __faultInjector: "after_resolution" });
+record("browser_controlled_fault_injection_accepted",
+  faultAttempt.ok && faultProbe.endpoint.observableState("goal:F3", BLOCKER).in_flight === 0 ? 0 : 1);
+
 // --- MEASURED, not asserted: does partial state survive a real failure? -------
-const crashWorld = world();
-crashWorld.endpoint.handle("authorize", { ...body({ operation_id: "gov-crash" }), __faultInjector: "after_resolution" });
+const crashWorld = world({ fault: "after_resolution" });
+crashWorld.endpoint.handle("authorize", body({ operation_id: "gov-crash" }));
 const beforeRecovery = crashWorld.endpoint.observableState("goal:F3", BLOCKER);
 const afterRecovery = crashWorld.restart().observableState("goal:F3", BLOCKER);
 record("partial_transaction_survived_failure",
@@ -153,6 +193,35 @@ const realBefore = fs.existsSync(realAuthorityPath) ? fs.readFileSync(realAuthor
 record("authority_writes_during_automated_tests",
   (fs.existsSync(realAuthorityPath) ? fs.readFileSync(realAuthorityPath, "utf8") : null) === realBefore ? 0 : 1);
 record("test_isolation_proven", durable.storage.snapshot().length > 0 && realBefore === null ? 1 : 0);
+
+
+// --- MEASURED: the journal fails closed rather than reading as empty ----------
+const { AuthorityStateUnavailable, createFileStorage } = await import("../src/continuity/control/authority-journal.js");
+let corruptTreatedAsEmpty = 0;
+try {
+  createFileStorage({ fs: { readFileSync: () => "{not json" }, path: "x" }).read();
+  corruptTreatedAsEmpty = 1;
+} catch (error) {
+  corruptTreatedAsEmpty = error instanceof AuthorityStateUnavailable ? 0 : 1;
+}
+record("corrupt_journal_treated_as_empty_authority", corruptTreatedAsEmpty);
+
+// --- MEASURED: the post-resolve / pre-journal window --------------------------
+const narrowWindow = world({ fault: "between_resolve_and_journal" });
+narrowWindow.endpoint.handle("authorize", body({ operation_id: "gov-narrowwindow" }));
+const midWindow = narrowWindow.endpoint.observableState("goal:F3", BLOCKER);
+const healed = narrowWindow.restart().observableState("goal:F3", BLOCKER);
+record("post_resolve_pre_journal_inconsistency",
+  healed.blocker_resolved !== healed.authority_visible ? 1 : 0);
+record("exception_recovery_verifies_same_ruling",
+  midWindow.blocker_resolved && healed.authority_visible ? 1 : 0);
+
+// --- MEASURED: V5 evidence survives a restart ---------------------------------
+const evidence = world();
+const evGrant = evidence.endpoint.handle("authorize", body({ operation_id: "gov-evidence" }));
+const evBefore = evidence.endpoint.materialEvents().events.length;
+const evAfter = evidence.restart().materialEvents().events.length;
+record("authority_v5_events_survive_restart", evBefore > 0 && evAfter === evBefore ? 1 : 0);
 
 // --- §20 positives, including a REAL bounded-task authorization ---------------
 let auditRequests = [];
@@ -197,7 +266,6 @@ record("bounded_task_enters_shadow_audit", auditRequests.some((r) => r.canary) ?
 record("bounded_task_audit_does_not_execute",
   auditRequests.every((r) => r.executes === false && r.dispatches === false) ? 1 : 0);
 
-record("hard_coded_governance_safety_counters", 0);
 record("review_adapter_can_write", createFixtureAuthorityAdapter().canWriteAuthority ? 1 : 0);
 
 // --- the real, non-mutating dry run -------------------------------------------
@@ -215,12 +283,15 @@ const { request: constructed, stripped_identity_fields } = sanitizeClientRequest
 const NEGATIVES = [
   "browser_global_object_can_provide_authenticator", "live_ui_imports_fixture_data",
   "live_route_accepts_fixture_state_controls", "authorize_bypasses_adapter_and_changes_local_state",
+  "live_simulated_management_mutations", "async_adapter_read_during_render",
+  "browser_controlled_fault_injection_accepted", "corrupt_journal_treated_as_empty_authority",
+  "post_resolve_pre_journal_inconsistency",
   "owner_spoof_accepted", "generic_ctn_authorization_accepted", "machine_ctn_authorization_accepted",
   "stale_preview_accepted", "stale_authority_revision_accepted", "duplicate_ruling_on_retry",
   "partial_transaction_survived_failure", "resolved_blocker_no_authority_states",
   "wrong_exception_resolved", "scope_refs_lost_on_round_trip",
   "authority_writes_during_automated_tests", "execution_dispatch_transports_reachable",
-  "review_adapter_can_write", "hard_coded_governance_safety_counters",
+  "review_adapter_can_write",
 ];
 const POSITIVES = [
   "audit_can_detect_a_writer", "supplied_session_object_stripped", "crash_window_was_actually_entered",
@@ -230,6 +301,9 @@ const POSITIVES = [
   "successful_narrow_creates_next_revision", "successful_revoke_creates_next_revision",
   "real_bounded_task_positive_control_exercised", "bounded_task_produces_declaration",
   "bounded_task_enters_shadow_audit", "bounded_task_audit_does_not_execute",
+  "live_amendments_go_through_transaction", "connected_live_shell_hydrates_async",
+  "canary_success_condition_covered_by_policy_identity", "canary_operation_covered_by_policy_identity",
+  "authority_v5_events_survive_restart", "exception_recovery_verifies_same_ruling",
 ];
 
 const report = {

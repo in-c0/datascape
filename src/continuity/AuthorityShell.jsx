@@ -17,11 +17,14 @@
 // comprehensible enough that a person can deliberately grant it, without having
 // read the control plane underneath?
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   CAPABILITIES, NEVER_AUTONOMOUS, authorize, composeEnvelope,
   createAuthorityDraft, policyIdentityOf, renderPreview, resolveScopeSelection,
 } from "./control/authority-draft.js";
+import {
+  amendAuthority, authorizeFromContext, availableControls, loadAuthorityContext,
+} from "./control/authority-session.js";
 import "./authority.css";
 
 const GRANTABLE = Object.keys(CAPABILITIES).filter((k) => !NEVER_AUTONOMOUS.includes(k));
@@ -31,26 +34,44 @@ export default function AuthorityShell({ adapter }) {
   // reports false because it HAS no writer, not because it was told to behave.
   const canWrite = Boolean(adapter?.canWriteAuthority);
 
-  // Everything below comes from the adapter. No fixture import, and no
-  // interpretation of `?state=` — those URL controls belong exclusively to the
-  // review route, which resolves them before constructing its adapter.
-  const seed = adapter?.seedDraft?.() ?? null;
-  const existing = adapter?.readCurrentAuthority?.() ?? null;
-  const catalogue = adapter?.scopeCatalogue?.() ?? [];
-  const suggestions = adapter?.suggestions?.() ?? [];
-  const startStep = adapter?.initialStep?.() ?? (existing ? "authorized" : "choose");
-
-  const [path, setPath] = useState(adapter?.initialPath?.() ?? null);
-  const [step, setStep] = useState(startStep);
-  const [draft, setDraft] = useState(() => seed || createAuthorityDraft({
+  // Everything comes from the adapter, and the LIVE adapter is ASYNCHRONOUS, so
+  // it is hydrated ONCE before the surface is usable. Calling these from render
+  // produced Promise objects against a real endpoint — and, worse, resolved the
+  // blocker id to undefined inside the transaction payload, so a live grant
+  // could have been built without its exception linkage.
+  const [context, setContext] = useState(null);
+  const [draft, setDraft] = useState(() => createAuthorityDraft({
     draft_id: "new", kind: "persistent_goal", statement: "", scope_refs: [],
   }));
-  const [scopeText, setScopeText] = useState(seed?.scope_label || "");
-  const [successCondition, setSuccessCondition] = useState(seed?.success_condition || "");
-  const [authority, setAuthority] = useState(existing);
+  const [path, setPath] = useState(null);
+  const [step, setStep] = useState("loading");
+  const [scopeText, setScopeText] = useState("");
+  const [successCondition, setSuccessCondition] = useState("");
+  const [authority, setAuthority] = useState(null);
   const [pending, setPending] = useState(false);
   const [failure, setFailure] = useState(null);
   const [paused, setPaused] = useState(false);
+
+  useEffect(() => {
+    let live = true;
+    loadAuthorityContext(adapter).then((loaded) => {
+      if (!live) return;
+      setContext(loaded);
+      if (loaded.seedDraft) {
+        setDraft(loaded.seedDraft);
+        setScopeText(loaded.seedDraft.scope_label || "");
+        setSuccessCondition(loaded.seedDraft.success_condition || "");
+      }
+      setAuthority(loaded.currentAuthority);
+      setPath(adapter?.initialPath?.() ?? null);
+      setStep(adapter?.initialStep?.() ?? (loaded.currentAuthority ? "authorized" : "choose"));
+    });
+    return () => { live = false; };
+  }, [adapter]);
+
+  const catalogue = context?.catalogue ?? [];
+  const suggestions = context?.suggestions ?? [];
+  const controls = availableControls({ canWrite, pausePersisted: false });
 
   const revoked = authority?.state === "revoked";
   const narrowed = authority?.state === "narrowed";
@@ -83,6 +104,16 @@ export default function AuthorityShell({ adapter }) {
    * of a transaction — that was the defect that made the previous build a mock
    * wearing a live binding.
    */
+  /** The exact object the owner is agreeing to, canary fields included. */
+  const reviewedDraft = useMemo(() => ({
+    ...draft,
+    scope_refs: scope.resolved ? scope.scope_refs : [],
+    scope_label: scope.resolved ? scope.scope_label : null,
+    ...(path === "canary"
+      ? { success_condition: successCondition, operation: draft.operation ?? "run_verification" }
+      : {}),
+  }), [draft, scope, path, successCondition]);
+
   async function onAuthorize() {
     setFailure(null);
     if (!canWrite) {
@@ -94,12 +125,10 @@ export default function AuthorityShell({ adapter }) {
     }
     setPending(true);
     try {
-      const result = await adapter.authorize({
-        operation_id: draft.operation_id || `auth-${draft.draft_id}-${policyIdentityOf(draft)}`,
-        authorization_action: path === "canary" ? "authorize_bounded_task" : "authorize_goal",
-        draft: { ...draft, scope_refs: scope.resolved ? scope.scope_refs : [], success_condition: successCondition || undefined },
-        policy_identity: policyIdentityOf({ ...draft, scope_refs: scope.resolved ? scope.scope_refs : [] }),
-        source_exception_id: adapter.readBlocker?.()?.id ?? null,
+      const result = await authorizeFromContext({
+        adapter, context, draft: reviewedDraft,
+        policyIdentity: policyIdentityOf(reviewedDraft),
+        action: path === "canary" ? "authorize_bounded_task" : "authorize_goal",
       });
       if (!result?.ok) {
         setFailure(result?.failure === "stale_preview"
@@ -108,9 +137,39 @@ export default function AuthorityShell({ adapter }) {
         if (result?.failure === "stale_preview") setStep("review");
         return;
       }
-      // Read the PERSISTED state back rather than assuming the draft succeeded.
-      setAuthority(await adapter.readCurrentAuthority(result.goal_id));
+      setAuthority(result.persisted);
       setStep("authorized");
+    } finally {
+      setPending(false);
+    }
+  }
+
+  /** Narrow and revoke are REAL transactions on the live route. */
+  async function onAmend(action, scopeRefs = null) {
+    setFailure(null);
+    if (!canWrite) {
+      setAuthority(adapter?.simulate?.(action === "revoke_authority" ? "revoke" : "narrow"));
+      return;
+    }
+    setPending(true);
+    try {
+      const result = await amendAuthority({
+        adapter,
+        goalId: authority?.goal?.goal_id ?? authority?.record?.goal?.goal_id,
+        expectedRevision: authority?.revision,
+        action, scopeRefs,
+      });
+      if (!result?.ok) {
+        setFailure(result?.failure === "stale_revision"
+          ? "This authority changed elsewhere. Reloading the current version."
+          : result?.reason || "the change did not complete");
+        if (result?.failure === "stale_revision") {
+          const reloaded = await loadAuthorityContext(adapter);
+          setAuthority(reloaded.currentAuthority);
+        }
+        return;
+      }
+      setAuthority(result.persisted);
     } finally {
       setPending(false);
     }
@@ -128,6 +187,10 @@ export default function AuthorityShell({ adapter }) {
           <div className="au__brand">Datascape <span>/ Autonomy</span></div>
           <a className="au__back" href="?view=briefing">Back to briefing</a>
         </header>
+
+        {step === "loading" && (
+          <div className="au__ask"><h1>Loading…</h1><p>Reading the current authority.</p></div>
+        )}
 
         {step === "choose" && (
           <Choose onPick={(p) => { setPath(p); setStep("goal"); }} />
@@ -326,10 +389,11 @@ export default function AuthorityShell({ adapter }) {
 
         {step === "authorized" && (
           <Authorized
-            preview={preview} revoked={revoked} narrowed={narrowed} paused={paused} canWrite={canWrite}
+            preview={preview} revoked={revoked} narrowed={narrowed} paused={paused}
+            canWrite={canWrite} controls={controls} pending={pending} failure={failure}
             onPause={() => setPaused((p) => !p)}
-            onNarrow={() => setNarrowed(true)}
-            onRevoke={() => setRevoked(true)}
+            onNarrow={() => onAmend("narrow_authority", ["semantic-centre:continuity"])}
+            onRevoke={() => onAmend("revoke_authority")}
             onEdit={() => setStep("goal")}
           />
         )}
@@ -401,7 +465,7 @@ function Preview({ preview }) {
   );
 }
 
-function Authorized({ preview, revoked, narrowed, paused, canWrite, onPause, onNarrow, onRevoke, onEdit }) {
+function Authorized({ preview, revoked, narrowed, paused, canWrite, controls, pending, failure, onPause, onNarrow, onRevoke, onEdit }) {
   const state = revoked ? "off" : paused ? "paused" : "on";
   const label = revoked ? "Revoked — no new work will start"
     : paused ? "Paused — running work stops at its next safe point"
@@ -430,14 +494,19 @@ function Authorized({ preview, revoked, narrowed, paused, canWrite, onPause, onN
       </div>
       {!revoked && (
         <div className="au__acts">
-          <button className="au-btn au-btn--ghost" type="button" onClick={onPause}>
-            {paused ? "Resume autonomous work" : "Pause autonomous work"}
-          </button>
-          <button className="au-btn au-btn--ghost" type="button" onClick={onEdit}>Change what it may do</button>
-          {!narrowed && <button className="au-btn au-btn--ghost" type="button" onClick={onNarrow}>Narrow scope</button>}
-          <button className="au-btn au-btn--danger" type="button" onClick={onRevoke}>Stop entirely</button>
+          {/* Pause has no persistence yet, so the live route HIDES it rather
+              than offering a control that could only pretend. */}
+          {controls?.pause && (
+            <button className="au-btn au-btn--ghost" type="button" onClick={onPause} disabled={pending}>
+              {paused ? "Resume autonomous work" : "Pause autonomous work"}
+            </button>
+          )}
+          <button className="au-btn au-btn--ghost" type="button" onClick={onEdit} disabled={pending}>Change what it may do</button>
+          {!narrowed && <button className="au-btn au-btn--ghost" type="button" onClick={onNarrow} disabled={pending}>Narrow scope</button>}
+          <button className="au-btn au-btn--danger" type="button" onClick={onRevoke} disabled={pending}>Stop entirely</button>
         </div>
       )}
+      {failure && <p className="au__failure"><b>Nothing changed.</b> {failure}</p>}
       {!canWrite && (
         <p className="au__reviewnote">Review mode — fixture state only. No real authority exists or is created here.</p>
       )}

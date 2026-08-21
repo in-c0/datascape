@@ -136,6 +136,13 @@ export function policyIdentityOf(draft) {
     stop_conditions: [...draft.stop_conditions].sort(),
     kind: draft.kind,
     credential_policy: draft.credential_policy,
+    // The bounded-canary fields. They flow straight into the WorkDeclaration
+    // and therefore into admission, so leaving them out reintroduced exactly
+    // the TOCTOU this identity exists to prevent: the owner reads "zero console
+    // errors", the success condition becomes "page opened once", and the
+    // identity still matches.
+    success_condition: draft.success_condition ?? null,
+    operation: draft.operation ?? null,
   });
   let h1 = 0x811c9dc5;
   let h2 = 0x01000193;

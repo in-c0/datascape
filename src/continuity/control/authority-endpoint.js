@@ -28,13 +28,15 @@ export const FAILURES = [
  * check the page cannot participate in. It receives NOTHING from the request,
  * which is what makes it un-spoofable rather than merely un-spoofed.
  */
-export function createAuthorityEndpoint({ authenticateCaller, exceptions, now, storage = null, shadowAudit = null, readContext = null }) {
+export function createAuthorityEndpoint({ authenticateCaller, exceptions, now, storage = null, shadowAudit = null, readContext = null, faultInjector = null }) {
   if (typeof authenticateCaller !== "function") {
     throw new Error("the authority endpoint requires a host-provided caller authenticator");
   }
 
   const boundary = createOwnerBoundary({ authenticate: () => authenticateCaller() });
-  const store = createAuthorityStore({ boundary, exceptions, now, storage });
+  // faultInjector is a construction-time TEST capability. Nothing in a request
+  // can reach it.
+  const store = createAuthorityStore({ boundary, exceptions, now, storage, faultInjector });
 
   const fail = (failure, reason, extra = {}) => ({ ok: false, failure, reason, ...extra });
 
@@ -57,7 +59,6 @@ export function createAuthorityEndpoint({ authenticateCaller, exceptions, now, s
       goal_id: request.goal_id,
       expected_revision: request.expected_authority_revision,
       scope_refs: request.scope_refs,
-      __faultInjector: rawBody.__faultInjector ?? null,
     });
 
     if (!result.ok) {

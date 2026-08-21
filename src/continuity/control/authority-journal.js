@@ -40,10 +40,40 @@ export function createMemoryStorage(seed = []) {
   };
 }
 
-/** A filesystem backend: one JSON document, rewritten atomically via a temp file. */
+/**
+ * A filesystem backend: one JSON document, rewritten atomically via a temp file.
+ *
+ * FAILS CLOSED. Only an absent file means "no authority yet". A corrupt,
+ * unreadable or permission-denied journal means the authority state is
+ * UNAVAILABLE — reading it as an empty list would silently convert a storage
+ * fault into "the owner never authorized anything", which is the most dangerous
+ * possible misreading of this file.
+ */
+export class AuthorityStateUnavailable extends Error {
+  constructor(cause) {
+    super(`authority state is unavailable: ${cause}`);
+    this.name = "AuthorityStateUnavailable";
+    this.fail_closed = true;
+  }
+}
+
 export function createFileStorage({ fs, path: file }) {
   const load = () => {
-    try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return []; }
+    let raw;
+    try {
+      raw = fs.readFileSync(file, "utf8");
+    } catch (error) {
+      // Absence is the ONLY benign read failure.
+      if (error?.code === "ENOENT") return [];
+      throw new AuthorityStateUnavailable(error?.code || String(error.message || error));
+    }
+    try {
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) throw new Error("journal is not an array");
+      return parsed;
+    } catch (error) {
+      throw new AuthorityStateUnavailable(`corrupt journal (${error.message})`);
+    }
   };
   const save = (entries) => {
     const tmp = `${file}.tmp`;
@@ -74,11 +104,12 @@ export function createFileStorage({ fs, path: file }) {
  * existing storage behaves as the same store — which is what "survives a
  * restart" has to mean.
  */
-export function createAuthorityJournal({ storage, exceptions, now }) {
+export function createAuthorityJournal({ storage, exceptions, now, faultInjector = null }) {
+  const injectedFault = faultInjector;
   function recover() {
     const recovered = [];
     for (const entry of storage.read()) {
-      if (entry.phase === "committed" || entry.phase === "aborted") continue;
+      if (["committed", "aborted", "inconsistent"].includes(entry.phase)) continue;
 
       if (entry.phase === "preparing") {
         // The authority record never became durable. Nothing outside this
@@ -92,10 +123,27 @@ export function createAuthorityJournal({ storage, exceptions, now }) {
       // authority_written or resolved: roll FORWARD. The exception may already
       // have been resolved where the outside world could see it, and undoing
       // that would leave her blocker mysteriously reopened with no explanation.
+      //
+      // The narrow window this covers: resolve() SUCCEEDED and the process died
+      // before the journal recorded it. The entry still says authority_written,
+      // so recovery calls resolve() again — which is only safe because the
+      // contract below requires idempotency FOR THE SAME RULING.
       if (entry.phase === "authority_written" && entry.source_exception_id) {
+        const rulingRef = entry.record?.ruling?.ref;
         const resolution = exceptions.resolve(entry.source_exception_id, {
-          ruling_ref: entry.record?.ruling?.ref, at: now(), recovered: true,
+          ruling_ref: rulingRef, at: now(), recovered: true,
         });
+        if (resolution?.resolved_by && resolution.resolved_by !== rulingRef) {
+          // Someone else's ruling closed this blocker. That is an inconsistent
+          // state, not a race to win: fail closed rather than stacking a second
+          // authority on top of a resolution that meant something different.
+          storage.update(entry.operation_id, {
+            phase: "inconsistent",
+            error: `resolved by ${resolution.resolved_by}, expected ${rulingRef}`,
+          });
+          recovered.push({ operation_id: entry.operation_id, outcome: "inconsistent" });
+          continue;
+        }
         if (!resolution?.ok) {
           // Still not resolvable. Leave it mid-flight rather than inventing an
           // outcome; the next open() will try again.
@@ -128,7 +176,14 @@ export function createAuthorityJournal({ storage, exceptions, now }) {
      * `build()` produces the record. It runs AFTER the preparing entry exists,
      * so even a crash inside it leaves a journal trace rather than silence.
      */
-    transact({ operation_id, source_exception_id = null, build, faultInjector = null }) {
+    /**
+     * `faultInjector` is a TEST capability supplied at construction, never by a
+     * request. A browser-controlled fault switch would let an authenticated
+     * owner — or anything that could reach the endpoint — steer the transaction
+     * into a half-written phase on purpose.
+     */
+    transact({ operation_id, source_exception_id = null, build }) {
+      const faultInjector = injectedFault;
       const existing = this.completed(operation_id);
       if (existing) return { ok: true, replayed: true, record: existing.record, revision: existing.record.revision };
 
@@ -159,6 +214,11 @@ export function createAuthorityJournal({ storage, exceptions, now }) {
           storage.update(operation_id, { phase: "aborted", error: resolution?.reason });
           return { ok: false, outcome: "resolution_failed", reason: resolution?.reason || "the exception could not be resolved" };
         }
+        if (faultInjector === "between_resolve_and_journal") {
+          // The narrowest window in the whole design: the outside world has
+          // seen the resolution and the journal does not know it yet.
+          return { ok: false, outcome: "crashed", reason: "injected fault between resolution and journal" };
+        }
         storage.update(operation_id, { phase: "resolved" });
       }
       if (faultInjector === "after_resolution") {
@@ -168,6 +228,11 @@ export function createAuthorityJournal({ storage, exceptions, now }) {
       // 3. The committed marker. This is what makes the authority visible.
       storage.update(operation_id, { phase: "committed", committed_at: now() });
       return { ok: true, replayed: false, record: record.value, revision: record.value.revision };
+    },
+
+    /** Every committed entry, oldest first — the durable source of material events. */
+    allCommitted() {
+      return committed().map((e) => ({ ...e }));
     },
 
     /** Every committed revision for a goal, oldest first. */

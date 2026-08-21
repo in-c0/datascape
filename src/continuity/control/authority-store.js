@@ -57,13 +57,44 @@ export function createOwnerBoundary({ authenticate }) {
  * `storage` is injected, so a test can build two stores over one backing store
  * and that is exactly what a restart is.
  */
-export function createAuthorityStore({ boundary, exceptions, now, verifier = verifyGoalAuthority, storage = null }) {
+export function createAuthorityStore({ boundary, exceptions, now, verifier = verifyGoalAuthority, storage = null, faultInjector = null }) {
   const journal = createAuthorityJournal({
     storage: storage ?? createMemoryStorage(),
     exceptions,
     now,
+    // A CONSTRUCTION-time test capability. It was previously read off the
+    // request body, which made an internal fault switch reachable by anything
+    // that could reach the endpoint — including an authenticated owner's
+    // browser. Fault injection is not a feature.
+    faultInjector,
   });
-  const events = [];
+  /**
+   * Material events are DERIVED from committed revisions rather than
+   * accumulated in a process-local array. An in-memory list meant that after a
+   * restart the authority existed but the semantic evidence of the owner's
+   * ruling did not — which contradicts the invariant that authority changes are
+   * historically meaningful.
+   */
+  function materialMutations() {
+    const seen = new Map();
+    for (const entry of journal.allCommitted()) {
+      const record = entry.record;
+      if (!record?.goal) continue;
+      const key = `${record.goal.goal_id}:rev${record.revision}`;
+      if (seen.has(key)) continue;
+      seen.set(key, {
+        type: "operation_completed",
+        intent_id: record.goal.goal_id,
+        operation_id: `${record.ruling.ref}:rev${record.revision}`,
+        at: new Date(record.authorized_at).toISOString(),
+        trigger: "owner",
+        text: record.state === "revoked" ? "Autonomy revoked by the owner."
+          : record.state === "narrowed" ? "Autonomy narrowed by the owner."
+            : `Autonomy authorized for ${record.scope_label || record.scope_refs.join(", ")}.`,
+      });
+    }
+    return [...seen.values()];
+  }
 
   function buildGrant(request, at) {
     const { draft } = request;
@@ -146,9 +177,9 @@ export function createAuthorityStore({ boundary, exceptions, now, verifier = ver
     /**
      * Authorize, narrow or revoke. One entry point, one durable transaction.
      *
-     * `faultInjector` exists so the governance harness can MEASURE crash
-     * behaviour instead of asserting a zero. A hard-coded counter is the same
-     * empty green as a capture harness passing over blank frames.
+     * Crash behaviour is MEASURED by the governance harness rather than
+     * asserted, via a fault injector supplied when this store is constructed —
+     * never by anything in a request.
      */
     commit(request) {
       if (!request.operation_id) return { ok: false, reason: "an authorization requires an operation_id" };
@@ -172,23 +203,10 @@ export function createAuthorityStore({ boundary, exceptions, now, verifier = ver
         // An amendment resolves no exception; only the original grant does.
         source_exception_id: amending ? null : request.source_exception_id ?? null,
         build: () => (amending ? buildAmend(request, at) : buildGrant(request, at)),
-        faultInjector: request.__faultInjector ?? null,
       });
       if (!result.ok) return result;
 
       const record = result.record;
-      if (!result.replayed) {
-        events.push({
-          type: "operation_completed",
-          intent_id: record.goal.goal_id,
-          operation_id: `${record.ruling.ref}:rev${record.revision}`,
-          at: new Date(at).toISOString(),
-          trigger: "owner",
-          text: record.state === "revoked" ? "Autonomy revoked by the owner."
-            : record.state === "narrowed" ? "Autonomy narrowed by the owner."
-              : `Autonomy authorized for ${record.scope_label || record.scope_refs.join(", ")}.`,
-        });
-      }
 
       return {
         ok: true,
@@ -217,7 +235,7 @@ export function createAuthorityStore({ boundary, exceptions, now, verifier = ver
      * edits and preview navigation emit nothing at all.
      */
     materialEvents() {
-      return bridge(events, { source_system: "continuity.authority" });
+      return bridge(materialMutations(), { source_system: "continuity.authority" });
     },
   };
 }
