@@ -102,6 +102,28 @@ export function preflightFromManifest({ liveDir = HERE, stateDir = STATE_DIR() }
   };
 }
 
+/**
+ * The authority subsystem's gate, read from the same manifest.
+ *
+ * Kept here rather than imported from the deploy tool for the same reason the
+ * base preflight is: this file must load on a host where the security layer
+ * does not.
+ */
+export function manifestAuthorityGate({ liveDir = HERE, stateDir = STATE_DIR() } = {}) {
+  const manifest = JSON.parse(read(path.join(stateDir, "deployed.json")) || "null");
+  const recorded = manifest?.authority_files ?? null;
+  if (!recorded || !Array.isArray(recorded) || recorded.length === 0) {
+    return { ok: false, reason: "this host has no reviewed authority subsystem deployed" };
+  }
+  const bad = recorded.filter((entry) => {
+    const live = read(path.join(liveDir, entry.dest));
+    return live === null || sha(live) !== entry.hash;
+  }).map((entry) => entry.dest);
+  return bad.length
+    ? { ok: false, reason: `the authority artifact does not match this deployment: ${bad.join(", ")}` }
+    : { ok: true };
+}
+
 function isLoopbackHost(hostHeader) {
   if (!hostHeader) return false;
   const host = String(hostHeader).trim().toLowerCase();
@@ -187,12 +209,34 @@ export async function startLiveHost({
   const url = pathToFileURL(path.resolve(liveDir, "_continuity", "briefing-server-core.mjs")).href;
   const core = await import(url);
   const deps = makeDeps ? await makeDeps(core) : core.createOwnerRulingDeps();
-  const server = core.createServer(deps);
+
+  // The AUTHORITY subsystem is gated separately and composed dynamically. A
+  // broken or absent authority build must not be able to take her working
+  // owner-ruling host down with it, so nothing here is imported unless its own
+  // gate passes — and the core never references it at all.
+  let authority = null;
+  let authorityReason = null;
+  const authorityGate = manifestAuthorityGate({ liveDir, stateDir });
+  if (authorityGate.ok) {
+    try {
+      const mod = await import(pathToFileURL(path.resolve(liveDir, "_authority", "authority-host.mjs")).href);
+      authority = mod.createAuthorityHost({ presence: deps.presence, now: deps.now });
+    } catch (error) {
+      authority = null;
+      authorityReason = `the authority subsystem failed to load: ${error.message}`;
+    }
+  } else {
+    authorityReason = authorityGate.reason;
+  }
+
+  const server = core.createServer(deps, { authority, authorityReason });
   await new Promise((resolve) => server.listen(port, host, resolve));
 
   return {
     mode: "owner_rulings", gate, server, core, deps, port: server.address().port,
     owner_rulings: true, security_runtime_imported: true,
+    authority_available: Boolean(authority),
+    authority_reason: authorityReason,
     close: () => new Promise((resolve) => server.close(resolve)),
   };
 }

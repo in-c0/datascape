@@ -372,7 +372,21 @@ const REFUSAL_STATUS = {
   prompt_lockout: 429,
 }
 
-export function createServer(deps = null, { ownerRulings = true, unverifiedReason = null } = {}) {
+/** Everything under this prefix belongs to the authority subsystem. */
+export const AUTHORITY_PREFIX = "/__continuity/authority"
+
+/**
+ * @param authority an object with `handle(req, res, url, ctx) -> boolean`, or
+ *   null. NULL IS THE DEFAULT AND THE SAFE STATE: the authority routes answer
+ *   503 and this file never learns what they would have done.
+ *
+ *   The core is the live owner-ruling runtime. It must not statically import
+ *   authority modules, because a missing or corrupt authority build would then
+ *   stop the base host from loading at all — taking her working inbox controls
+ *   down with a subsystem she was not even using. The entry point composes the
+ *   two dynamically, after each has passed its own preflight.
+ */
+export function createServer(deps = null, { ownerRulings = true, unverifiedReason = null, authority = null, authorityReason = null } = {}) {
   // Built once per server, not per request: the prompt budget and the
   // one-outstanding-prompt rule are only meaningful if they are shared.
   //
@@ -399,6 +413,21 @@ export function createServer(deps = null, { ownerRulings = true, unverifiedReaso
 
       if (req.method === "GET" && url.pathname === "/api/decisions") {
         return send(res, 200, { decisions: readDecisions({ limit: 40 }) }, origin)
+      }
+
+      if (url.pathname === AUTHORITY_PREFIX || url.pathname.startsWith(`${AUTHORITY_PREFIX}/`)) {
+        if (!authority) {
+          // Independently gated: the exception route above is unaffected.
+          return send(res, 503, {
+            error: "authority_unavailable",
+            mutation_performed: false,
+            detail: authorityReason
+              || "The authority subsystem is not available on this host. Owner rulings are unaffected.",
+          }, origin)
+        }
+        const handled = await authority.handle(req, res, url, { origin, send })
+        if (handled) return undefined
+        return send(res, 404, { error: "not found" }, origin)
       }
 
       if (req.method === "POST" && url.pathname === "/api/act") {

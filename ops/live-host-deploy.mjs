@@ -73,6 +73,19 @@ export const ARTIFACT = [
 ];
 
 /**
+ * The AUTHORITY artifact — a separate reviewed group, deployed to `_authority/`.
+ *
+ * Separate because a broken authority build must not be able to stop the base
+ * owner-ruling host from loading. Its files are hash-recorded independently, and
+ * the entry point gates them independently, so "authority is broken" and "the
+ * host is broken" stay different sentences.
+ *
+ * Empty until the authority routes land; the machinery around it is built and
+ * tested first so the gate exists before the thing it gates.
+ */
+export const AUTHORITY_ARTIFACT = [];
+
+/**
  * Host dependencies: not ours to version, but they decide whether an owner
  * ruling actually lands, so their bytes are recorded as deployment evidence.
  */
@@ -308,6 +321,45 @@ export function verifyAgainstCommit({ commit, liveDir = liveDir_(), only = null 
     };
   });
   return { ok: files.every((f) => f.matches), commit: resolved, files };
+}
+
+/**
+ * The AUTHORITY subsystem's own gate.
+ *
+ * Deliberately separate from `preflight()`. A caller asks this question after
+ * the base gate has already passed, and a "no" here disables one route rather
+ * than the host.
+ */
+export function authorityPreflight({ liveDir = liveDir_() } = {}) {
+  const manifest = JSON.parse(read(MANIFEST()) || "null");
+  const recorded = manifest?.authority_files ?? null;
+
+  if (!AUTHORITY_ARTIFACT.length) {
+    return { ok: false, reason: "no authority artifact is part of this release yet", files: [], expected: 0 };
+  }
+  if (!recorded) {
+    return { ok: false, reason: "this deployment recorded no authority artifact", files: [], expected: AUTHORITY_ARTIFACT.length };
+  }
+
+  const files = AUTHORITY_ARTIFACT.map((entry) => {
+    const live = read(path.join(liveDir, entry.dest));
+    const expected = recorded.find((f) => f.dest === entry.dest);
+    return {
+      dest: entry.dest,
+      present: live !== null,
+      matches: live !== null && Boolean(expected) && sha(live) === expected.hash,
+    };
+  });
+  const missing = files.filter((f) => !f.present).map((f) => f.dest);
+  const drifted = files.filter((f) => f.present && !f.matches).map((f) => f.dest);
+
+  return {
+    ok: missing.length === 0 && drifted.length === 0,
+    files, missing, drifted, expected: AUTHORITY_ARTIFACT.length,
+    reason: missing.length ? `authority artifact incomplete: missing ${missing.join(", ")}`
+      : drifted.length ? `authority artifact does not match this deployment: ${drifted.join(", ")}`
+      : null,
+  };
 }
 
 /**

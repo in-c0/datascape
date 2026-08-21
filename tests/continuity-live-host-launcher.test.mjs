@@ -476,3 +476,44 @@ test("presence: the deployed artifact ships the coordinator", async () => {
     assert.equal(world.deployMod.preflight({ liveDir: world.live }).ok, true);
   } finally { await world.close(); }
 });
+
+// ---------------------------------------------------------------------------
+// The authority subsystem is gated independently of the host
+// ---------------------------------------------------------------------------
+
+test("authority: an absent subsystem returns 503 and leaves /api/act live", async () => {
+  const world = await deployedWorld();
+  try {
+    const started = await world.launch();
+    assert.equal(started.mode, "owner_rulings", "the base host is unaffected");
+    assert.equal(started.authority_available, false);
+    assert.match(started.authority_reason, /no reviewed authority subsystem/);
+
+    for (const route of ["/__continuity/authority", "/__continuity/authority/unlock_read"]) {
+      const response = await fetch(`http://127.0.0.1:${started.port}${route}`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+      });
+      assert.equal(response.status, 503, route);
+      const body = await response.json();
+      assert.equal(body.error, "authority_unavailable");
+      assert.equal(body.mutation_performed, false);
+    }
+
+    // The whole point: her owner rulings still work while authority does not.
+    const id = world.fixture("2026-08-22-authority-absent");
+    const ruled = await world.act({ id, action: "reply_done", operation_id: "op-authority-absent" });
+    assert.equal(ruled.status, 200, JSON.stringify(ruled.body));
+    assert.equal(world.amendments(id), 1);
+    assert.equal(world.broker.calls.length, 1);
+  } finally { await world.close(); }
+});
+
+test("authority: the base core never references an authority module", () => {
+  const core = fs.readFileSync(new URL("../ops/live-host/briefing-server-core.mjs", import.meta.url), "utf8");
+  const imports = core.match(/^import[\s\S]*?from\s+["'][^"']+["']/gm) ?? [];
+  // A static import of authority runtime would mean a corrupt authority build
+  // stops the live owner-ruling host from loading at all.
+  assert.deepEqual(imports.filter((line) => /_authority|authority-host/.test(line)), []);
+  assert.ok(!/_authority\//.test(core.replace(/^\s*\/\/.*$/gm, "")),
+    "the core knows a URL prefix, not a module");
+});
