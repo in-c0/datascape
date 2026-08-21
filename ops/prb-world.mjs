@@ -4,14 +4,15 @@
 // MEASURES the same transport the gate runs against, rather than restating
 // numbers a human typed. A report whose figures are not produced by the code
 // they describe is an opinion with a table around it.
-import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 const REPO = process.cwd();
-const REAL_HOST_OPS = "D:/Projects/_ship_inbox/ops";
+// Overridable so a run can PROVE the stand-in path works rather than assuming
+// CI exercises it. A gate whose fallback has never executed is a guess.
+const REAL_HOST_OPS = process.env.PRB_HOST_OPS || "D:/Projects/_ship_inbox/ops";
 
 /** The reviewed security layer, staged exactly as deployment would stage it. */
 export const ARTIFACT = [
@@ -83,12 +84,11 @@ export async function acceptanceWorld() {
     fs.copyFileSync(path.join(REPO, entry.source), path.join(ops, entry.dest));
   }
   const dependencies = [
-    installHostDependency(ops, "exception.mjs", null),
+    installHostDependency(ops, "exception.mjs",
+      fs.readFileSync(path.join(REPO, "ops", "prb-exception-stand-in.mjs"), "utf8")),
     installHostDependency(ops, "mustread.mjs", MINIMAL_MUSTREAD),
   ];
   fs.writeFileSync(path.join(ops, "briefing.mjs"), STUB_BRIEFING);
-  assert.ok(fs.existsSync(path.join(ops, "exception.mjs")),
-    "the exception layer must be present — it is the component that changes owner-gated state");
 
   process.env.EXCEPTION_INBOX = inbox;
   process.env.BRIEFING_DECISIONS = path.join(dir, "decisions");

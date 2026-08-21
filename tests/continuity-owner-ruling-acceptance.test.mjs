@@ -313,3 +313,17 @@ test("acceptance: reads are unaffected by any of this", async () => {
     assert.equal(world.broker.calls.length, 0, "reading her briefing must never prompt her");
   } finally { await world.close(); }
 });
+
+test("acceptance: the world records which exception implementation it exercised", async () => {
+  const world = await acceptanceWorld();
+  try {
+    const store = world.dependencies.find((d) => d.name === "exception.mjs");
+    // "The gate passed" means less if the component that changes owner-gated
+    // state was a stand-in and nobody said which.
+    assert.ok(["real host", "stand-in"].includes(store.source));
+    const id = fixture(world);
+    await world.act({ id, action: "dismiss", operation_id: "op-store" });
+    assert.equal(world.amendments(id), 1);
+    assert.equal(world.status(id), "resolved");
+  } finally { await world.close(); }
+});

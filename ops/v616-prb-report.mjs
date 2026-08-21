@@ -181,6 +181,15 @@ async function run() {
     } catch { return []; }
   })();
 
+  // Which exception implementation the gate actually exercised. Stated, because
+  // "the acceptance suite passed" means less if the component that changes
+  // owner-gated state was a stand-in and nobody said so.
+  const store = await (async () => {
+    const world = await acceptanceWorld();
+    try { return world.dependencies.find((d) => d.name === "exception.mjs").source; }
+    finally { await world.close(); }
+  })();
+
   const head = git(["rev-parse", "HEAD"]);
   const tests = (() => {
     try {
@@ -236,6 +245,12 @@ async function run() {
       retry_mutation_delta: idempotent.replay_write_delta,
       retry_replayed_original: idempotent.replayed ? "yes" : "no",
       semantic_collision_status: idempotent.collision_status,
+    },
+    EXCEPTION_STORE: {
+      implementation_exercised: store,
+      note: store === "real host"
+        ? "the real _ship_inbox exception layer, against an isolated directory"
+        : "faithful stand-in (ops/prb-exception-stand-in.mjs) — _ship_inbox absent here",
     },
     REAL_WORLD_READ_ONLY: {
       real_v6_blocker_exists: blockers.length > 0 ? "yes" : "no",
