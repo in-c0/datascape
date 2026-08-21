@@ -16,12 +16,13 @@ import crypto from "node:crypto";
 import path from "node:path";
 import process from "node:process";
 
-import {
-  createPromptBudget, createRulingJournal, createRulingJournalStorage,
-  OWNER_ACTIONS, performOwnerRuling,
-} from "../src/continuity/control/owner-ruling.js";
-import { createOwnerPresenceVerifier } from "../src/continuity/control/owner-presence.js";
-import { createWindowsOwnerPresenceBroker } from "../src/continuity/control/owner-presence-windows.js";
+// The orchestration and the policy come from the repo, because argument parsing
+// and the withdraw/rule split are this CLI's own logic. The SECURITY layer does
+// not: `realDeps()` loads it from the deployed host, so a manual owner ruling
+// runs the same reviewed bytes the HTTP route does. Importing the orchestrator
+// from here would reintroduce exactly the drift the deployment rule exists to
+// prevent — a security layer read out of a mutable working tree.
+import { OWNER_ACTIONS, performOwnerRuling } from "../src/continuity/control/owner-ruling.js";
 import { authorizeTransition, LANE_WITHDRAWAL_STATUS } from "../src/continuity/control/owner-ruling-policy.js";
 
 export const USAGE = [
@@ -99,10 +100,18 @@ export async function runOwnerRule(argv, deps) {
 
 /** The real dependencies. Built only when the CLI is actually invoked. */
 export async function realDeps({ liveDir = "D:/Projects/_ship_inbox/ops", now = () => Date.now() } = {}) {
-  const host = await import(`${path.resolve(liveDir, "briefing-server.mjs").split(path.sep).join("/")}`);
+  const url = (file) => `file:///${path.resolve(liveDir, file).split(path.sep).join("/")}`;
+  const host = await import(url("briefing-server.mjs"));
+  // The DEPLOYED security layer, not the repo's copy of it.
+  const ruling = await import(url("_continuity/owner-ruling.js"));
+  const presence = await import(url("_continuity/owner-presence.js"));
+  const windows = await import(url("_continuity/owner-presence-windows.js"));
+
   const journalFile = process.env.OWNER_RULING_JOURNAL
     || path.join(process.env.LOCALAPPDATA || liveDir, "datascape", "live-host", "owner-rulings.json");
-  const journal = createRulingJournal({ storage: createRulingJournalStorage(journalFile), now });
+  // The same journal file the host uses, so a CLI retry of a ruling the browser
+  // already completed replays instead of prompting her twice.
+  const journal = ruling.createRulingJournal({ storage: ruling.createRulingJournalStorage(journalFile), now });
   journal.recover(host.readException);
 
   return {
@@ -111,11 +120,11 @@ export async function realDeps({ liveDir = "D:/Projects/_ship_inbox/ops", now = 
     applyMutation: host.applyOwnerMutation,
     withdraw: host.withdrawOwnerQuestion,
     journal,
-    budget: createPromptBudget({ now }),
-    verifier: createOwnerPresenceVerifier({
+    budget: ruling.createPromptBudget({ now }),
+    verifier: presence.createOwnerPresenceVerifier({
       // Interactive, because a human is expected to be standing here. This is
       // the ONLY place in the system that asks Windows to show a dialog.
-      broker: createWindowsOwnerPresenceBroker({ allowInteractive: true }),
+      broker: windows.createWindowsOwnerPresenceBroker({ allowInteractive: true }),
       now,
       randomChallenge: () => crypto.randomUUID(),
     }),
