@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { store } from "../store.js";
 import { config } from "../../datascape.config.js";
+import { ACTIONS as OWNER_ACTION_KINDS, actionsAvailable, recordAction } from "./actions.js";
 import {
   agoLabel,
   buildBriefingViewport,
@@ -202,10 +203,86 @@ function Step({ step }) {
   );
 }
 
+// The follow-through control. Until this existed an owner action expanded to
+// text and nothing she clicked could change anything: her ruling had nowhere to
+// go, and nothing left the queue when she acted.
+//
+// Every action writes through exception.mjs, so the inbox stays the single
+// source of truth. The server's fresh list is rendered rather than an
+// optimistic guess, because a ruling deliberately KEEPS the item open — the
+// filing lane still has to do the work — and pretending otherwise would drop
+// the follow-up on the floor.
+function ActionBar({ action, onResolved }) {
+  const [pending, setPending] = useState(null);
+  const [note, setNote] = useState("");
+  const [error, setError] = useState(null);
+  const [done, setDone] = useState(null);
+
+  if (!actionsAvailable()) {
+    // Degrade to read-only rather than showing controls that silently fail. A
+    // dead button here is worse than no button: she cannot tell "acted" from
+    // "nothing happened".
+    return (
+      <p className="bf-note">
+        Read-only — launch with <code>node D:/Projects/.tools/catchup.mjs</code> to act from here.
+      </p>
+    );
+  }
+
+  if (done) {
+    return (
+      <p className="bf-note bf-note--ok">
+        Recorded — {done.action === "ruling"
+          ? "sent back to the lane that asked; it stays open until that lane finishes."
+          : "closed, and it will be gone on the next rebuild."}
+      </p>
+    );
+  }
+
+  async function run(key) {
+    setError(null);
+    setPending(key);
+    try {
+      const result = await recordAction({ id: action.id, action: key, note });
+      setDone(result.decision);
+      onResolved?.(result);
+    } catch (err) {
+      setError(err.message || String(err));
+    } finally {
+      setPending(null);
+    }
+  }
+
+  return (
+    <div className="bf-cta">
+      <input
+        className="bf-cta__note"
+        value={note}
+        onChange={(event) => setNote(event.target.value)}
+        placeholder="your ruling, in your words"
+        aria-label="Your ruling"
+      />
+      <div className="bf-cta__row">
+        {Object.values(OWNER_ACTION_KINDS).map((spec) => (
+          <button
+            key={spec.key}
+            type="button"
+            className={`bf-cta__btn bf-cta__btn--${spec.key}`}
+            title={spec.hint}
+            disabled={Boolean(pending)}
+            onClick={() => run(spec.key)}
+          >{pending === spec.key ? "…" : spec.label}</button>
+        ))}
+      </div>
+      {error && <p className="bf-note bf-note--warn">{error}</p>}
+    </div>
+  );
+}
+
 // The "Needs you" cluster: an amber origin orb fanning to one dashed ring per
 // open owner action. In the 30-sec brief only the high-severity asks fan out;
 // the rest wait behind a ghost node.
-function NeedsYou({ actions, viewport, toggle, showAll, onShowAll }) {
+function NeedsYou({ actions, viewport, toggle, showAll, onShowAll, onResolved }) {
   const visible = showAll ? actions : actions.filter((a) => a.severity === "high");
   const hidden = actions.length - visible.length;
   const [containerRef, ringRef, geometry] = useMeasuredThreads([visible.length, viewport, showAll]);
@@ -255,6 +332,7 @@ function NeedsYou({ actions, viewport, toggle, showAll, onShowAll }) {
                 <p>{action.latestAmendment}</p>
               </details>
             )}
+            <ActionBar action={action} onResolved={onResolved} />
             <div className="bf-provenance">
               {action.loop && <span>{action.loop}</span>}
               <span>{action.id}</span>
@@ -401,6 +479,9 @@ function BriefingSurface({ data }) {
   const [latest, setLatest] = useState(initial.latest);
   const [laneFilter, setLaneFilter] = useState(initial.laneFilter);
   const [showAllActions, setShowAllActions] = useState(initial.latest != null && initial.latest >= 5);
+  // Owner actions become live state the moment she acts on one; until then the
+  // document's list is authoritative.
+  const [liveActions, setLiveActions] = useState(null);
 
   useEffect(() => {
     const restore = () => {
@@ -484,11 +565,16 @@ function BriefingSurface({ data }) {
 
       {viewport.ownerActions.length > 0 ? (
         <NeedsYou
-          actions={viewport.ownerActions}
+          actions={liveActions ?? viewport.ownerActions}
           viewport={viewport}
           toggle={toggle}
           showAll={showAllActions}
           onShowAll={() => setShowAllActions(true)}
+          onResolved={(result) => setLiveActions(
+            // The server returns the rebuilt queue; render that rather than
+            // guessing which items her action removed.
+            (result.ownerActions || []).map((a) => ({ ...a, nodeId: `oa:${a.id}` })),
+          )}
         />
       ) : (
         <p className="bf-note bf-note--center">Nothing is blocked on you.</p>
