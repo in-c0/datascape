@@ -1,7 +1,8 @@
 import "./index.css";
 import "./continuity/continuity.css";
 import "./continuity/temporal.css";
-import { loadData } from "./store.js";
+import "./continuity/briefing.css";
+import { loadBriefing, loadData } from "./store.js";
 import { config } from "../datascape.config.js";
 
 // dev-only: keep animation frames flowing when the tab is hidden
@@ -22,7 +23,10 @@ if (import.meta.env.DEV) {
 
 const root = document.getElementById("root");
 const requestedView = new URLSearchParams(window.location.search).get("view");
-const view = requestedView === "continuity" ? "continuity" : "landscape";
+// Continuity ships two planes now: the semantic viewport and the catch-up
+// briefing. Both are projections over the same runtime data boundary.
+const VIEWS = new Set(["continuity", "briefing"]);
+const view = VIEWS.has(requestedView) ? requestedView : "landscape";
 
 function screen(html) {
   root.innerHTML = `<div class="boot">${html}</div>`;
@@ -32,7 +36,7 @@ function screen(html) {
 screen(`<div class="boot__brand">${config.siteName.toUpperCase()}</div>
   <div class="boot__msg">loading ${view}…</div>`);
 
-loadData(config.dataBase)
+(view === "briefing" ? loadBriefing(config.dataBase) : loadData(config.dataBase))
   .then(async () => {
     // Dynamic import AFTER data is in the store. Continuity is another
     // projection over the same runtime data boundary, not a second app/data silo.
@@ -41,7 +45,9 @@ loadData(config.dataBase)
     // dynamically imported JS has already mounted.
     const appModule = view === "continuity"
       ? import("./continuity/ContinuityView.jsx")
-      : import("./App.jsx");
+      : view === "briefing"
+        ? import("./continuity/BriefingView.jsx")
+        : import("./App.jsx");
     const [{ StrictMode }, { createRoot }, { default: App }] = await Promise.all([
       import("react"),
       import("react-dom/client"),

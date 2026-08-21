@@ -10,6 +10,7 @@
     "validate:continuity": "node scripts/validate-continuity.mjs",
     "validate:continuity:observations": "node scripts/validate-continuity-observations.mjs",
     "validate:continuity:graph": "node scripts/validate-continuity-graph.mjs",
+    "validate:continuity:briefing": "node scripts/validate-continuity-briefing.mjs",
     "continuity:observations": "node scripts/build-continuity-observations.mjs",
     "continuity:adapters": "node scripts/run-continuity-adapters.mjs",
     "continuity:graph": "node scripts/build-continuity-graph.mjs",
@@ -36,5 +37,5 @@
     "oxlint": "^1.71.0",
     "vite": "^8.1.1"
   },
-  "description": "A 3D landscape of your own thinking — a data-decoupled portfolio template."
+  "description": "A 3D landscape of your own thinking \u2014 a data-decoupled portfolio template."
 }
