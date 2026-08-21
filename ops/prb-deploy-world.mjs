@@ -16,6 +16,8 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
+import { stripGuard } from "./exception-guard-patch.mjs";
+
 const REPO = process.cwd();
 const REAL_HOST_OPS = process.env.PRB_HOST_OPS || "D:/Projects/_ship_inbox/ops";
 
@@ -41,7 +43,6 @@ const REPO_SOURCES = [
   "src/continuity/control/owner-presence.js",
   "src/continuity/control/owner-ruling-policy.js",
   "src/continuity/control/exception-atomic.js",
-  "src/continuity/control/owner-gate.js",
   "src/continuity/control/owner-presence-windows.js",
 ];
 
@@ -108,7 +109,21 @@ export async function deployedWorld({ damage = null } = {}) {
       fs.readFileSync(path.join(REPO, "ops", "prb-exception-stand-in.mjs"), "utf8")),
     installHostDependency(live, "mustread.mjs", MINIMAL_MUSTREAD),
   ];
+  // The store's OWN selftest, when the real host has one. It is the check that
+  // caught the V1 relocatability regression, so it belongs in the deployment
+  // gate rather than in somebody's memory.
+  const selftest = path.join(REAL_HOST_OPS, "exception.selftest.mjs");
+  const hasSelftest = fs.existsSync(selftest);
+  if (hasSelftest) fs.copyFileSync(selftest, path.join(live, "exception.selftest.mjs"));
   fs.writeFileSync(path.join(live, "briefing.mjs"), STUB_BRIEFING);
+
+  // Start from a KNOWN-UNGUARDED store. The real host is already carrying a
+  // guard, so copying it verbatim made every world start mid-migration and
+  // stack a second patch on top of the first.
+  const copied = fs.readFileSync(path.join(live, "exception.mjs"), "utf8");
+  const clean = stripGuard(copied);
+  if (!clean.ok) throw new Error(`the world could not establish a clean store: ${clean.reason}`);
+  if (clean.changed) fs.writeFileSync(path.join(live, "exception.mjs"), clean.source);
   const storeBefore = fs.readFileSync(path.join(live, "exception.mjs"), "utf8");
 
   process.env.LIVE_HOST_REPO = repo;
@@ -141,7 +156,7 @@ export async function deployedWorld({ damage = null } = {}) {
   let clock = Date.parse("2026-08-22T12:00:00+10:00");
 
   const world = {
-    dir, repo, live, state, inbox, commit, deployed, dependencies, broker,
+    dir, repo, live, state, inbox, commit, deployed, dependencies, broker, hasSelftest,
     deployMod, entryMod, entry, storeBefore,
     advance: (ms) => { clock += ms; },
     /** Start through the REAL entry point, with a device we control. */
@@ -169,6 +184,18 @@ export async function deployedWorld({ damage = null } = {}) {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
       });
       return { status: response.status, body: await response.json().catch(() => ({})) };
+    },
+    /** Run the store's own selftest against the DEPLOYED store. */
+    selftest() {
+      if (!hasSelftest) return { skipped: true };
+      try {
+        const out = execFileSync(process.execPath, [path.join(live, "exception.selftest.mjs")],
+          { encoding: "utf8", timeout: 120000 });
+        const match = out.match(/(\d+) passed, (\d+) failed/);
+        return { skipped: false, ok: match ? match[2] === "0" : false, passed: match ? Number(match[1]) : 0, out };
+      } catch (error) {
+        return { skipped: false, ok: false, passed: 0, out: String(error.stdout ?? "") + String(error.message) };
+      }
     },
     /** The DEPLOYED store, as the legacy CLI would load it. */
     store: () => import(pathToFileURL(path.join(live, "exception.mjs")).href + `?w=${fresh()}`),

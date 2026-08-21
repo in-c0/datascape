@@ -34,7 +34,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { execFileSync } from "node:child_process";
 
-import { GUARD_MARKER, isPatched } from "./exception-guard-patch.mjs";
+import { GUARD_V2_MARKER, classifyGuard, stripGuard } from "./exception-guard-patch.mjs";
 
 // Read at CALL time, not at import time. Capturing these when the module first
 // loaded meant whichever caller imported it first fixed the paths for everyone
@@ -68,7 +68,6 @@ export const ARTIFACT = [
   { dest: "_continuity/owner-presence.js", source: "src/continuity/control/owner-presence.js" },
   { dest: "_continuity/owner-ruling-policy.js", source: "src/continuity/control/owner-ruling-policy.js" },
   { dest: "_continuity/exception-atomic.js", source: "src/continuity/control/exception-atomic.js" },
-  { dest: "_continuity/owner-gate.js", source: "src/continuity/control/owner-gate.js" },
   { dest: "_continuity/owner-presence-windows.js", source: "src/continuity/control/owner-presence-windows.js" },
 ];
 
@@ -90,6 +89,16 @@ export const GUARDED_STORE = "exception.mjs";
 
 /** Where the reviewed guard transformation lives in the repository. */
 export const GUARD_SOURCE = "ops/exception-guard-patch.mjs";
+
+/**
+ * Files a previous release installed that this one no longer ships.
+ *
+ * Removed only AFTER the store transformation succeeds. The live store's V1
+ * guard imports `_continuity/owner-gate.js`, so deleting it before the store is
+ * migrated would leave a window where the module every lane loads points at a
+ * file that is gone.
+ */
+export const RETIRED_ARTIFACT = ["_continuity/owner-gate.js"];
 
 export const sha = (text) =>
   crypto.createHash("sha256").update(String(text).replace(/\r\n/g, "\n")).digest("hex");
@@ -262,8 +271,17 @@ async function reviewedGuard(commit) {
 /** The live store's bytes, and whether the owner gate is installed in them. */
 export function guardedStoreState({ liveDir = liveDir_() } = {}) {
   const raw = read(path.join(liveDir, GUARDED_STORE));
-  if (raw === null) return { present: false, patched: false, hash: null };
-  return { present: true, patched: isPatched(raw), hash: sha(raw), marker: GUARD_MARKER };
+  if (raw === null) return { present: false, patched: false, version: "absent", hash: null };
+  const guard = classifyGuard(raw);
+  return {
+    present: true,
+    // Only the CURRENT reviewed guard counts as guarded. A V1 store is patched
+    // and still wrong: it makes the store non-relocatable.
+    patched: guard.version === "v2",
+    version: guard.version,
+    hash: sha(raw),
+    marker: GUARD_V2_MARKER,
+  };
 }
 
 /**
@@ -331,6 +349,9 @@ export function preflight({ liveDir = liveDir_() } = {}) {
       if (!complete) return `the deployed security layer is incomplete: ${present}/${ARTIFACT.length} files`;
       if (!status.ok) return status.reason;
       if (!storeOk) {
+        if (store.version === "v1") {
+          return "the exception store still carries the V1 imported guard, which makes it non-relocatable";
+        }
         return store.patched
           ? "the guarded exception store does not match the hash this deployment recorded"
           : "the exception store is not guarded, so the legacy CLI could still close owner-gated items";
@@ -377,25 +398,68 @@ export async function deploy({ commit, at = null, dryRun = true, liveDir = liveD
   const storePath = path.join(liveDir, GUARDED_STORE);
   const storeRaw = read(storePath);
   if (storeRaw === null) return { ok: false, reason: `the host exception store is missing at ${storePath}` };
+  const currentGuard = classifyGuard(storeRaw);
+  if (currentGuard.version === "ambiguous") {
+    return { ok: false, reason: `the live store cannot be classified: ${currentGuard.reason}`, store_version: "ambiguous" };
+  }
+
   const reviewed = await reviewedGuard(resolved);
   if (!reviewed.ok) return { ok: false, reason: reviewed.reason, dirty_guard: Boolean(reviewed.dirty) };
   const guard = reviewed.patch(storeRaw);
   if (!guard.ok) return { ok: false, reason: `the owner guard could not be installed: ${guard.reason}` };
 
   const priorManifest = JSON.parse(read(MANIFEST()) || "null");
-  // Re-deploying over an already-guarded store must keep the ORIGINAL preimage,
-  // or a rollback would restore a patched file and call it the original.
-  const preimageHash = guard.already
-    ? (priorManifest?.exception_store?.preimage_hash ?? null)
-    : sha(storeRaw);
+  const priorStore = priorManifest?.exception_store ?? {};
+  // TWO DISTINCT FACTS, deliberately not collapsed:
+  //
+  //   original_preimage_hash — what this store looked like before Continuity
+  //                            ever guarded it. Carried forward forever.
+  //   previous_release_hash  — the bytes this deploy is replacing, i.e. one
+  //                            release back.
+  //
+  // The first version derived the preimage from "is it already guarded?", which
+  // was fine for a redeploy and wrong for a MIGRATION: a V1 store is not
+  // already-guarded in the V2 sense, so its bytes would have been recorded as
+  // the original and a later rollback would have restored a patched file
+  // calling itself untouched.
+  let originalPreimageHash = priorStore.original_preimage_hash ?? priorStore.preimage_hash ?? null;
+  if (!originalPreimageHash) {
+    if (currentGuard.version === "unpatched") {
+      originalPreimageHash = sha(storeRaw);
+    } else {
+      // A guarded store whose manifest history is gone. Persisting null here
+      // would record "we do not know what this file originally was" as though
+      // it were a fact about the release, and every later rollback would
+      // inherit that blank. Derive it with the reviewed inverse transform
+      // instead, and refuse if the guard is not one we can reverse exactly.
+      const clean = stripGuard(storeRaw);
+      if (!clean.ok) {
+        return {
+          ok: false,
+          failure: "original_preimage_unrecoverable",
+          reason: `the store is ${currentGuard.version} and no manifest records its original bytes: ${clean.reason}`,
+        };
+      }
+      originalPreimageHash = sha(clean.source);
+    }
+  }
+  const previousReleaseHash = sha(storeRaw);
 
   const backupSet = `${resolved.slice(0, 12)}-${sha(staged.map((f) => f.live_hash).join("|")).slice(0, 8)}`;
   const backupDir = path.join(BACKUPS(), backupSet);
   fs.mkdirSync(backupDir, { recursive: true });
 
-  // Back up the store's exact previous bytes before touching it.
+  // Back up the store's exact previous bytes before touching it, and anything
+  // this release retires, so a rollback restores the whole previous world.
   const storeBackup = path.join(backupDir, GUARDED_STORE);
   if (!fs.existsSync(storeBackup)) fs.writeFileSync(storeBackup, storeRaw);
+  for (const dest of RETIRED_ARTIFACT) {
+    const bytes = read(path.join(liveDir, dest));
+    if (bytes === null) continue;
+    const target = path.join(backupDir, dest);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    if (!fs.existsSync(target)) fs.writeFileSync(target, bytes);
+  }
 
   for (const file of staged) {
     if (file.live !== null) {
@@ -426,8 +490,10 @@ export async function deploy({ commit, at = null, dryRun = true, liveDir = liveD
     // it, and what it must hash to for the preflight to let the host serve.
     exception_store: {
       file: GUARDED_STORE,
-      preimage_hash: preimageHash,
-      patch_marker: GUARD_MARKER,
+      original_preimage_hash: originalPreimageHash,
+      previous_release_hash: previousReleaseHash,
+      migrated_from: guard.from,
+      patch_marker: GUARD_V2_MARKER,
       // The Git blob hash, not the checkout's.
       patch_source_hash: reviewed.hash,
       guarded_hash: sha(guard.source),
@@ -436,10 +502,23 @@ export async function deploy({ commit, at = null, dryRun = true, liveDir = liveD
     host_dependencies: hostDependencyEvidence(liveDir),
   }, null, 2));
 
+  // Only now that the store no longer imports it.
+  const retired = [];
+  for (const dest of RETIRED_ARTIFACT) {
+    const stale = path.join(liveDir, dest);
+    if (fs.existsSync(stale)) { fs.rmSync(stale); retired.push(dest); }
+  }
+
   return {
-    ok: true, dry_run: false, commit: resolved, backup_set: backupSet,
+    ok: true, dry_run: false, commit: resolved, backup_set: backupSet, retired,
     files: staged.map((f) => ({ dest: f.dest, hash: f.hash })),
-    exception_store: { preimage_hash: preimageHash, guarded_hash: sha(guard.source), already_guarded: guard.already },
+    exception_store: {
+      original_preimage_hash: originalPreimageHash,
+      previous_release_hash: previousReleaseHash,
+      guarded_hash: sha(guard.source),
+      already_guarded: guard.already,
+      migrated_from: guard.from,
+    },
   };
 }
 
@@ -449,7 +528,8 @@ export function rollback({ toBackupSet, at = null, dryRun = true, liveDir = live
   if (!toBackupSet || !fs.existsSync(backupDir)) {
     return { ok: false, reason: `no backup set ${toBackupSet}` };
   }
-  const restore = [...ARTIFACT, { dest: GUARDED_STORE, source: null }]
+  const restore = [...ARTIFACT, { dest: GUARDED_STORE, source: null },
+    ...RETIRED_ARTIFACT.map((dest) => ({ dest, source: null }))]
     .map((entry) => ({ ...entry, bytes: read(path.join(backupDir, entry.dest)) }))
     .filter((entry) => entry.bytes !== null);
   if (!restore.length) return { ok: false, reason: `backup set ${toBackupSet} contains nothing to restore` };

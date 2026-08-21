@@ -51,8 +51,14 @@ const read = (file) => {
   try { return fs.readFileSync(file, "utf8"); } catch { return null; }
 };
 
-/** The guard marker the deployed exception store must still carry. */
-const GUARD_MARKER = "__continuity_owner_gate__";
+/**
+ * The guard marker the deployed exception store must still carry.
+ *
+ * V2. The V1 marker was `__continuity_owner_gate__`; the two are deliberately
+ * not substrings of one another, so a host running the old guard reads as
+ * unguarded here rather than passing on a prefix match.
+ */
+const GUARD_MARKER = "__continuity_owner_gate_v2__";
 
 /**
  * Is what is on disk the file set this host was deployed with?

@@ -25,7 +25,6 @@ export const ARTIFACT = [
   { dest: "_continuity/owner-presence.js", source: "src/continuity/control/owner-presence.js" },
   { dest: "_continuity/owner-ruling-policy.js", source: "src/continuity/control/owner-ruling-policy.js" },
   { dest: "_continuity/exception-atomic.js", source: "src/continuity/control/exception-atomic.js" },
-  { dest: "_continuity/owner-gate.js", source: "src/continuity/control/owner-gate.js" },
   { dest: "_continuity/owner-presence-windows.js", source: "src/continuity/control/owner-presence-windows.js" },
 ];
 
