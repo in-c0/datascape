@@ -5,7 +5,7 @@
 // external, no prose of its own). If both normalise cleanly through one
 // envelope, the protocol is doing its job.
 
-import { canonicalId, normalizeEvent } from "./event.js";
+import { EVENT_KINDS, canonicalId, normalizeEvent } from "./event.js";
 
 /**
  * The adapter contract. `read` returns raw payloads; `toEvents` maps them into
@@ -41,17 +41,45 @@ export const hubLaneAdapter = createAdapter({
     lane_id: record.lane ?? null,
     occurred_at: record.at ?? record.emittedAt,
     observed_at: record.observedAt ?? record.at ?? record.emittedAt,
-    kind: KIND_FROM_HUB[record.kind] || "observation",
-    // A lane record is written by an agent unless it carries an owner action,
-    // which is the owner's own requirement rather than the agent's report.
-    authorship: record.ownerAction ? "owner" : "agent",
+    // A kind that is ALREADY canonical passes through untouched. The first
+    // version mapped only vendor-specific names and silently fell through to
+    // "observation" for everything the real corpus actually uses, turning 37
+    // owner actions into observations. Mapping should translate what needs
+    // translating, never overwrite what is already right.
+    kind: hubKind(record.kind),
+    // An owner-action record is written BY AN AGENT about something the owner
+    // must do. The owner neither authored nor triggered it. Treating "this
+    // needs the owner" as "the owner did this" conflated three separate facts
+    // — who authored the record, who must act, and who initiated the event —
+    // which is precisely the distinction the GitHub actor ruling drew.
+    authorship: "agent",
     execution: record.execution || "completed",
-    trigger: record.trigger?.kind || (record.ownerAction ? "owner" : "scheduler"),
+    // Absent trigger stays UNKNOWN. Falling back to "scheduler" because most
+    // lane records are scheduled is exactly the provenance inference this
+    // protocol exists to stop, and my own adapter was doing it.
+    trigger: record.trigger?.kind || "unknown",
     text: record.text,
-    owner_action_ref: record.ownerAction ? record.id : null,
+    owner_action_ref: isOwnerAction(record) ? record.id : null,
     relations: (record.references || []).map((target) => ({ kind: "references", target })),
   }),
 });
+
+/** GitHub authored the envelope; someone else initiated the event. */
+const actorType = (raw) => {
+  if (raw === "user" || raw === "human") return "human";
+  if (raw === "bot") return "bot";
+  if (raw === "app") return "app";
+  return "unknown";
+};
+const initiatorTrigger = (raw) => {
+  const type = actorType(raw);
+  if (type === "human") return "operator";
+  if (type === "bot" || type === "app") return "automation";
+  return "unknown";
+};
+
+const isOwnerAction = (record) => record.ownerAction === true || record.kind === "owner_action";
+const hubKind = (kind) => (EVENT_KINDS.includes(kind) ? kind : (KIND_FROM_HUB[kind] || "observation"));
 
 const KIND_FROM_HUB = {
   risk: "finding",
@@ -84,9 +112,12 @@ export const githubAdapter = createAdapter({
     kind: activity.action === "merged" ? "state" : activity.action === "opened" ? "action" : "observation",
     authorship: "external_system",
     execution: activity.action === "merged" ? "completed" : "live",
-    // A CI/bot actor is automation; a human clicking merge is an operator.
-    // Anything else stays unknown rather than being assumed.
-    trigger: activity.actorType === "bot" ? "automation" : activity.actorType === "user" ? "operator" : "unknown",
+    // The INITIATOR decides trigger provenance, not whoever wrote the prose.
+    // A human-authored PR merged by a bot is automation: the presence of human
+    // text in the title says nothing about who performed the merge.
+    trigger: initiatorTrigger(activity.actorType),
+    actor: { id: activity.actor ?? null, type: actorType(activity.actorType), source_system: "github" },
+    external_ref: activity.externalRef ?? null,
     text: activity.title,
     relations: (activity.references || []).map((target) => ({ kind: "references", target })),
   }),

@@ -166,8 +166,15 @@ test("V5: owner exception identity and source relations survive normalization", 
   const { events } = hubLaneAdapter.ingest(HUB_RECORDS);
   const ownerEvent = events.find((e) => e.kind === "owner_action");
   assert.equal(ownerEvent.owner_action_ref, "sec_02");
-  assert.equal(ownerEvent.authorship, "owner");
-  assert.equal(ownerEvent.supervision, "attended");
+  // Three separate facts that an earlier version of this adapter collapsed:
+  // an AGENT authored the record, the OWNER must act on it, and nobody
+  // evidenced who triggered it. "This needs the owner" is not "the owner did
+  // this" — the same distinction the GitHub actor ruling drew.
+  assert.equal(ownerEvent.authorship, "agent",
+    "an agent wrote this record about something the owner must do");
+  assert.equal(ownerEvent.trigger, "unknown",
+    "no trigger was evidenced, so none is asserted");
+  assert.equal(ownerEvent.supervision, "unknown");
 
   const withRef = events.find((e) => e.native_id === "sec_03");
   assert.deepEqual(withRef.relations, [{ kind: "references", target: "sec_01" }]);
