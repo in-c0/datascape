@@ -33,20 +33,27 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 
-const REPO = process.env.LIVE_HOST_REPO || process.cwd();
+import { GUARD_MARKER, isPatched, patchExceptionSource } from "./exception-guard-patch.mjs";
+
+// Read at CALL time, not at import time. Capturing these when the module first
+// loaded meant whichever caller imported it first fixed the paths for everyone
+// afterwards — a launcher that imported this module before its environment was
+// arranged would silently verify a different host than the one it was starting.
+const repoDir = () => process.env.LIVE_HOST_REPO || process.cwd();
 
 /** Where the live host runs. */
-export const LIVE_DIR = process.env.LIVE_HOST_DIR || "D:/Projects/_ship_inbox/ops";
+const liveDir_ = () => process.env.LIVE_HOST_DIR || "D:/Projects/_ship_inbox/ops";
+export const liveDir = liveDir_;
 
 /**
  * Private host state — deliberately not under the repo.
  * `%LOCALAPPDATA%/datascape/live-host` on Windows, `~/.local/state/...` elsewhere.
  */
-export const STATE_DIR = process.env.LIVE_HOST_STATE
+export const stateDir = () => process.env.LIVE_HOST_STATE
   || path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), ".local", "state"), "datascape", "live-host");
 
-const MANIFEST = () => path.join(STATE_DIR, "deployed.json");
-const BACKUPS = () => path.join(STATE_DIR, "backups");
+const MANIFEST = () => path.join(stateDir(), "deployed.json");
+const BACKUPS = () => path.join(stateDir(), "backups");
 
 /**
  * The reviewed artifact: every file whose bytes the security property depends
@@ -68,6 +75,16 @@ export const ARTIFACT = [
  */
 export const HOST_DEPENDENCIES = ["exception.mjs", "briefing.mjs", "mustread.mjs"];
 
+/**
+ * The host's exception store, which deployment PATCHES rather than replaces.
+ *
+ * Copying `owner-gate.js` beside an unpatched store guards nothing: the store's
+ * own CLI calls its own internal `setStatus`. The acceptance world patched it
+ * and proved the bypass closed there — which said nothing about the release
+ * path, because deployment never touched it. It does now.
+ */
+export const GUARDED_STORE = "exception.mjs";
+
 export const sha = (text) =>
   crypto.createHash("sha256").update(String(text).replace(/\r\n/g, "\n")).digest("hex");
 
@@ -77,7 +94,7 @@ const read = (file) => {
 
 const git = (args) => {
   try {
-    return execFileSync("git", args, { cwd: REPO, encoding: "utf8", maxBuffer: 32 * 1024 * 1024 });
+    return execFileSync("git", args, { cwd: repoDir(), encoding: "utf8", maxBuffer: 32 * 1024 * 1024 });
   } catch {
     return null;
   }
@@ -100,7 +117,7 @@ export function workingTreeDrift(commit) {
   const drifted = [];
   for (const entry of ARTIFACT) {
     const committed = gitBlob(commit, entry.source);
-    const working = read(path.join(REPO, entry.source));
+    const working = read(path.join(repoDir(), entry.source));
     if (committed === null || working === null || sha(committed) !== sha(working)) drifted.push(entry.source);
   }
   return drifted;
@@ -142,7 +159,7 @@ function hostDependencyEvidence(liveDir) {
  * What is actually running right now, and is every byte of it reproducible
  * from the commit the manifest names?
  */
-export function verifyDeployment({ liveDir = LIVE_DIR } = {}) {
+export function verifyDeployment({ liveDir = liveDir_() } = {}) {
   const manifest = JSON.parse(read(MANIFEST()) || "null");
 
   if (!manifest?.commit) {
@@ -200,6 +217,13 @@ export function verifyDeployment({ liveDir = LIVE_DIR } = {}) {
   };
 }
 
+/** The live store's bytes, and whether the owner gate is installed in them. */
+export function guardedStoreState({ liveDir = liveDir_() } = {}) {
+  const raw = read(path.join(liveDir, GUARDED_STORE));
+  if (raw === null) return { present: false, patched: false, hash: null };
+  return { present: true, patched: isPatched(raw), hash: sha(raw), marker: GUARD_MARKER };
+}
+
 /**
  * Read-only: does the live host match a NAMED commit, manifest or not?
  *
@@ -207,7 +231,7 @@ export function verifyDeployment({ liveDir = LIVE_DIR } = {}) {
  * any check that wants to ask about a specific commit rather than trust the
  * manifest's claim about itself.
  */
-export function verifyAgainstCommit({ commit, liveDir = LIVE_DIR, only = null } = {}) {
+export function verifyAgainstCommit({ commit, liveDir = liveDir_(), only = null } = {}) {
   const resolved = resolveCommit(commit);
   if (!resolved) return { ok: false, reason: `not a commit in this repository: ${commit}` };
 
@@ -237,22 +261,40 @@ export function verifyAgainstCommit({ commit, liveDir = LIVE_DIR, only = null } 
  * A launcher calls this before deciding whether the owner-mutation route may
  * exist at all. The server itself never needs to know about Git.
  */
-export function preflight({ liveDir = LIVE_DIR } = {}) {
+export function preflight({ liveDir = liveDir_() } = {}) {
   const status = verifyDeployment({ liveDir });
   const present = (status.files ?? []).filter((f) => f.live_hash !== null).length;
   const complete = present === ARTIFACT.length;
 
+  // The guarded store is security-bearing too. A host whose exception store
+  // reverted to its unpatched form has a live impersonation route, however
+  // perfect the rest of the artifact is.
+  const manifest = JSON.parse(read(MANIFEST()) || "null");
+  const store = guardedStoreState({ liveDir });
+  const expectedStore = manifest?.exception_store?.guarded_hash ?? null;
+  const storeOk = store.present && store.patched && expectedStore !== null && store.hash === expectedStore;
+
   return {
-    ok: Boolean(status.ok) && complete,
+    ok: Boolean(status.ok) && complete && storeOk,
+    exception_store_guarded: storeOk,
+    exception_store_hash: store.hash,
+    exception_store_expected_hash: expectedStore,
     artifact_complete: complete,
     artifact_expected: ARTIFACT.length,
     artifact_present: present,
     matches_reviewed_source: Boolean(status.matches_reviewed_source),
     deployed_from_commit: status.deployed_from_commit ?? null,
     mismatched: (status.files ?? []).filter((f) => !f.matches).map((f) => f.dest),
-    reason: status.ok && complete
-      ? null
-      : (complete ? status.reason : `the deployed security layer is incomplete: ${present}/${ARTIFACT.length} files`),
+    reason: (() => {
+      if (!complete) return `the deployed security layer is incomplete: ${present}/${ARTIFACT.length} files`;
+      if (!status.ok) return status.reason;
+      if (!storeOk) {
+        return store.patched
+          ? "the guarded exception store does not match the hash this deployment recorded"
+          : "the exception store is not guarded, so the legacy CLI could still close owner-gated items";
+      }
+      return null;
+    })(),
   };
 }
 
@@ -262,7 +304,7 @@ export function preflight({ liveDir = LIVE_DIR } = {}) {
  * Backs up every file it is about to replace first, so a rollback target exists
  * even for files that arrived before this mechanism did.
  */
-export function deploy({ commit, at = null, dryRun = true, liveDir = LIVE_DIR } = {}) {
+export function deploy({ commit, at = null, dryRun = true, liveDir = liveDir_() } = {}) {
   const resolved = resolveCommit(commit);
   if (!resolved) return { ok: false, reason: `not a commit in this repository: ${commit}` };
 
@@ -280,13 +322,34 @@ export function deploy({ commit, at = null, dryRun = true, liveDir = LIVE_DIR } 
     return {
       ok: true, dry_run: true, commit: resolved, changes,
       files: staged.map((f) => ({ dest: f.dest, hash: f.hash, live_hash: f.live_hash, would_write: f.target })),
+      would_guard_exception_store: !guardedStoreState({ liveDir }).patched,
       working_tree_drift: workingTreeDrift(resolved),
     };
   }
 
+  // The host's own store is patched, not replaced. Refuse to deploy at all if
+  // the guard cannot be installed — a deployment that silently leaves the
+  // legacy CLI open is exactly the gap this closes.
+  const storePath = path.join(liveDir, GUARDED_STORE);
+  const storeRaw = read(storePath);
+  if (storeRaw === null) return { ok: false, reason: `the host exception store is missing at ${storePath}` };
+  const guard = patchExceptionSource(storeRaw);
+  if (!guard.ok) return { ok: false, reason: `the owner guard could not be installed: ${guard.reason}` };
+
+  const priorManifest = JSON.parse(read(MANIFEST()) || "null");
+  // Re-deploying over an already-guarded store must keep the ORIGINAL preimage,
+  // or a rollback would restore a patched file and call it the original.
+  const preimageHash = guard.already
+    ? (priorManifest?.exception_store?.preimage_hash ?? null)
+    : sha(storeRaw);
+
   const backupSet = `${resolved.slice(0, 12)}-${sha(staged.map((f) => f.live_hash).join("|")).slice(0, 8)}`;
   const backupDir = path.join(BACKUPS(), backupSet);
   fs.mkdirSync(backupDir, { recursive: true });
+
+  // Back up the store's exact previous bytes before touching it.
+  const storeBackup = path.join(backupDir, GUARDED_STORE);
+  if (!fs.existsSync(storeBackup)) fs.writeFileSync(storeBackup, storeRaw);
 
   for (const file of staged) {
     if (file.live !== null) {
@@ -302,25 +365,44 @@ export function deploy({ commit, at = null, dryRun = true, liveDir = LIVE_DIR } 
     fs.renameSync(tmp, file.target);
   }
 
-  fs.mkdirSync(STATE_DIR, { recursive: true });
+  // Atomically install the guarded store.
+  const storeTmp = `${storePath}.tmp`;
+  fs.writeFileSync(storeTmp, guard.source);
+  fs.renameSync(storeTmp, storePath);
+
+  fs.mkdirSync(stateDir(), { recursive: true });
   fs.writeFileSync(MANIFEST(), JSON.stringify({
     commit: resolved,
     deployed_at: at,
     files: staged.map((f) => ({ dest: f.dest, source: f.source, hash: f.hash })),
     previous: { backup_set: backupSet, files: staged.map((f) => ({ dest: f.dest, hash: f.live_hash })) },
+    // The guard is part of the release record: what it was, what transformed
+    // it, and what it must hash to for the preflight to let the host serve.
+    exception_store: {
+      file: GUARDED_STORE,
+      preimage_hash: preimageHash,
+      patch_marker: GUARD_MARKER,
+      patch_source_hash: sha(read(path.join(repoDir(), "ops", "exception-guard-patch.mjs")) ?? ""),
+      guarded_hash: sha(guard.source),
+      already_guarded: guard.already,
+    },
     host_dependencies: hostDependencyEvidence(liveDir),
   }, null, 2));
 
-  return { ok: true, dry_run: false, commit: resolved, backup_set: backupSet, files: staged.map((f) => ({ dest: f.dest, hash: f.hash })) };
+  return {
+    ok: true, dry_run: false, commit: resolved, backup_set: backupSet,
+    files: staged.map((f) => ({ dest: f.dest, hash: f.hash })),
+    exception_store: { preimage_hash: preimageHash, guarded_hash: sha(guard.source), already_guarded: guard.already },
+  };
 }
 
 /** Restore a previous known-good file set by its backup id. */
-export function rollback({ toBackupSet, at = null, dryRun = true, liveDir = LIVE_DIR } = {}) {
+export function rollback({ toBackupSet, at = null, dryRun = true, liveDir = liveDir_() } = {}) {
   const backupDir = path.join(BACKUPS(), String(toBackupSet || ""));
   if (!toBackupSet || !fs.existsSync(backupDir)) {
     return { ok: false, reason: `no backup set ${toBackupSet}` };
   }
-  const restore = ARTIFACT
+  const restore = [...ARTIFACT, { dest: GUARDED_STORE, source: null }]
     .map((entry) => ({ ...entry, bytes: read(path.join(backupDir, entry.dest)) }))
     .filter((entry) => entry.bytes !== null);
   if (!restore.length) return { ok: false, reason: `backup set ${toBackupSet} contains nothing to restore` };
@@ -356,9 +438,9 @@ const invokedDirectly = process.argv[1]
 if (invokedDirectly) {
   const status = verifyDeployment();
   console.log(JSON.stringify({
-    live_host_dir: LIVE_DIR,
-    host_state_dir: STATE_DIR,
-    state_inside_repository: path.resolve(STATE_DIR).startsWith(path.resolve(REPO) + path.sep),
+    live_host_dir: liveDir_(),
+    host_state_dir: stateDir(),
+    state_inside_repository: path.resolve(stateDir()).startsWith(path.resolve(repoDir()) + path.sep),
     ...status,
     // Stated rather than implied: reporting never writes.
     write_performed: "NO",

@@ -13,8 +13,9 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { acceptanceWorld, fixture } from "./prb-world.mjs";
+import { deployedWorld } from "./prb-deploy-world.mjs";
 import { classifyApplication } from "../src/continuity/control/owner-ruling.js";
-import { LIVE_DIR, verifyAgainstCommit } from "./live-host-deploy.mjs";
+import { liveDir, verifyAgainstCommit } from "./live-host-deploy.mjs";
 
 const git = (args) => {
   try { return execFileSync("git", args, { encoding: "utf8" }).trim(); } catch { return null; }
@@ -274,34 +275,85 @@ async function run() {
     };
   })();
 
-  // The deployment startup gate.
-  const startup = await (async () => {
-    const world = await acceptanceWorld();
+  // --- THE RELEASE PATH, NOT THE HARNESS ---------------------------------
+  //
+  // Everything below is measured against what deploy() actually produces and
+  // what startLiveHost() actually does with it. The previous two rounds
+  // reported zeros that were true inside a test world and unproven of
+  // production, which is the same defect twice.
+
+  const release = await (async () => {
+    const world = await deployedWorld();
     try {
-      const id = fixture(world);
-      const gated = world.server.createServer(world.deps, { ownerRulings: false, unverifiedReason: "probe" });
-      await new Promise((r) => gated.listen(0, "127.0.0.1", r));
-      const port = gated.address().port;
-      const response = await fetch(`http://127.0.0.1:${port}/api/act`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id, action: "dismiss", operation_id: "op-report-gate" }),
-      });
-      const reads = await fetch(`http://127.0.0.1:${port}/api/decisions`);
-      await new Promise((r) => gated.close(r));
+      const id = world.fixture();
+      const store = await world.store();
+
+      let closed = 0;
+      for (const status of ["resolved", "investigating", "new"]) {
+        try { store.setStatus(id, status); closed += 1; } catch { /* refused */ }
+      }
+      const ordinary = world.fixture("2026-08-22-release-ordinary", { status: "new" });
+      let lane = 0;
+      try { store.setStatus(ordinary, "investigating"); lane = 1; } catch { /* blocked */ }
+
+      const installed = fs.readFileSync(path.join(world.live, "exception.mjs"), "utf8");
+      const manifest = JSON.parse(fs.readFileSync(path.join(world.state, "deployed.json"), "utf8"));
+      const gate = world.deployMod.preflight({ liveDir: world.live });
+
+      // Rollback, then confirm the store's ORIGINAL bytes came back.
+      const rolled = world.deployMod.rollback({ toBackupSet: world.deployed.backup_set, dryRun: false });
+      const restored = fs.readFileSync(path.join(world.live, "exception.mjs"), "utf8");
+
       return {
-        mutations: world.amendments(id),
-        status: response.status,
-        prompts: world.broker.calls.length,
-        reads_still_work: reads.status === 200,
+        installs_guard: installed.includes("__continuity_owner_gate__"),
+        guarded_hash_in_preflight: Boolean(manifest.exception_store?.guarded_hash)
+          && gate.exception_store_expected_hash === manifest.exception_store.guarded_hash,
+        legacy_cli_closed: closed,
+        lane_transitions: lane === 1,
+        rollback_restores_original: rolled.ok && restored === world.storeBefore
+          && !restored.includes("__continuity_owner_gate__"),
       };
     } finally { await world.close(); }
   })();
+
+  // The launcher, on real deployments — one healthy, three broken.
+  const launcherSource = fs.readFileSync(path.join(process.cwd(), "ops", "live-host-launcher.mjs"), "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  const topLevelSecurityImports = (launcherSource.match(/^import[\s\S]*?from\s+["'][^"']+["']/gm) ?? [])
+    .filter((line) => /briefing-server|_continuity|owner-ruling|owner-presence/.test(line)).length;
+
+  const startup = {};
+  for (const [label, damage] of [
+    ["healthy", null],
+    ["missing", { remove: "_continuity/owner-ruling.js" }],
+    ["mixed", { mix: "_continuity/owner-presence.js" }],
+    ["unguarded_store", { unguard: true }],
+  ]) {
+    const world = await deployedWorld({ damage });
+    try {
+      const started = await world.launch();
+      const id = world.fixture();
+      const result = await world.act({ id, action: "dismiss", operation_id: `op-release-${label}` });
+      startup[label] = {
+        mode: started.mode,
+        status: result.status,
+        mutations: world.amendments(id),
+        prompts: world.broker.calls.length,
+        security_runtime_imported: started.security_runtime_imported,
+        invoked_preflight: Boolean(started.gate),
+      };
+    } finally { await world.close(); }
+  }
+
+  // The deployment worlds set LIVE_HOST_* — clear them so the read-only
+  // real-world checks below look at the REAL host, not a temp one.
+  for (const key of ["LIVE_HOST_REPO", "LIVE_HOST_DIR", "LIVE_HOST_STATE"]) delete process.env[key];
 
   // --- REAL WORLD (READ ONLY) --------------------------------------------
   const merged = git(["rev-parse", "--verify", "--quiet", "origin/master^{commit}"]);
   const liveStatus = merged ? verifyAgainstCommit({ commit: merged, only: ["briefing-server.mjs"] }) : { ok: false };
   const liveSource = (() => {
-    try { return fs.readFileSync(path.join(LIVE_DIR, "briefing-server.mjs"), "utf8"); } catch { return ""; }
+    try { return fs.readFileSync(path.join(liveDir(), "briefing-server.mjs"), "utf8"); } catch { return ""; }
   })();
   const blockers = (() => {
     try {
@@ -417,11 +469,34 @@ async function run() {
       windows_presence_proof_persisted_in_browser: clientRetry.presence_persisted,
     },
     DEPLOYMENT: {
-      partial_or_mixed_artifact_set_can_serve_owner_mutation: startup.mutations,
-      unverified_deployment_response: startup.status,
-      unverified_deployment_prompts: startup.prompts,
-      reads_still_served: startup.reads_still_work ? "yes" : "NO",
-      startup_artifact_provenance_gate: startup.status === 503 && startup.mutations === 0 ? "pass" : "FAIL",
+      // Measured by breaking a REAL deployment and starting the REAL launcher,
+      // not by constructing a disabled server by hand.
+      partial_or_mixed_artifact_set_can_serve_owner_mutation:
+        startup.missing.mutations + startup.mixed.mutations,
+      unverified_deployment_response: startup.missing.status,
+      unverified_deployment_prompts: startup.missing.prompts,
+      startup_artifact_provenance_gate:
+        startup.missing.status === 503 && startup.missing.mutations === 0 ? "pass" : "FAIL",
+    },
+    EXCEPTION_STORE_DEPLOYMENT: {
+      production_deployment_installs_owner_guard: release.installs_guard ? "yes" : "NO",
+      guarded_exception_store_hash_included_in_preflight: release.guarded_hash_in_preflight ? "yes" : "NO",
+      legacy_cli_after_actual_isolated_deployment_can_close_blocked_on_owner: release.legacy_cli_closed,
+      ordinary_lane_transitions_after_deployment: release.lane_transitions ? "pass" : "FAIL",
+      rollback_restores_original_exception_store_bytes: release.rollback_restores_original ? "pass" : "FAIL",
+    },
+    STARTUP: {
+      actual_production_shaped_launcher_invokes_preflight: startup.healthy.invoked_preflight ? "yes" : "NO",
+      server_security_modules_imported_before_preflight: topLevelSecurityImports,
+      healthy_deployment_serves_owner_mutations: startup.healthy.mode === "owner_rulings" ? "yes" : "NO",
+      missing_artifact_can_serve_owner_mutations: startup.missing.mutations,
+      mixed_artifact_can_serve_owner_mutations: startup.mixed.mutations,
+      unguarded_exception_store_can_serve_owner_mutations: startup.unguarded_store.mutations,
+      fail_closed_startup_windows_prompts:
+        startup.missing.prompts + startup.mixed.prompts + startup.unguarded_store.prompts,
+      fail_closed_security_runtime_imported:
+        [startup.missing, startup.mixed, startup.unguarded_store].filter((s) => s.security_runtime_imported).length,
+      fail_closed_response: startup.missing.status,
     },
     REAL_WORLD_READ_ONLY: {
       real_v6_blocker_exists: blockers.length > 0 ? "yes" : "no",

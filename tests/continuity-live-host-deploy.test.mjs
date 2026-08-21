@@ -42,6 +42,12 @@ function world() {
     ARTIFACT.map((entry, i) => [entry.source, `export const part${i} = 1\n`]),
   );
   for (const [rel, text] of Object.entries(sources)) write(rel, text);
+  // Deployment patches the host's exception store, so the world needs one — and
+  // the real guard patch, which the manifest hashes.
+  write("ops/exception-guard-patch.mjs",
+    fs.readFileSync(path.join(process.cwd(), "ops", "exception-guard-patch.mjs"), "utf8"));
+  fs.writeFileSync(path.join(live, "exception.mjs"),
+    fs.readFileSync(path.join(process.cwd(), "ops", "prb-exception-stand-in.mjs"), "utf8"));
   git("add", "-A");
   git("commit", "-qm", "v1");
   const v1 = git("rev-parse", "HEAD").trim();
@@ -156,7 +162,7 @@ test("live-host: host state never lands inside the repository", async () => {
   const mod = await load(w);
   mod.deploy({ commit: w.v1, dryRun: false });
 
-  assert.ok(!path.resolve(mod.STATE_DIR).startsWith(path.resolve(w.repo) + path.sep),
+  assert.ok(!path.resolve(mod.stateDir()).startsWith(path.resolve(w.repo) + path.sep),
     "the manifest and backups are private host state, not repository content");
   // And nothing appeared in the tree that `git add -A` would sweep up.
   assert.equal(w.git("status", "--porcelain").trim(), "");
@@ -175,7 +181,7 @@ test("live-host: the real live host still matches its reviewed commit", async ()
   } catch { /* no remote ref here */ }
   // Skip rather than fail where the live host or the ref is absent — CI has no
   // _ship_inbox, and a test that fails there would teach people to ignore it.
-  if (!merged || !fs.existsSync(path.join(mod.LIVE_DIR, "briefing-server.mjs"))) return;
+  if (!merged || !fs.existsSync(path.join(mod.liveDir(), "briefing-server.mjs"))) return;
 
   const status = mod.verifyAgainstCommit({ commit: merged, only: ["briefing-server.mjs"] });
   assert.equal(status.ok, true,
