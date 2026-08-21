@@ -1,65 +1,42 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { store } from "../store.js";
 import { config } from "../../datascape.config.js";
-import { ACTIONS as OWNER_ACTION_KINDS, actionsAvailable, recordAction } from "./actions.js";
+import { actionsAvailable, recordAction } from "./actions.js";
 import {
   agoLabel,
-  buildBriefingViewport,
+  awayLabel,
+  buildScene,
+  buildUrl,
   effortLabel,
-  readBriefingLocation,
-  writeBriefingLocation,
+  parentPath,
+  readLocation,
+  resolveDeferPreset,
+  writeLocation,
 } from "./briefing.js";
 
-// The catch-up surface, in Continuity's own visual language.
+// The catch-up surface — spec v1 (governing lane, 2026-08-21).
 //
-// The design source is the mockup pair from the DataScape design conversation
-// (2026-08-17): a near-black indigo canvas; a glowing origin orb per cluster;
-// luminous curved threads fanning right to ring-nodes; labels sitting beside
-// their rings with a status sub-label; dashed rings for anything speculative
-// or waiting; a floating glass card under the expanded node; and a
-// "brief me in: 30 sec / 3 min / full" control instead of a pagination widget.
-// Same contract as before — one line collapsed, authored detail expanded,
-// expansion addressable in the URL — different skin entirely.
+// Selection RECENTERS. It does not expand. The whole scene is recomposed around
+// the selected node, and at most 5 nodes are ever on screen. The previous
+// version opened a card inside a still-dense list, which the spec names as the
+// defining defect: "click node → node becomes the semantic center → old
+// siblings disappear/merge → one compact neighborhood replaces them."
 //
-// Threads are drawn in an absolutely-positioned SVG that measures the HTML
-// rows after layout (ResizeObserver), so expanding a card pushes the rows and
-// the threads stay attached, exactly like the mockup's fan.
+// Visual language is unchanged and deliberately so — the spec's verdict was
+// "the styling is good; the defect is semantic density".
 
-const STATUS_META = {
-  needs_human: { label: "Needs you", glyph: "◇" },
-  live: { label: "Finding", glyph: "✦" },
-  merged: { label: "Progress", glyph: "✓" },
-  committed: { label: "State", glyph: "○" },
-};
+const BRIEFS = [
+  { key: "30s", label: "30 sec" },
+  { key: "3m", label: "3 min" },
+  { key: "full", label: "Full" },
+];
 
-const TYPE_LABEL = {
-  owner_action: "needs you",
-  finding: "finding",
-  progress: "progress",
-  state: "state",
-};
-
-const STEP_META = {
-  run: { label: "run", glyph: "▸" },
-  open: { label: "open", glyph: "↗" },
-  decide: { label: "decide", glyph: "◈" },
-  physical: { label: "do", glyph: "⬡" },
-};
+const DEFER_PRESETS = ["1 hour", "Tonight", "Tomorrow"];
+const REPLY_CHIPS = ["Done", "No", "Need context"];
 
 const SEVERITY_LABEL = { high: "High", medium: "Med", low: "Low" };
 
-// The brief presets. "30 sec" is one record per lane and only the high-severity
-// asks; "3 min" is the owner default (the latest two); "full" opens the depth.
-const BRIEFS = [
-  { key: "30s", label: "30 sec", latest: 1 },
-  { key: "3m", label: "3 min", latest: 2 },
-  { key: "full", label: "Full", latest: 5 },
-];
-
 function useMeasuredThreads(deps) {
-  // Measures each row's ring anchor relative to the cluster, so the SVG fan
-  // can connect the origin orb to rings whose y-positions change as cards
-  // open. Returns [containerRef, ringRefCallback, geometry].
   const containerRef = useRef(null);
   const ringRefs = useRef(new Map());
   const [geometry, setGeometry] = useState({ width: 0, height: 0, points: [] });
@@ -77,7 +54,6 @@ function useMeasuredThreads(deps) {
     points.sort((a, b) => a.y - b.y);
     setGeometry((prev) => {
       const next = { width: box.width, height: box.height, points };
-      // Avoid a render loop: only update when something actually moved.
       const same = prev.width === next.width && prev.height === next.height &&
         prev.points.length === next.points.length &&
         prev.points.every((p, i) => Math.abs(p.x - next.points[i].x) < 0.5 && Math.abs(p.y - next.points[i].y) < 0.5 && p.key === next.points[i].key);
@@ -100,367 +76,275 @@ function useMeasuredThreads(deps) {
     else ringRefs.current.delete(key);
   }, []);
 
-  return [containerRef, ringRef, geometry, measure];
+  return [containerRef, ringRef, geometry];
 }
 
-function ThreadFan({ geometry, origin, dashedKeys }) {
-  if (!geometry.points.length) return null;
+function ThreadFan({ geometry, origin, enabled }) {
+  // No fan at entry: with no origin node the curves degrade into a vertical
+  // chain that implies a sequence the roots do not have.
+  if (!enabled || geometry.points.length < 2) return null;
   const { x: ox, y: oy } = origin;
   return (
     <svg className="bf-threads" width={geometry.width} height={geometry.height} aria-hidden="true">
       {geometry.points.map(({ key, x, y }) => {
         const mid = ox + (x - ox) * 0.55;
-        return (
-          <path
-            key={key}
-            className={`bf-thread${dashedKeys?.has(key) ? " bf-thread--dashed" : ""}`}
-            d={`M ${ox} ${oy} C ${mid} ${oy}, ${mid} ${y}, ${x - 11} ${y}`}
-          />
-        );
+        return <path key={key} className="bf-thread" d={`M ${ox} ${oy} C ${mid} ${oy}, ${mid} ${y}, ${x - 13} ${y}`} />;
       })}
     </svg>
   );
 }
 
-function Ring({ status, open, dashed, refCallback }) {
-  return (
-    <span
-      ref={refCallback}
-      className={`bf-ring bf-ring--${status}${open ? " bf-ring--open" : ""}${dashed ? " bf-ring--dashed" : ""}`}
-      aria-hidden="true"
-    >
-      <span className="bf-ring__core" />
-    </span>
-  );
-}
-
-// One node row: ring + label + status sub-label, expanding into a glass card.
-function NodeRow({ id, status, dashed, label, sub, badge, open, onToggle, refCallback, children }) {
+function Node({ node, onSelect, refCallback, focal }) {
+  const interactive = Boolean(onSelect);
   const activate = (event) => {
-    if (event.key !== "Enter" && event.key !== " ") return;
+    if (!interactive || (event.key !== "Enter" && event.key !== " ")) return;
     event.preventDefault();
-    onToggle();
+    onSelect();
   };
   return (
-    <div className={`bf-row${open ? " bf-row--open" : ""}`}>
-      <div
-        className="bf-row__line"
-        role="button"
-        tabIndex={0}
-        aria-expanded={open}
-        aria-controls={`${id}-card`}
-        onClick={onToggle}
-        onKeyDown={activate}
+    <div
+      className={`bf-node bf-node--${node.kind}${node.dim ? " bf-node--dim" : ""}${focal ? " bf-node--focal" : ""}`}
+      role={interactive ? "button" : undefined}
+      tabIndex={interactive ? 0 : undefined}
+      onClick={onSelect}
+      onKeyDown={activate}
+      aria-label={interactive ? `Select ${node.label}` : undefined}
+    >
+      <span
+        ref={refCallback}
+        className={`bf-ring bf-ring--${node.status}${node.dashed ? " bf-ring--dashed" : ""}${focal ? " bf-ring--focal" : ""}`}
+        aria-hidden="true"
       >
-        <Ring status={status} open={open} dashed={dashed} refCallback={refCallback} />
-        <span className="bf-row__label">{label}</span>
-        {badge && <span className="bf-row__badge">{badge}</span>}
-        <span className="bf-row__sub">{sub}</span>
-      </div>
-      {open && (
-        <div className="bf-card" id={`${id}-card`}>
-          {children}
-        </div>
-      )}
+        <span className="bf-ring__core" />
+      </span>
+      <span className="bf-node__text">
+        <span className="bf-node__label">{node.label}</span>
+        {(node.sub || node.at || node.severity) && (
+          <span className="bf-node__sub">
+            {node.severity && <em className={`bf-sev bf-sev--${node.severity}`}>{SEVERITY_LABEL[node.severity]}</em>}
+            {node.sub}
+            {node.at ? `${node.sub ? " · " : ""}${agoLabel(node.at)}` : ""}
+          </span>
+        )}
+      </span>
     </div>
   );
 }
 
-function Step({ step }) {
-  const [copied, setCopied] = useState(false);
-  const meta = STEP_META[step.kind] || STEP_META.decide;
-  const copy = useCallback(async () => {
-    try {
-      await navigator.clipboard.writeText(step.command);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1600);
-    } catch {
-      setCopied(false);
-    }
-  }, [step.command]);
+// ---------------------------------------------------------------------------
+// The CTA row (spec §5.1 / §6). Exactly four affordances, and the source is a
+// link rather than a fifth button.
+// ---------------------------------------------------------------------------
 
-  return (
-    <li className={`bf-step bf-step--${step.kind}`}>
-      <span className="bf-step__glyph">{meta.glyph}</span>
-      <span className="bf-step__kind">{meta.label}</span>
-      <div className="bf-step__main">
-        <div className="bf-step__text">{step.text}</div>
-        {step.command && (
-          <div className="bf-step__cmd">
-            <code>{step.command}</code>
-            <button type="button" onClick={copy} aria-label="Copy command">
-              {copied ? "copied" : "copy"}
-            </button>
-          </div>
-        )}
-        {step.href && (
-          <a className="bf-step__link" href={step.href} target="_blank" rel="noreferrer noopener">
-            {step.href.replace(/^https?:\/\//, "").slice(0, 68)} ↗
-          </a>
-        )}
-      </div>
-    </li>
-  );
-}
-
-// The follow-through control. Until this existed an owner action expanded to
-// text and nothing she clicked could change anything: her ruling had nowhere to
-// go, and nothing left the queue when she acted.
-//
-// Every action writes through exception.mjs, so the inbox stays the single
-// source of truth. The server's fresh list is rendered rather than an
-// optimistic guess, because a ruling deliberately KEEPS the item open — the
-// filing lane still has to do the work — and pretending otherwise would drop
-// the follow-up on the floor.
-function ActionBar({ action, onResolved }) {
+function CTA({ action, onDone }) {
+  const [mode, setMode] = useState(null);        // null | 'reply' | 'defer' | 'dismiss'
+  const [text, setText] = useState("");
   const [pending, setPending] = useState(null);
-  const [note, setNote] = useState("");
   const [error, setError] = useState(null);
-  const [done, setDone] = useState(null);
+  const [result, setResult] = useState(null);
+  const inputRef = useRef(null);
+
+  useEffect(() => {
+    if (mode === "reply") inputRef.current?.focus();
+  }, [mode]);
 
   if (!actionsAvailable()) {
-    // Degrade to read-only rather than showing controls that silently fail. A
-    // dead button here is worse than no button: she cannot tell "acted" from
-    // "nothing happened".
-    return (
-      <p className="bf-note">
-        Read-only — launch with <code>node D:/Projects/.tools/catchup.mjs</code> to act from here.
-      </p>
-    );
+    return <p className="bf-note">Read-only — launch with <code>node D:/Projects/.tools/catchup.mjs</code> to act from here.</p>;
   }
 
-  if (done) {
+  if (result) {
     return (
       <p className="bf-note bf-note--ok">
-        Recorded — {done.action === "ruling"
-          ? "sent back to the lane that asked; it stays open until that lane finishes."
-          : "closed, and it will be gone on the next rebuild."}
+        {result.resumesNextTick
+          ? `Ruling saved · ${result.loop || "the lane"} resumes next tick`
+          : `Ruling sent → ${result.loop || "the lane"}`}
       </p>
     );
   }
 
-  async function run(key) {
+  async function run(kind, payload = {}) {
     setError(null);
-    setPending(key);
+    setPending(kind);
     try {
-      const result = await recordAction({ id: action.id, action: key, note });
-      setDone(result.decision);
-      onResolved?.(result);
+      const response = await recordAction({ id: action.id, action: kind, ...payload });
+      setResult({ loop: action.loop, resumesNextTick: true });
+      onDone?.(response);
     } catch (err) {
+      // Never silently lose a ruling: the composer keeps its text.
       setError(err.message || String(err));
     } finally {
       setPending(null);
     }
   }
 
+  const hasProposed = Boolean(String(action.proposed || "").trim());
+
   return (
     <div className="bf-cta">
-      <input
-        className="bf-cta__note"
-        value={note}
-        onChange={(event) => setNote(event.target.value)}
-        placeholder="your ruling, in your words"
-        aria-label="Your ruling"
-      />
       <div className="bf-cta__row">
-        {Object.values(OWNER_ACTION_KINDS).map((spec) => (
-          <button
-            key={spec.key}
-            type="button"
-            className={`bf-cta__btn bf-cta__btn--${spec.key}`}
-            title={spec.hint}
-            disabled={Boolean(pending)}
-            onClick={() => run(spec.key)}
-          >{pending === spec.key ? "…" : spec.label}</button>
-        ))}
+        {hasProposed && (
+          <button type="button" className="bf-cta__btn bf-cta__btn--approve" disabled={Boolean(pending)}
+            onClick={() => run("approve")}>
+            {pending === "approve" ? "…" : "Approve proposed"}
+          </button>
+        )}
+        <button type="button" className={`bf-cta__btn${mode === "reply" ? " bf-cta__btn--on" : ""}`}
+          onClick={() => setMode(mode === "reply" ? null : "reply")}>Reply…</button>
+        <button type="button" className={`bf-cta__btn${mode === "defer" ? " bf-cta__btn--on" : ""}`}
+          onClick={() => setMode(mode === "defer" ? null : "defer")}>Defer</button>
+        <button type="button" className={`bf-cta__btn bf-cta__btn--more${mode === "dismiss" ? " bf-cta__btn--on" : ""}`}
+          aria-label="More actions"
+          onClick={() => setMode(mode === "dismiss" ? null : "dismiss")}>⋯</button>
       </div>
+
+      {mode === "reply" && (
+        <div className="bf-cta__panel">
+          <div className="bf-chips">
+            {REPLY_CHIPS.map((chip) => (
+              <button key={chip} type="button" className="bf-chip" disabled={Boolean(pending)}
+                onClick={() => run("reply", { note: chip })}>{chip}</button>
+            ))}
+          </div>
+          <input
+            ref={inputRef}
+            className="bf-cta__note"
+            value={text}
+            onChange={(event) => setText(event.target.value)}
+            onKeyDown={(event) => {
+              // Enter submits; Shift+Enter is a line break (spec §5.1).
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                if (text.trim()) run("reply", { note: text });
+              }
+            }}
+            placeholder="your reply, persisted verbatim"
+            aria-label="Your reply"
+          />
+        </div>
+      )}
+
+      {mode === "defer" && (
+        <div className="bf-cta__panel bf-chips">
+          {DEFER_PRESETS.map((preset) => (
+            <button key={preset} type="button" className="bf-chip" disabled={Boolean(pending)}
+              onClick={() => run("defer", { until: resolveDeferPreset(preset).toISOString(), note: preset })}>
+              {preset}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {mode === "dismiss" && (
+        <div className="bf-cta__panel bf-chips">
+          {/* Two clicks, no modal (spec §5.1). */}
+          <button type="button" className="bf-chip bf-chip--danger" disabled={Boolean(pending)}
+            onClick={() => run("dismiss", { note: text || "not needed" })}>Confirm dismiss</button>
+          <span className="bf-note">Dismiss as not needed</span>
+        </div>
+      )}
+
       {error && <p className="bf-note bf-note--warn">{error}</p>}
     </div>
   );
 }
 
-// The "Needs you" cluster: an amber origin orb fanning to one dashed ring per
-// open owner action. In the 30-sec brief only the high-severity asks fan out;
-// the rest wait behind a ghost node.
-function NeedsYou({ actions, viewport, toggle, showAll, onShowAll, onResolved }) {
-  const visible = showAll ? actions : actions.filter((a) => a.severity === "high");
-  const hidden = actions.length - visible.length;
-  const [containerRef, ringRef, geometry] = useMeasuredThreads([visible.length, viewport, showAll]);
-  const origin = { x: 74, y: Math.max(84, geometry.height / 2) };
-
+function OwnerCard({ action, onDone }) {
+  const hints = action.steps || [];
   return (
-    <section className="bf-cluster bf-cluster--needs" ref={containerRef}>
-      <ThreadFan geometry={geometry} origin={origin} dashedKeys={new Set(geometry.points.map((p) => p.key))} />
-      <div className="bf-orb bf-orb--amber" style={{ top: origin.y }}>
-        <span className="bf-orb__glow" />
-        <div className="bf-orb__label">
-          <strong>Needs you</strong>
-          <small>{actions.length} open{actions.filter((a) => a.severity === "high").length ? ` · ${actions.filter((a) => a.severity === "high").length} high` : ""}</small>
+    <div className="bf-card">
+      <div className="bf-card__eyebrow">
+        Decision · {action.loop || "unfiled"}
+        {action.severity && <em className={`bf-sev bf-sev--${action.severity}`}>{SEVERITY_LABEL[action.severity]}</em>}
+        <span>{effortLabel(action.estimatedSeconds)}</span>
+        <span>{agoLabel(action.updated)}</span>
+      </div>
+      <h2 className="bf-card__title">{action.title}</h2>
+
+      {action.proposed && (
+        <div className="bf-card__section">
+          <h3>Proposed action</h3>
+          <p className="bf-verbatim">{action.proposed}</p>
         </div>
-      </div>
-      <div className="bf-rows">
-        {visible.map((action) => (
-          <NodeRow
-            key={action.nodeId}
-            id={action.nodeId}
-            status="needs_human"
-            dashed
-            label={action.title}
-            badge={SEVERITY_LABEL[action.severity]}
-            sub={`${effortLabel(action.estimatedSeconds)} · ${agoLabel(action.updated)}`}
-            open={viewport.isExpanded(action.nodeId)}
-            onToggle={() => toggle(action.nodeId)}
-            refCallback={ringRef(action.nodeId)}
-          >
-            {action.steps.length > 0 ? (
-              <ol className="bf-steps">
-                {action.steps.map((step) => (
-                  <Step key={`${action.id}-${step.n}`} step={step} />
-                ))}
-              </ol>
-            ) : (
-              <p className="bf-note">No atomic steps recorded yet — this ask is still prose.</p>
-            )}
-            {action.needsBreakdown && !action.authoredSteps && (
-              <p className="bf-note bf-note--warn">
-                Steps derived from prose — the filing lane has not broken this down. A hint, not a checklist.
-              </p>
-            )}
-            {action.latestAmendment && (
-              <details className="bf-more">
-                <summary>Latest amendment{action.amendmentCount > 1 ? ` (${action.amendmentCount})` : ""}</summary>
-                <p>{action.latestAmendment}</p>
-              </details>
-            )}
-            <ActionBar action={action} onResolved={onResolved} />
-            <div className="bf-provenance">
-              {action.loop && <span>{action.loop}</span>}
-              <span>{action.id}</span>
-            </div>
-          </NodeRow>
-        ))}
-        {hidden > 0 && (
-          <div className="bf-row">
-            <button type="button" className="bf-row__line bf-row__line--ghost" onClick={onShowAll}>
-              <span className="bf-ring bf-ring--ghost" ref={ringRef("__ghost_actions")} aria-hidden="true"><span className="bf-ring__core" /></span>
-              <span className="bf-row__label">{hidden} more, medium and low</span>
-              <span className="bf-row__sub">expand</span>
-            </button>
-          </div>
-        )}
-      </div>
-    </section>
+      )}
+
+      {/* CTA sits ABOVE provenance: the spec forbids making her open details
+          before she can act. */}
+      <CTA action={action} onDone={onDone} />
+
+      {hints.length > 0 && (
+        <div className="bf-card__section">
+          <h3>Hints <small>derived from prose · not an authoritative checklist</small></h3>
+          <ul className="bf-hints">
+            {hints.map((hint, index) => (
+              <li key={hint.n ?? index}><span className="bf-hint__tag">HINT</span>{hint.text}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {action.latestAmendment && (
+        <details className="bf-more">
+          <summary>Latest amendment{action.amendmentCount > 1 ? ` (${action.amendmentCount})` : ""}</summary>
+          <p className="bf-verbatim">{action.latestAmendment}</p>
+        </details>
+      )}
+
+      <div className="bf-card__foot">{action.id}</div>
+    </div>
   );
 }
 
-// One lane cluster: origin orb (lane name + its two conversations) fanning to
-// the latest records' items, newest first.
-function Lane({ lane, viewport, toggle }) {
-  const rows = [];
-  for (const record of lane.records) {
-    for (const item of record.items) {
-      rows.push({ record, item });
-    }
-  }
-  const [containerRef, ringRef, geometry] = useMeasuredThreads([rows.length, viewport]);
-  const origin = { x: 74, y: Math.max(84, geometry.height / 2) };
-  const dashedKeys = new Set(rows.filter(({ item }) => item.status === "needs_human" || item.status === "live").map(({ item }) => item.nodeId));
-
+function RecordCard({ item }) {
   return (
-    <section className="bf-cluster" >
-      <div ref={containerRef} className="bf-cluster__inner">
-        <ThreadFan geometry={geometry} origin={origin} dashedKeys={dashedKeys} />
-        <div className="bf-orb" style={{ top: origin.y }}>
-          <span className="bf-orb__glow" />
-          <div className="bf-orb__label">
-            <strong>{lane.label}</strong>
-            <small>{agoLabel(lane.lastSeen)} · {lane.total} total</small>
-            <span className="bf-orb__links">
-              {lane.autoRunUrl && <a href={lane.autoRunUrl} target="_blank" rel="noreferrer noopener">Auto Run ↗</a>}
-              {lane.seedUrl && <a href={lane.seedUrl} target="_blank" rel="noreferrer noopener" title="The frozen original this lane was branched from">Seed ↗</a>}
-            </span>
-          </div>
+    <div className="bf-card">
+      <div className="bf-card__eyebrow">{item.facet}<span>{agoLabel(item.at)}</span></div>
+      <h2 className="bf-card__title">{item.title}</h2>
+      {item.detail && <p className="bf-verbatim">{item.detail}</p>}
+      {(item.links?.length > 0 || item.refs?.exceptions?.length > 0 || item.refs?.prs?.length > 0) && (
+        <div className="bf-refs">
+          {item.links?.map((link) => <a key={link.href} href={link.href} target="_blank" rel="noreferrer noopener">{link.text} ↗</a>)}
+          {item.refs?.exceptions?.map((id) => <span key={id} className="bf-ref bf-ref--exception">{id}</span>)}
+          {item.refs?.prs?.map((pr) => <span key={pr} className="bf-ref">{pr}</span>)}
         </div>
-        <div className="bf-rows">
-          {rows.map(({ record, item }) => (
-            <NodeRow
-              key={item.nodeId}
-              id={item.nodeId}
-              status={item.status}
-              dashed={item.status === "needs_human"}
-              label={item.headline}
-              sub={`${TYPE_LABEL[item.type] || "state"} · ${agoLabel(record.emittedAt)}${record.provenance === "backfilled-from-log" ? " · reconstructed" : ""}`}
-              open={viewport.isExpanded(item.nodeId)}
-              onToggle={() => toggle(item.nodeId)}
-              refCallback={ringRef(item.nodeId)}
-            >
-              <p className="bf-detail">{item.detail || item.raw}</p>
-              {(item.links?.length > 0 || item.refs?.exceptions?.length > 0 || item.refs?.prs?.length > 0) && (
-                <div className="bf-refs">
-                  {item.links?.map((link) => (
-                    <a key={link.href} href={link.href} target="_blank" rel="noreferrer noopener">{link.text} ↗</a>
-                  ))}
-                  {item.refs?.exceptions?.map((id) => <span key={id} className="bf-ref bf-ref--exception">{id}</span>)}
-                  {item.refs?.prs?.map((pr) => <span key={pr} className="bf-ref">{pr}</span>)}
-                </div>
-              )}
-              {record.provenance === "backfilled-from-log" && (
-                <div className="bf-provenance"><span>reconstructed from {record.sourceRef || "an ops log"}</span></div>
-              )}
-            </NodeRow>
-          ))}
-          {lane.hiddenCount > 0 && (
-            <div className="bf-row">
-              <div className="bf-row__line bf-row__line--ghost bf-row__line--static">
-                <span className="bf-ring bf-ring--ghost" ref={ringRef(`__ghost_${lane.lane}`)} aria-hidden="true"><span className="bf-ring__core" /></span>
-                <span className="bf-row__label">{lane.hiddenCount.toLocaleString()} earlier, abstracted away</span>
-              </div>
-            </div>
-          )}
+      )}
+    </div>
+  );
+}
+
+function HintCard({ card, onNav }) {
+  return (
+    <div className="bf-card">
+      <div className="bf-card__eyebrow">HINT · derived from the filing lane's prose</div>
+      <h2 className="bf-card__title">{card.hint?.text || "—"}</h2>
+      {card.hint?.command && <div className="bf-step__cmd"><code>{card.hint.command}</code></div>}
+      {card.hint?.href && <a className="bf-step__link" href={card.hint.href} target="_blank" rel="noreferrer noopener">{card.hint.href} ↗</a>}
+      <p className="bf-note">Not an authoritative checklist. Selecting a hint never changes state.</p>
+      {card.total > 1 && (
+        <div className="bf-hintnav">
+          <button type="button" disabled={card.index === 0} onClick={() => onNav(card.index - 1)}>← previous hint</button>
+          <span>{card.index + 1} / {card.total}</span>
+          <button type="button" disabled={card.index >= card.total - 1} onClick={() => onNav(card.index + 1)}>next hint →</button>
         </div>
-      </div>
-    </section>
+      )}
+    </div>
   );
 }
 
 function Stars() {
-  // A deterministic scatter of faint particles — the Plakhova texture, at 2%
-  // opacity rather than as the subject. Seeded so every reload is identical.
   const stars = useMemo(() => {
     const out = [];
     let seed = 20260817;
-    const rand = () => {
-      seed = (seed * 1103515245 + 12345) % 2147483648;
-      return seed / 2147483648;
-    };
-    for (let i = 0; i < 90; i++) {
-      out.push({
-        left: `${(rand() * 100).toFixed(2)}%`,
-        top: `${(rand() * 100).toFixed(2)}%`,
-        size: rand() > 0.85 ? 2 : 1,
-        opacity: 0.12 + rand() * 0.3,
-      });
+    const rand = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
+    for (let i = 0; i < 80; i++) {
+      out.push({ left: `${(rand() * 100).toFixed(2)}%`, top: `${(rand() * 100).toFixed(2)}%`, size: rand() > 0.85 ? 2 : 1, opacity: 0.1 + rand() * 0.28 });
     }
     return out;
   }, []);
   return (
     <div className="bf-stars" aria-hidden="true">
-      {stars.map((s, i) => (
-        <span key={i} style={{ left: s.left, top: s.top, width: s.size, height: s.size, opacity: s.opacity }} />
-      ))}
+      {stars.map((s, i) => <span key={i} style={{ left: s.left, top: s.top, width: s.size, height: s.size, opacity: s.opacity }} />)}
     </div>
   );
-}
-
-function awayLabel(lanes) {
-  const newest = lanes.map((l) => Date.parse(l.lastSeen || "")).filter(Number.isFinite).sort((a, b) => b - a)[0];
-  if (!newest) return null;
-  const minutes = Math.max(0, Math.round((Date.now() - newest) / 60000));
-  if (minutes < 60) return `${minutes} min`;
-  const h = Math.floor(minutes / 60);
-  const m = minutes % 60;
-  if (h < 48) return `${h}h ${m}m`;
-  return `${Math.round(h / 24)} days`;
 }
 
 function EmptyBriefing() {
@@ -474,51 +358,74 @@ function EmptyBriefing() {
 }
 
 function BriefingSurface({ data }) {
-  const initial = useMemo(() => readBriefingLocation(window.location.href), []);
-  const [expanded, setExpanded] = useState(initial.expanded);
-  const [latest, setLatest] = useState(initial.latest);
-  const [laneFilter, setLaneFilter] = useState(initial.laneFilter);
-  const [showAllActions, setShowAllActions] = useState(initial.latest != null && initial.latest >= 5);
-  // Owner actions become live state the moment she acts on one; until then the
-  // document's list is authoritative.
+  const initial = useMemo(() => readLocation(window.location.href), []);
+  const [path, setPath] = useState(initial.path);
+  const [brief, setBrief] = useState(initial.brief);
+  const [page, setPage] = useState(initial.page);
   const [liveActions, setLiveActions] = useState(null);
+  const [showDeferred, setShowDeferred] = useState(false);
 
   useEffect(() => {
     const restore = () => {
-      const next = readBriefingLocation(window.location.href);
-      setExpanded(next.expanded);
-      setLatest(next.latest);
-      setLaneFilter(next.laneFilter);
+      const next = readLocation(window.location.href);
+      setPath(next.path);
+      setBrief(next.brief);
+      setPage(next.page);
     };
     window.addEventListener("popstate", restore);
     return () => window.removeEventListener("popstate", restore);
   }, []);
 
-  const viewport = useMemo(
-    () => buildBriefingViewport(data, { latest, expanded, laneFilter }),
-    [data, latest, expanded, laneFilter],
+  const effective = useMemo(
+    () => (liveActions ? { ...data, ownerActions: liveActions } : data),
+    [data, liveActions],
   );
 
-  const toggle = useCallback((id) => {
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      writeBriefingLocation({ expanded: next, latest, laneFilter }, "push");
-      return next;
-    });
-  }, [latest, laneFilter]);
+  const scene = useMemo(
+    () => buildScene(effective, { path, brief, page }),
+    [effective, path, brief, page],
+  );
 
-  const setBrief = useCallback((preset) => {
-    setLatest(preset.latest);
-    setShowAllActions(preset.key === "full");
-    writeBriefingLocation({ expanded, latest: preset.latest, laneFilter }, "replace");
-  }, [expanded, laneFilter]);
+  const go = useCallback((nextPath, mode = "push") => {
+    setPath(nextPath);
+    setPage(0);
+    writeLocation({ path: nextPath, brief, page: 0 }, mode);
+  }, [brief]);
 
-  const activeBrief = BRIEFS.find((b) => b.latest === viewport.perLane)?.key
-    ?? (viewport.perLane >= 5 ? "full" : "3m");
-  const away = awayLabel(viewport.lanes);
-  const high = viewport.ownerActions.filter((a) => a.severity === "high").length;
+  const setBriefPreset = useCallback((key) => {
+    setBrief(key);
+    writeLocation({ path, brief: key, page }, "replace");
+  }, [path, page]);
+
+  const turnPage = useCallback((delta) => {
+    const next = Math.max(0, page + delta);
+    setPage(next);
+    writeLocation({ path, brief, page: next }, "replace");
+  }, [path, brief, page]);
+
+  const [containerRef, ringRef, geometry] = useMeasuredThreads([scene.nodes.length, scene.path, scene.card]);
+  const origin = { x: 64, y: Math.max(70, geometry.height / 2) };
+
+  // Keyboard: Escape climbs one semantic level (spec §11).
+  useEffect(() => {
+    const onKey = (event) => {
+      if (event.key === "Escape" && scene.path) {
+        event.preventDefault();
+        go(parentPath(scene.path));
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [scene.path, go]);
+
+  const hasOrigin = scene.nodes.some((n) => n.kind === "origin" || n.kind === "parent");
+  const away = awayLabel(data.lanes || []);
+  const { counts } = scene;
+
+  const onRuled = useCallback((response) => {
+    // Render the server's rebuilt queue; never optimistically remove an item.
+    if (response?.ownerActions) setLiveActions(response.ownerActions);
+  }, []);
 
   return (
     <main className="bf-root">
@@ -528,92 +435,104 @@ function BriefingSurface({ data }) {
         <div className="bf-brand"><span className="bf-brand__dot" />{config.siteName} <span>/ Continuity</span></div>
         <div className="bf-away">
           {away ? <>You were away for <b>{away}</b></> : "Catch-up"}
-          {viewport.generatedAtLocal && (
-            <small> · as at {viewport.generatedAtLocal.slice(0, 16).replace("T", " ")} Sydney</small>
-          )}
+          <small>
+            {" "}· {counts.dueNow} need you now
+            {counts.deferred ? ` · ${counts.deferred} deferred` : ""}
+            {" "}· {counts.lanes} lanes changed · {counts.records.toLocaleString()} source records hidden
+          </small>
         </div>
         <div className="bf-top__actions">
           <div className="bf-briefsel" role="group" aria-label="Brief me in">
             <span>Brief me in:</span>
             {BRIEFS.map((preset) => (
-              <button
-                key={preset.key}
-                type="button"
-                className={activeBrief === preset.key ? "bf-briefsel--active" : ""}
-                onClick={() => setBrief(preset)}
-              >{preset.label}</button>
+              <button key={preset.key} type="button"
+                className={brief === preset.key ? "bf-briefsel--active" : ""}
+                onClick={() => setBriefPreset(preset.key)}>{preset.label}</button>
             ))}
           </div>
           <a href="?view=continuity">Continuity ↗</a>
         </div>
       </header>
 
-      <div className="bf-tiles">
-        <div className="bf-tile bf-tile--amber">
-          <b>{viewport.ownerActions.length}</b>
-          <span>decisions need you{high ? <em>{high} high</em> : null}</span>
-        </div>
-        <div className="bf-tile">
-          <b>{viewport.lanes.length}</b>
-          <span>lanes reporting</span>
-        </div>
-        <div className="bf-tile">
-          <b>{(viewport.totals.mustReads ?? 0).toLocaleString()}</b>
-          <span>must-reads recorded</span>
-        </div>
-      </div>
-
-      {viewport.ownerActions.length > 0 ? (
-        <NeedsYou
-          actions={liveActions ?? viewport.ownerActions}
-          viewport={viewport}
-          toggle={toggle}
-          showAll={showAllActions}
-          onShowAll={() => setShowAllActions(true)}
-          onResolved={(result) => setLiveActions(
-            // The server returns the rebuilt queue; render that rather than
-            // guessing which items her action removed.
-            (result.ownerActions || []).map((a) => ({ ...a, nodeId: `oa:${a.id}` })),
-          )}
-        />
-      ) : (
-        <p className="bf-note bf-note--center">Nothing is blocked on you.</p>
-      )}
-
-      {laneFilter && (
-        <button type="button" className="bf-clear" onClick={() => {
-          setLaneFilter(null);
-          writeBriefingLocation({ expanded, latest, laneFilter: null }, "push");
-        }}>
-          showing one lane — show all
-        </button>
-      )}
-
-      {viewport.lanes.map((lane) => (
-        <Lane key={lane.lane} lane={lane} viewport={viewport} toggle={toggle} />
-      ))}
-
-      <footer className="bf-bottom">
-        <div className="bf-legend">
-          {Object.entries(STATUS_META).map(([status, meta]) => (
-            <span key={status} className="bf-legend__item">
-              <span className={`bf-ring bf-ring--mini bf-ring--${status}${status === "needs_human" ? " bf-ring--dashed" : ""}`}><span className="bf-ring__core" /></span>
-              {meta.label}
+      {scene.breadcrumb.length > 0 && (
+        <nav className="bf-crumbs" aria-label="Semantic position">
+          {scene.breadcrumb.map((crumb, index) => (
+            <span key={crumb.path || "root"}>
+              {index > 0 && <i>›</i>}
+              <button type="button" onClick={() => go(crumb.path)}>{crumb.label}</button>
             </span>
           ))}
+        </nav>
+      )}
+
+      {/* Without a card the stage is a single centred column — the spec warns
+          against "an enormous empty right-side stage". */}
+      <section className={`bf-stage${scene.card ? "" : " bf-stage--nocard"}`} ref={containerRef}>
+        <ThreadFan geometry={geometry} origin={origin} enabled={hasOrigin} />
+        <div className="bf-stage__nodes">
+          {scene.nodes.map((n) => (
+            <Node
+              key={n.key}
+              node={n}
+              focal={n.kind === "focus"}
+              refCallback={ringRef(n.key)}
+              onSelect={n.kind === "focus" || n.kind === "absent" ? undefined : () => go(n.path)}
+            />
+          ))}
         </div>
-        <div className="bf-detaildial" role="group" aria-label="Detail per lane">
-          <button type="button" onClick={() => setBrief(BRIEFS[Math.max(0, BRIEFS.findIndex((b) => b.latest === viewport.perLane) - 1)] || BRIEFS[0])} aria-label="Less detail">−</button>
+
+        {scene.card?.kind === "owner_action" && <OwnerCard action={scene.card.action} onDone={onRuled} />}
+        {scene.card?.kind === "record" && <RecordCard item={scene.card.item} />}
+        {scene.card?.kind === "hint" && (
+          <HintCard card={scene.card} onNav={(i) => go(`${parentPath(scene.path)}/hint/${i}`, "replace")} />
+        )}
+      </section>
+
+      <footer className="bf-bottom">
+        <div className="bf-bottomleft">
+          {scene.hidden > 0 && scene.pageCount > 1 && (
+            <div className="bf-pager">
+              <button type="button" onClick={() => turnPage(-1)} aria-label="Previous page">‹</button>
+              <span>+ {scene.hidden} quieter · {scene.page + 1}/{scene.pageCount}</span>
+              <button type="button" onClick={() => turnPage(1)} aria-label="Next page">›</button>
+            </div>
+          )}
+          {counts.deferred > 0 && (
+            <button type="button" className="bf-deferred" onClick={() => setShowDeferred((v) => !v)}>
+              {counts.deferred} deferred
+            </button>
+          )}
+        </div>
+        <div className="bf-detaildial" role="group" aria-label="Semantic resolution">
+          <button type="button" onClick={() => go(parentPath(scene.path))} disabled={!scene.path} aria-label="Less detail">−</button>
           <span>less</span>
           <span className="bf-detaildial__dots">
-            {BRIEFS.map((preset) => (
-              <i key={preset.key} className={preset.latest <= viewport.perLane ? "on" : ""} />
+            {["entry", "z0", "z1", "z2"].map((lvl, i) => (
+              <i key={lvl} className={["entry", "z0", "z1", "z2", "z3", "z4"].indexOf(scene.level) >= i ? "on" : ""} />
             ))}
           </span>
           <span>more detail</span>
-          <button type="button" onClick={() => setBrief(BRIEFS[Math.min(BRIEFS.length - 1, BRIEFS.findIndex((b) => b.latest === viewport.perLane) + 1)] || BRIEFS[BRIEFS.length - 1])} aria-label="More detail">+</button>
+          <button type="button" aria-label="More detail"
+            disabled={!scene.nodes.some((n) => n.kind !== "origin" && n.kind !== "parent" && n.kind !== "focus")}
+            onClick={() => {
+              const first = scene.nodes.find((n) => n.kind !== "origin" && n.kind !== "parent" && n.kind !== "focus");
+              if (first) go(first.path);
+            }}>+</button>
         </div>
       </footer>
+
+      {showDeferred && (
+        <aside className="bf-deferpanel">
+          <h3>Deferred · {scene.deferredActions.length}</h3>
+          {scene.deferredActions.map((a) => (
+            <div key={a.id} className="bf-deferpanel__row">
+              <span>{a.title}</span>
+              <small>until {String(a.deferredUntil || "").slice(0, 16).replace("T", " ")}</small>
+            </div>
+          ))}
+          <button type="button" onClick={() => setShowDeferred(false)}>close</button>
+        </aside>
+      )}
     </main>
   );
 }
