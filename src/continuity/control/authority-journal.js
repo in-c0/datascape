@@ -235,6 +235,24 @@ export function createAuthorityJournal({ storage, exceptions, now, faultInjector
       return committed().map((e) => ({ ...e }));
     },
 
+    /**
+     * The current authority for an authority DOMAIN, found without a goal id.
+     *
+     * The live UI has no goal id after a reload — it has only the blocker it
+     * came from — and looking the goal up via the open blocker cannot work
+     * because a successful grant RESOLVES that blocker. So the lineage is
+     * indexed by the originating exception recorded on the grant itself, which
+     * survives resolution because it lives in the journal rather than in the
+     * exception layer.
+     */
+    currentForDomain(sourceExceptionId) {
+      if (!sourceExceptionId) return null;
+      const lineage = committed()
+        .map((e) => e.record)
+        .filter((r) => r?.source_exception_id === sourceExceptionId);
+      return lineage.length ? lineage[lineage.length - 1] : null;
+    },
+
     /** Every committed revision for a goal, oldest first. */
     revisions(goalId) {
       return committed().map((e) => e.record).filter((r) => r?.goal?.goal_id === goalId);

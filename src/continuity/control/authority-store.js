@@ -220,6 +220,7 @@ export function createAuthorityStore({ boundary, exceptions, now, verifier = ver
     },
 
     current: (goalId) => journal.current(goalId),
+    currentForDomain: (exceptionId) => journal.currentForDomain(exceptionId),
 
     history(goalId) {
       return journal.revisions(goalId).map((r) => ({

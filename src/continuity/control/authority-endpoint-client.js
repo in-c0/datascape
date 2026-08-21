@@ -42,6 +42,8 @@ export function createAuthorityEndpointClient({ endpoint = AUTHORITY_ENDPOINT, t
     holdsAuthenticator: false,
 
     authorize: (request) => call("authorize", request),
+    // ONE contextual read. The page never learns or sends a goal id.
+    authorityContext: () => call("context", {}),
     readCurrentAuthority: (goalId) => call("current", { goal_id: goalId }),
     readBlocker: () => call("blocker", {}),
     scopeCatalogue: () => call("catalogue", {}),

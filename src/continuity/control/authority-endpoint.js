@@ -97,6 +97,32 @@ export function createAuthorityEndpoint({ authenticateCaller, exceptions, now, s
 
   const handlers = {
     authorize,
+    /**
+     * ONE atomic contextual read (PR B third review, P0-1).
+     *
+     * The browser is never taught goal ids. It asks for the context of an
+     * authority domain and receives everything the surface needs, including
+     * authority granted in an earlier session — which the previous
+     * `readCurrentAuthority()` with no argument silently returned null for,
+     * so a refresh made durable authority vanish from the owner-facing route.
+     */
+    context: () => {
+      const blocker = readContext?.blocker?.() ?? null;
+      // Found by originating exception, so it keeps resolving AFTER the
+      // blocker itself has been resolved by the grant.
+      const domain = readContext?.domain?.() ?? blocker?.id ?? null;
+      const record = domain ? store.currentForDomain(domain) : null;
+      return {
+        ok: true,
+        blocker,
+        record,
+        revision: record?.revision ?? null,
+        state: record?.state ?? null,
+        catalogue: readContext?.catalogue?.() ?? [],
+        suggestions: readContext?.suggestions?.() ?? [],
+        draft: readContext?.draft?.() ?? null,
+      };
+    },
     current: ({ goal_id }) => {
       const record = store.current(goal_id);
       return record

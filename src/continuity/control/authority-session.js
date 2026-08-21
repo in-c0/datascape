@@ -23,6 +23,21 @@
  * inside a payload expression.
  */
 export async function loadAuthorityContext(adapter) {
+  // Prefer ONE atomic contextual read. Asking for the current authority with no
+  // goal id returned null on the live route, so a refresh made durable
+  // authority disappear from the owner-facing screen while it sat safely in
+  // storage — the worst possible failure for an authority UI.
+  if (typeof adapter.authorityContext === "function") {
+    const ctx = await adapter.authorityContext();
+    return {
+      ready: true,
+      blocker: ctx?.blocker ?? null,
+      currentAuthority: ctx?.record ?? null,
+      seedDraft: ctx?.draft ?? null,
+      catalogue: ctx?.catalogue ?? [],
+      suggestions: ctx?.suggestions ?? [],
+    };
+  }
   const [blocker, currentAuthority, seedDraft, catalogue, suggestions] = await Promise.all([
     Promise.resolve(adapter.readBlocker?.()).then(unwrap("blocker")),
     Promise.resolve(adapter.readCurrentAuthority?.()).then(unwrap("record")),
@@ -111,11 +126,26 @@ export async function amendAuthority({ adapter, goalId, expectedRevision, action
  * offering a control that would only pretend. The fixture route may simulate
  * all three, because everything there is openly a simulation.
  */
-export function availableControls({ canWrite, pausePersisted = false }) {
+export function availableControls({ canWrite, pausePersisted = false, widenSupported = false }) {
   return {
     pause: canWrite ? pausePersisted : true,
+    // "Change what it may do" re-enters the authoring flow and ends in
+    // authorize_goal, whose grant path creates revision 1 — a second rev1 on
+    // the same lineage, not an edit of it. Until an explicit widen transaction
+    // exists it is hidden on the live route rather than shipped broken.
+    widen: canWrite ? widenSupported : true,
+    // Narrowing is safer than widening and is still an authority revision, so
+    // it goes through a preview and an explicit confirmation.
     narrow: true,
+    narrow_requires_preview: true,
     revoke: true,
+    revoke_requires_confirmation: true,
     simulated: !canWrite,
   };
 }
+
+/** The copy shown before a revoke. Stated once, so both routes say the same thing. */
+export const REVOKE_CONFIRMATION = {
+  question: "Stop autonomous work under this goal?",
+  detail: "No new work will start, and running work stops at its next safe checkpoint.",
+};

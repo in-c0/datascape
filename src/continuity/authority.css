@@ -177,3 +177,8 @@
   border: 1px solid rgba(251, 154, 168, 0.35); border-radius: 9px; padding: 10px 13px;
 }
 .au__failure b { color: var(--au-text); font-weight: 620; }
+
+/* A narrow or a revoke is an authority revision, so it is confirmed before it
+ * is written (spec V6.1.5 PR B third review). */
+.au-confirm { border-color: rgba(232, 192, 120, 0.45); }
+.au-prev__line { font-size: 13.5px; margin: 0 0 9px; }

@@ -15,10 +15,12 @@ import path from "node:path";
 import { createAuthorityEndpoint } from "../src/continuity/control/authority-endpoint.js";
 import { createMemoryStorage } from "../src/continuity/control/authority-journal.js";
 import { createFixtureAuthorityAdapter } from "../src/continuity/control/authority-fixture-adapter.js";
-import { policyIdentityOf, resolveScopeSelection } from "../src/continuity/control/authority-draft.js";
+import { composeEnvelope, policyIdentityOf, renderPreview, resolveScopeSelection } from "../src/continuity/control/authority-draft.js";
 import { sanitizeClientRequest } from "../src/continuity/control/authority-request.js";
 import { SCOPE_CATALOGUE, fixtureStates } from "../src/continuity/control/authority-fixture.js";
 import { importGraph, reachesAny } from "../src/continuity/control/import-audit.js";
+import { availableControls, loadAuthorityContext } from "../src/continuity/control/authority-session.js";
+import { createAuthorityEndpointClient } from "../src/continuity/control/authority-endpoint-client.js";
 
 const SRC = path.resolve("src/continuity");
 const HUB = process.env.HUB_DIR || "D:/Projects/_hub";
@@ -223,6 +225,78 @@ const evBefore = evidence.endpoint.materialEvents().events.length;
 const evAfter = evidence.restart().materialEvents().events.length;
 record("authority_v5_events_survive_restart", evBefore > 0 && evAfter === evBefore ? 1 : 0);
 
+
+// --- MEASURED: authority is rediscoverable after a reload ---------------------
+//
+// The worst of the third-review defects: durable authority that the
+// owner-facing route could no longer find, because hydration asked for the
+// current authority with no goal id and the blocker it came from was already
+// resolved.
+const redisc = world({
+  readContext: {
+    blocker: () => (redisc.resolved.has(BLOCKER) ? null : { id: BLOCKER, title: "V6 execution authority" }),
+    domain: () => BLOCKER,
+    catalogue: () => SCOPE_CATALOGUE,
+    suggestions: () => [],
+    draft: () => null,
+  },
+});
+const browser = () => createAuthorityEndpointClient({
+  endpoint: "/x",
+  transport: async (url, init) => {
+    const op = url.split("/").pop();
+    return { ok: true, json: async () => redisc.endpoint.handle(op, JSON.parse(init.body)) };
+  },
+});
+const redGrant = redisc.endpoint.handle("authorize", body({ operation_id: "gov-redisc" }));
+const reloaded = await loadAuthorityContext(browser());
+record("authority_rediscovered_after_reload", reloaded.currentAuthority?.revision === 1 ? 1 : 0);
+
+redisc.endpoint.handle("authorize", {
+  operation_id: "gov-redisc-narrow", authorization_action: "narrow_authority",
+  goal_id: redGrant.goal_id, expected_authority_revision: 1, scope_refs: ["semantic-centre:continuity"],
+});
+redisc.restart();
+const afterNarrowReload = await loadAuthorityContext(browser());
+record("narrowed_revision_rediscovered_after_restart",
+  afterNarrowReload.currentAuthority?.revision === 2 && afterNarrowReload.currentAuthority?.state === "narrowed" ? 1 : 0);
+
+redisc.endpoint.handle("authorize", {
+  operation_id: "gov-redisc-revoke", authorization_action: "revoke_authority",
+  goal_id: redGrant.goal_id, expected_authority_revision: 2,
+});
+redisc.restart();
+const afterRevokeReload = await loadAuthorityContext(browser());
+record("revoked_revision_rediscovered_after_restart",
+  afterRevokeReload.currentAuthority?.revision === 3 && afterRevokeReload.currentAuthority?.state === "revoked" ? 1 : 0);
+
+// --- MEASURED: preview and hash describe one object ---------------------------
+const canaryReview = {
+  ...CANARY,
+  operation: "run_verification",
+  success_condition: "the briefing surface renders with zero console errors",
+};
+const canaryEnv = composeEnvelope(canaryReview.allowed_capabilities);
+const previewOf = (d) => renderPreview(d, canaryEnv);
+const weakened = { ...canaryReview, success_condition: "the page opened once" };
+const swappedOp = { ...canaryReview, operation: "prepare_patch" };
+
+record("canary_final_preview_derived_from_hashed_object",
+  JSON.stringify(previewOf(canaryReview).normalized)
+  === JSON.stringify({ ...previewOf(canaryReview).normalized }) && previewOf(canaryReview).done_when === canaryReview.success_condition ? 1 : 0);
+record("success_condition_preview_hash_divergence",
+  (policyIdentityOf(weakened) !== policyIdentityOf(canaryReview))
+  === (previewOf(weakened).done_when !== previewOf(canaryReview).done_when) ? 0 : 1);
+record("operation_preview_hash_divergence",
+  (policyIdentityOf(swappedOp) !== policyIdentityOf(canaryReview))
+  === (previewOf(swappedOp).operation !== previewOf(canaryReview).operation) ? 0 : 1);
+
+// --- MEASURED: live management semantics --------------------------------------
+const liveControls = availableControls({ canWrite: true });
+record("live_widening_resets_revision_to_1", liveControls.widen ? 1 : 0);
+record("live_narrowing_without_preview_or_confirmation", liveControls.narrow_requires_preview ? 0 : 1);
+record("live_revoke_without_confirmation", liveControls.revoke_requires_confirmation ? 0 : 1);
+
 // --- §20 positives, including a REAL bounded-task authorization ---------------
 let auditRequests = [];
 const good = world({ shadowAudit: (req) => { auditRequests.push(req); return { ok: true, audit_ref: "shadow-1" }; } });
@@ -284,6 +358,9 @@ const NEGATIVES = [
   "browser_global_object_can_provide_authenticator", "live_ui_imports_fixture_data",
   "live_route_accepts_fixture_state_controls", "authorize_bypasses_adapter_and_changes_local_state",
   "live_simulated_management_mutations", "async_adapter_read_during_render",
+  "live_widening_resets_revision_to_1", "live_narrowing_without_preview_or_confirmation",
+  "live_revoke_without_confirmation", "success_condition_preview_hash_divergence",
+  "operation_preview_hash_divergence",
   "browser_controlled_fault_injection_accepted", "corrupt_journal_treated_as_empty_authority",
   "post_resolve_pre_journal_inconsistency",
   "owner_spoof_accepted", "generic_ctn_authorization_accepted", "machine_ctn_authorization_accepted",
@@ -304,6 +381,8 @@ const POSITIVES = [
   "live_amendments_go_through_transaction", "connected_live_shell_hydrates_async",
   "canary_success_condition_covered_by_policy_identity", "canary_operation_covered_by_policy_identity",
   "authority_v5_events_survive_restart", "exception_recovery_verifies_same_ruling",
+  "authority_rediscovered_after_reload", "narrowed_revision_rediscovered_after_restart",
+  "revoked_revision_rediscovered_after_restart", "canary_final_preview_derived_from_hashed_object",
 ];
 
 const report = {
