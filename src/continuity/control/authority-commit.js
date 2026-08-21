@@ -51,6 +51,28 @@ export const FORBIDDEN_COMMIT_FIELDS = [
 /** The only two things a commit may carry. */
 export const COMMIT_FIELDS = ["operation_id", "preview_receipt"];
 
+/**
+ * TWO wires, not one.
+ *
+ * The comment above this function used to say durable replay happened "without
+ * needing the receipt", and that was false: the wire required `preview_receipt`
+ * before authentication or the committed lookup could happen at all. Dependence
+ * on the receipt OBJECT was gone; dependence on its ID was not. So the contract
+ * the recovery story promised —
+ *
+ *   host restart -> ephemeral receipt store gone -> fresh unlock ->
+ *   operation_id alone -> committed result replayed, prompt +0, write +0
+ *
+ * — could not actually be exercised, because the id she would need is held in a
+ * store that does not survive the restart.
+ *
+ * Splitting the wire fixes that WITHOUT weakening new commits: an
+ * operation_id-only request may replay a committed operation and may do nothing
+ * else. It cannot start a mutation, and it is refused by name if there is
+ * nothing committed to replay.
+ */
+export const REPLAY_FIELDS = ["operation_id"];
+
 export function validateCommitWire(body = {}) {
   const present = Object.keys(body ?? {});
   const forbidden = present.filter((key) => FORBIDDEN_COMMIT_FIELDS.includes(key));
@@ -68,10 +90,16 @@ export function validateCommitWire(body = {}) {
   if (!body.operation_id || typeof body.operation_id !== "string") {
     return { ok: false, failure: "invalid_commit", reason: "an authority commit needs a stable operation id" };
   }
-  if (!body.preview_receipt || typeof body.preview_receipt !== "string") {
-    return { ok: false, failure: "invalid_commit", reason: "an authority commit needs the receipt it was prepared with" };
+  if (body.preview_receipt !== undefined && typeof body.preview_receipt !== "string") {
+    return { ok: false, failure: "invalid_commit", reason: "a preview receipt is an opaque string" };
   }
-  return { ok: true, operation_id: body.operation_id, preview_receipt: body.preview_receipt };
+  return {
+    ok: true,
+    operation_id: body.operation_id,
+    preview_receipt: body.preview_receipt ?? null,
+    // A request with no receipt is a REPLAY REQUEST and nothing else.
+    replay_only: body.preview_receipt === undefined,
+  };
 }
 
 /**
@@ -165,7 +193,9 @@ export async function commitAuthority({
     // receipt id recorded with the claim. Without this, presenting a committed
     // id with a different prepared review replayed the first one's result for a
     // change she never approved.
-    if (done.receipt_id && done.receipt_id !== wire.preview_receipt) {
+    // Only when a receipt was actually offered. A replay-only request is
+    // asking "what became of this operation", not asserting which review it was.
+    if (!wire.replay_only && done.receipt_id && done.receipt_id !== wire.preview_receipt) {
       return {
         ok: false, failure: "idempotency_collision",
         reason: "this operation id was already used for a different prepared review",
@@ -173,6 +203,17 @@ export async function commitAuthority({
       };
     }
     return { ok: true, replayed: true, result: done.result, prompt_shown: false, authority_written: false };
+  }
+
+  // 3b. NOTHING COMMITTED, and no receipt offered. An operation_id on its own
+  //     may replay; it may never begin. Refusing by name here is what keeps the
+  //     replay wire from becoming a way to start a mutation with no review.
+  if (wire.replay_only) {
+    return {
+      ok: false, failure: "no_committed_operation",
+      reason: "there is no completed operation with that id to replay, and an id alone cannot start one",
+      prompt_shown: false, authority_written: false,
+    };
   }
 
   // 4. The receipt, and whether it belongs to THIS browser session.

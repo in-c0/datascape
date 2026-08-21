@@ -174,11 +174,61 @@ test("wire: authoritative fields are REFUSED, not ignored", () => {
   assert.deepEqual(COMMIT_FIELDS, ["operation_id", "preview_receipt"]);
 });
 
-test("wire: an unknown field is refused too, and both identifiers are required", () => {
+test("wire: an unknown field is refused, and an operation id is always required", () => {
   assert.equal(validateCommitWire({ operation_id: "op", preview_receipt: "r", note: "hi" }).failure, "unknown_commit_field");
   assert.equal(validateCommitWire({ preview_receipt: "r" }).failure, "invalid_commit");
-  assert.equal(validateCommitWire({ operation_id: "op" }).failure, "invalid_commit");
+  assert.equal(validateCommitWire({ operation_id: "op", preview_receipt: 7 }).failure, "invalid_commit");
   assert.equal(validateCommitWire({ operation_id: "op", preview_receipt: "r" }).ok, true);
+});
+
+test("wire: an operation id ALONE is a replay request, not a commit", () => {
+  // The old wire required both, which made the documented recovery story
+  // unreachable: after a restart the receipt store is gone, so the id she would
+  // have to supply no longer exists anywhere.
+  const replay = validateCommitWire({ operation_id: "op" });
+  assert.equal(replay.ok, true);
+  assert.equal(replay.replay_only, true);
+  assert.equal(replay.preview_receipt, null);
+
+  const full = validateCommitWire({ operation_id: "op", preview_receipt: "r" });
+  assert.equal(full.replay_only, false);
+});
+
+test("replay: an id alone replays a committed operation across a lost receipt store", async () => {
+  const h = harness();
+  const first = await h.commit(h.body());
+  assert.equal(first.ok, true);
+
+  // The receipt store is ephemeral; the journal is not. Simulate the restart by
+  // asking with the id and NOTHING else.
+  const restarted = h.restart();
+  const replayed = await restarted.commit({ operation_id: "op-1" });
+  assert.equal(replayed.ok, true);
+  assert.equal(replayed.replayed, true);
+  assert.equal(replayed.prompt_shown, false, "prompt +0");
+  assert.equal(replayed.authority_written, false, "write +0");
+  assert.equal(restarted.prompts.length, 0);
+  assert.equal(restarted.writes.length, 0);
+});
+
+test("replay: an id alone can NEVER start a new mutation", async () => {
+  const h = harness();
+  const result = await h.commit({ operation_id: "never-seen" });
+  assert.equal(result.ok, false);
+  assert.equal(result.failure, "no_committed_operation");
+  assert.equal(result.prompt_shown, false);
+  assert.equal(h.prompts.length, 0, "and it costs her no dialog");
+  assert.equal(h.writes.length, 0);
+});
+
+test("replay: an UNAUTHENTICATED id-only request returns no state at all", async () => {
+  const h = harness();
+  await h.commit(h.body());
+  h.state.session = null;
+  const result = await h.commit({ operation_id: "op-1" });
+  assert.equal(result.ok, false);
+  assert.equal(result.failure, "read_session_invalid");
+  assert.equal(result.result, undefined, "operation_id is not a bearer credential");
 });
 
 test("wire: a rejected commit never reaches a prompt", async () => {

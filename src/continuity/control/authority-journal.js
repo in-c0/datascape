@@ -154,6 +154,17 @@ export function createAuthorityJournal({ storage, exceptions, now, faultInjector
         const resolution = exceptions.resolve(entry.source_exception_id, {
           ruling_ref: rulingRef, at: now(), recovered: true,
         });
+        if (resolution?.inconsistent) {
+          // Our own torn write, which the adapter will refuse for as long as it
+          // exists. Retrying it every startup is not resilience; it is a loop
+          // that never terminates and never writes.
+          storage.update(entry.operation_id, {
+            phase: "inconsistent",
+            error: resolution.reason || "the exception carries this ruling but is not resolved",
+          });
+          recovered.push({ operation_id: entry.operation_id, outcome: "inconsistent" });
+          continue;
+        }
         if (resolution?.resolved_by && resolution.resolved_by !== rulingRef) {
           // Someone else's ruling closed this blocker. That is an inconsistent
           // state, not a race to win: fail closed rather than stacking a second
@@ -333,6 +344,52 @@ export function createAuthorityJournal({ storage, exceptions, now, faultInjector
       if (["committed", "inconsistent", "aborted"].includes(entry.phase)) return entry.phase;
       storage.update(operationId, { phase: "aborted", error: String(outcome), aborted_at: now() });
       return "aborted";
+    },
+
+    /**
+     * A transaction that REQUIRES the pre-prompt claim it belongs to.
+     *
+     * `transact()` stays as it is — the older in-process path uses it and it is
+     * correct for that path. But for the browser commit path the claim was
+     * load-bearing only at the outer orchestration layer: `transact()` opened
+     * the write without ever re-reading the claim, so nothing at the final
+     * durable boundary proved that THIS write belonged to THIS verification.
+     *
+     * Here it does. The entry must exist, still be `claimed`, and carry both
+     * the same receipt binding and the same receipt id. Every other state
+     * refuses BEFORE `build()` runs, so a mismatch can never produce an
+     * authority record at all.
+     */
+    transactClaimed({ operation_id, binding, receipt_id, source_exception_id = null, build }) {
+      const entry = storage.read().filter((e) => e.operation_id === operation_id).pop();
+      if (!entry) {
+        return { ok: false, outcome: "operation_not_claimed", reason: "no durable claim precedes this commit" };
+      }
+      if (entry.phase === "committed") {
+        return { ok: true, replayed: true, record: entry.record, revision: entry.record?.revision };
+      }
+      if (entry.phase === "aborted" || entry.phase === "inconsistent") {
+        return {
+          ok: false, outcome: "operation_aborted", phase: entry.phase,
+          reason: entry.error || "this operation already ended without committing",
+        };
+      }
+      if (entry.phase !== "claimed") {
+        return {
+          ok: false, outcome: "operation_in_progress",
+          reason: `this operation is already at ${entry.phase}`,
+        };
+      }
+      // Binding and receipt id are checked SEPARATELY even though the binding
+      // hashes the receipt id: a store that dropped one field should fail here
+      // rather than pass because the other still matched.
+      if (entry.binding !== binding || entry.receipt_id !== receipt_id) {
+        return {
+          ok: false, outcome: "idempotency_collision",
+          reason: "this operation id was claimed for a different prepared review",
+        };
+      }
+      return this.transact({ operation_id, source_exception_id, build });
     },
 
     /** Every committed entry, oldest first — the durable source of material events. */

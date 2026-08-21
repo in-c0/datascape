@@ -63,12 +63,20 @@ export function createJournalExceptionPort(adapter) {
       }
 
       if (result.failure === "inconsistent_resolution") {
-        // Our ref is present but the status disagrees: a half-applied write.
-        // This must not read as a conflict with SOMEONE ELSE — it is our own
-        // torn state — so `resolved_by` stays absent and the journal leaves the
-        // entry mid-flight for the next open() to retry, which is correct here
-        // because the next attempt can complete it.
-        return { ...result };
+        // TERMINAL, not retryable — and the previous comment here was simply
+        // wrong about the mechanism.
+        //
+        // It claimed the next startup could complete this state. It cannot: the
+        // adapter's state machine refuses whenever our ruling ref is present
+        // and the status is not `resolved`, and it writes nothing. So the
+        // journal saw `!ok` with no `resolved_by`, concluded "still not
+        // resolvable", and retried on EVERY host start — forever, against her
+        // real exception files, with no attempt ever able to succeed.
+        //
+        // A state that cannot progress has to be declared, not re-attempted.
+        // `inconsistent: true` says so explicitly rather than relying on the
+        // journal to infer it from a missing field.
+        return { ...result, inconsistent: true };
       }
 
       return { ...result };
@@ -112,9 +120,15 @@ export function createCommitJournalPort({ journal, applyAuthority, currentRevisi
      * atomic with the write. Every earlier check is a read, and a read that
      * happened before the Windows dialog cannot speak for the state after it.
      */
-    async commit({ operation_id, receipt, expected_revision }) {
-      const result = journal.transact({
+    async commit({ operation_id, receipt, binding, expected_revision }) {
+      // transactCLAIMED. The durable write proves for itself that it is the
+      // operation which acquired the pre-prompt claim, and the exact review the
+      // Windows verification followed — rather than trusting the orchestration
+      // above it to have checked.
+      const result = journal.transactClaimed({
         operation_id,
+        binding,
+        receipt_id: receipt.receipt_id,
         source_exception_id: receipt.source_exception_id ?? null,
         build: () => {
           const observed = revisionOf(currentRevision(receipt));

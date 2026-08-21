@@ -112,15 +112,43 @@ test("the same ruling recovering twice stays idempotent and rolls forward", () =
   assert.equal(storage.read()[0].phase, "committed");
 });
 
-test("a torn own-resolution is left mid-flight, not declared someone else's conflict", () => {
-  // Our ref is present but the status disagrees. That is our own half-applied
-  // write and the next open can finish it, so it must NOT be reported as a
-  // conflict with another ruling — which would stop it permanently.
+test("a torn own-resolution is TERMINAL, not retried forever", () => {
+  // Our ref is present but the status disagrees. The previous version of this
+  // port left `resolved_by` absent and said the next startup could finish it.
+  // It could not: the adapter refuses exactly this state and writes nothing, so
+  // the journal retried it on every host start, forever, with no attempt able
+  // to succeed.
   const port = createJournalExceptionPort(adapter({ status: "blocked-on-owner", refs: ["ruling:mine"] }));
   const result = port.resolve("exc-1", { ruling_ref: "ruling:mine" });
   assert.equal(result.ok, false);
   assert.equal(result.failure, "inconsistent_resolution");
+  assert.equal(result.inconsistent, true, "a state that cannot progress must say so");
   assert.equal(result.resolved_by, undefined, "our own torn state is not another ruling");
+});
+
+test("recovery: a torn own-resolution stops on the FIRST startup and is never retried", () => {
+  // The acceptance the review specified: journal at authority_written, the
+  // exception carrying our exact ref while still blocked-on-owner.
+  const a = adapter({ status: "blocked-on-owner", refs: ["ruling:mine"] });
+  const storage = createMemoryStorage([{
+    operation_id: "op-1", phase: "authority_written", source_exception_id: "exc-1",
+    record: { ruling: { ref: "ruling:mine" }, revision: 1 },
+  }]);
+  const port = createJournalExceptionPort(a);
+
+  const first = createAuthorityJournal({ storage, exceptions: port, now: () => 10 });
+  assert.deepEqual(first.recovered_on_open, [{ operation_id: "op-1", outcome: "inconsistent" }]);
+  assert.equal(storage.read()[0].phase, "inconsistent");
+  const attemptsAfterFirst = a.state.calls.length;
+  assert.equal(attemptsAfterFirst, 1, "exactly one attempt, then a verdict");
+
+  const second = createAuthorityJournal({ storage, exceptions: port, now: () => 11 });
+  assert.deepEqual(second.recovered_on_open, []);
+  assert.equal(a.state.calls.length, attemptsAfterFirst, "second startup attempts zero resolutions");
+
+  // And her exception was not touched by any of it.
+  assert.equal(a.state.status, "blocked-on-owner");
+  assert.deepEqual(a.state.refs, ["ruling:mine"]);
 });
 
 test("the port refuses to be constructed without an adapter", () => {
