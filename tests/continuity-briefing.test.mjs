@@ -267,3 +267,123 @@ test("the shipped sample briefing still satisfies every budget", () => {
     assert.ok(scene.nodes.length <= BUDGETS.z0, `${n.path} showed ${scene.nodes.length}`);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Temporal execution provenance (spec v2)
+// ---------------------------------------------------------------------------
+
+import { awaySummary, localHour, spansNight, temporalPhase, TEMPORAL_PHASES } from "../src/continuity/briefing.js";
+
+const laneWith = (over = {}) => ({
+  lane: "l", label: "L", total: 3, lastSeen: "2026-08-21T11:53:00+10:00",
+  supervision: "attended", execution: "completed", records: [], runs: [], ...over,
+});
+
+test("supervision and execution are independent dimensions", () => {
+  // The grammar must allow every combination; collapsing them into one axis is
+  // what would turn "unattended" into a status colour.
+  for (const supervision of ["attended", "unattended"]) {
+    for (const execution of ["live", "completed", "planned"]) {
+      const scene = buildScene({ lanes: [laneWith({ supervision, execution, records: [laneRecord("mr_1111111111111111", [{ headline: "x", type: "state" }])] })], ownerActions: [] }, { now: NOW });
+      const root = scene.nodes.find((n) => n.kind === "root");
+      assert.equal(root.supervision, supervision);
+      assert.equal(root.execution, execution);
+      // Supervision must never become the semantic status.
+      assert.notEqual(root.status, supervision);
+    }
+  }
+});
+
+test("header clauses appear only when their count is non-zero", () => {
+  const quiet = awaySummary({ lanes: [laneWith()], ownerActions: [] }, NOW);
+  assert.deepEqual(quiet.clauses, [], "a quiet day should say nothing about unattended work");
+
+  const busy = awaySummary({
+    lanes: [
+      laneWith({ supervision: "unattended", records: [1, 2] }),
+      laneWith({ lane: "m", supervision: "unattended", execution: "live", records: [1] }),
+    ],
+    ownerActions: [action("ex-1")],
+  }, NOW);
+  assert.match(busy.clauses.join(" · "), /2 material changes unattended/);
+  assert.match(busy.clauses.join(" · "), /1 still running/);
+  assert.match(busy.clauses.join(" · "), /1 need/);
+});
+
+test("return framing puts material unattended change above lane recency", () => {
+  const data = {
+    lanes: [
+      // Newest, but attended and quiet.
+      laneWith({ lane: "quiet", label: "Quiet", lastSeen: "2026-08-21T15:00:00+10:00", records: [laneRecord("mr_2222222222222222", [{ headline: "q", type: "state" }])] }),
+      // Older, but changed state while nobody was watching.
+      laneWith({ lane: "night", label: "Night", supervision: "unattended", lastSeen: "2026-08-21T06:00:00+10:00", records: [laneRecord("mr_3333333333333333", [{ headline: "n", type: "state" }])] }),
+    ],
+    ownerActions: [],
+  };
+  const scene = buildScene(data, { now: NOW });
+  const labels = scene.nodes.filter((n) => n.kind === "root").map((n) => n.label);
+  assert.equal(labels[0], "Night", `unattended change should lead, got ${labels.join(", ")}`);
+});
+
+test("one long run is one enclosure, however many events it holds", () => {
+  const run = { id: "r", startedAt: "2026-08-21T03:58:00+10:00", endedAt: "2026-08-21T11:53:00+10:00", hours: 7.9, records: 97, supervision: "unattended", execution: "completed" };
+  const scene = buildScene({
+    lanes: [laneWith({ supervision: "unattended", runs: [run], records: [laneRecord("mr_4444444444444444", [{ headline: "x", type: "state" }])] })],
+    ownerActions: [],
+  }, { now: NOW });
+  const root = scene.nodes.find((n) => n.kind === "root");
+  assert.equal(root.sub, "unattended · 03:58–11:53", "97 events must collapse to one labelled enclosure");
+  assert.equal(root.run.records, 97);
+});
+
+test("overnight is derived context, never a supervision value", () => {
+  assert.equal(spansNight({ startedAt: "2026-08-21T03:58:00+10:00", endedAt: "2026-08-21T11:53:00+10:00" }), true);
+  assert.equal(spansNight({ startedAt: "2026-08-21T13:00:00+10:00", endedAt: "2026-08-21T13:30:00+10:00" }), false);
+  // The vocabulary itself must not contain it.
+  const scene = buildScene({ lanes: [laneWith({ supervision: "unattended" })], ownerActions: [] }, { now: NOW });
+  for (const n of scene.nodes) assert.notEqual(n.supervision, "overnight");
+});
+
+test("the temporal phase is a fixed vocabulary derived from the clock alone", () => {
+  // Explicit Sydney instants, not new Date(y,m,d,h) — that constructor is
+  // runner-local and would make this suite disagree with itself across zones.
+  const at = (h) => temporalPhase(new Date(`2026-08-21T${String(h).padStart(2, "0")}:00:00+10:00`));
+  assert.equal(at(2), "night");
+  assert.equal(at(5), "pre-dawn");
+  assert.equal(at(7), "sunrise");
+  assert.equal(at(10), "daytime");
+  assert.equal(at(15), "afternoon");
+  assert.equal(at(19), "evening");
+  assert.equal(at(23), "night");
+  for (let h = 0; h < 24; h++) assert.ok(TEMPORAL_PHASES.includes(at(h)), `hour ${h} produced an unknown phase`);
+});
+
+test("adding provenance did not raise any node budget", () => {
+  const data = fixture();
+  data.lanes = data.lanes.map((l) => ({ ...l, supervision: "unattended", execution: "live", runs: [] }));
+  assert.ok(buildScene(data, { now: NOW }).nodes.length <= BUDGETS.entry);
+  assert.ok(buildScene(data, { path: "needs", now: NOW }).nodes.length <= BUDGETS.z0);
+  assert.ok(buildScene(data, { path: "lane/alpha", now: NOW }).nodes.length <= BUDGETS.z0);
+});
+
+test("temporal reasoning uses Sydney, not the runner's timezone", () => {
+  // This is the bug CI caught and this machine hid: getHours() returns
+  // runner-local hours, so a 13:00+10:00 run read as 03:00 in a UTC box and was
+  // labelled overnight. Asserting against an explicit zone makes the result
+  // identical everywhere the suite runs.
+  const afternoon = { startedAt: "2026-08-21T13:00:00+10:00", endedAt: "2026-08-21T13:30:00+10:00" };
+  const smallHours = { startedAt: "2026-08-21T03:58:00+10:00", endedAt: "2026-08-21T04:30:00+10:00" };
+  assert.equal(spansNight(afternoon), false);
+  assert.equal(spansNight(smallHours), true);
+  // NEGATIVE CONTROL: read in UTC the same afternoon run IS in the small hours,
+  // which is exactly what made the original bug look correct locally.
+  assert.equal(spansNight(afternoon, "UTC"), true, "control: UTC really does see 03:00 here");
+
+  // 11:00 rather than 12:00: noon sits exactly on the daytime/afternoon
+  // boundary, so it is a poor probe for "which zone was consulted".
+  const morning = new Date("2026-08-21T11:00:00+10:00");
+  assert.equal(temporalPhase(morning), "daytime");
+  assert.equal(temporalPhase(morning, "UTC"), "night", "control: the same instant is 01:00 UTC");
+  assert.equal(Math.round(localHour(morning)), 11);
+  assert.equal(Math.round(localHour(morning, "UTC")), 1);
+});

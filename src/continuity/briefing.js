@@ -164,22 +164,112 @@ function laneRecordItems(lane) {
 }
 
 /**
- * Rank lane roots for the entry screen (spec §1): a lane containing a
- * high-severity owner blocker first, then activity, then recency.
+ * Rank lane roots for the entry screen.
+ *
+ * Spec v2 §6: when she returns after a substantial unattended interval, the
+ * semantic centre is MATERIAL CHANGE SINCE DEPARTURE, not lane recency. A lane
+ * that sat quiet all night should not outrank one that changed state while
+ * nobody was watching simply because it ticked more recently.
+ *
+ *   1. contains a high-severity owner blocker
+ *   2. unattended work that materially changed state
+ *   3. still-running unattended work
+ *   4. everything else, by recency
  */
 export function rankLanes(lanes = [], dueNowActions = []) {
   const highLoops = new Set(
     dueNowActions.filter((a) => a.severity === "high").map((a) => laneBucketKey(a)),
   );
+  const rank = (lane) => {
+    if (highLoops.has(lane.lane)) return 0;
+    const unattended = lane.supervision === "unattended";
+    if (unattended && (lane.records || []).length) return 1;
+    if (unattended && lane.execution === "live") return 2;
+    return 3;
+  };
   return lanes.slice().sort((a, b) => {
-    const aHigh = highLoops.has(a.lane) ? 0 : 1;
-    const bHigh = highLoops.has(b.lane) ? 0 : 1;
-    if (aHigh !== bHigh) return aHigh - bHigh;
+    const byPriority = rank(a) - rank(b);
+    if (byPriority) return byPriority;
     const aChanged = (a.records || []).length;
     const bChanged = (b.records || []).length;
     if (aChanged !== bChanged) return bChanged - aChanged;
     return String(b.lastSeen || "").localeCompare(String(a.lastSeen || ""));
   });
+}
+
+// ---------------------------------------------------------------------------
+// Temporal environment (spec v2 §3)
+//
+// Background context, never content. Derived from the local clock alone — the
+// spec forbids exposing precise location in rendered Continuity state, so there
+// is no geolocation here at all and the phase boundaries are fixed rather than
+// solar. A real sunrise/sunset integration can refine these later without
+// changing the grammar.
+// ---------------------------------------------------------------------------
+
+export const TEMPORAL_PHASES = ["night", "pre-dawn", "sunrise", "daytime", "afternoon", "evening"];
+
+// The hour AS SEEN IN SYDNEY, not in whatever zone the process happens to run
+// in. `getHours()` returns runner-local hours, so a 13:00+10:00 run read as
+// 03:00 in a UTC CI box and was labelled "overnight" — a real mislabelling that
+// only stayed invisible because this machine is already in Sydney. The whole
+// portfolio reads Sydney time; the code should too.
+export const SURFACE_TZ = "Australia/Sydney";
+
+export function localHour(value, timeZone = SURFACE_TZ) {
+  const date = value instanceof Date ? value : new Date(Date.parse(value));
+  if (!Number.isFinite(date.getTime())) return null;
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone, hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+  }).formatToParts(date);
+  const get = (type) => Number(parts.find((p) => p.type === type)?.value);
+  return get("hour") + get("minute") / 60;
+}
+
+export function temporalPhase(date = new Date(), timeZone = SURFACE_TZ) {
+  const hour = localHour(date, timeZone) ?? 12;
+  if (hour < 4) return "night";
+  if (hour < 6) return "pre-dawn";
+  if (hour < 8) return "sunrise";
+  if (hour < 12) return "daytime";
+  if (hour < 17) return "afternoon";
+  if (hour < 21) return "evening";
+  return "night";
+}
+
+/** Does a run cross the small hours? Derived context, never a supervision state. */
+export function spansNight(run, timeZone = SURFACE_TZ) {
+  const from = Date.parse(run?.startedAt);
+  const to = Date.parse(run?.endedAt);
+  if (!Number.isFinite(from) || !Number.isFinite(to)) return false;
+  const startHour = localHour(new Date(from), timeZone);
+  const endHour = localHour(new Date(to), timeZone);
+  if (startHour == null || endHour == null) return false;
+  return startHour < 6 || endHour < 6 || (to - from) > 6 * 3600 * 1000;
+}
+
+/**
+ * The header's clauses (spec v2 §5). Only non-zero clauses are returned, so the
+ * line says nothing about unattended work on a day when none happened.
+ */
+export function awaySummary(data, now = Date.now()) {
+  const lanes = data?.lanes || [];
+  const { dueNow } = partitionActions(data?.ownerActions || [], now);
+
+  const unattendedLanes = lanes.filter((l) => l.supervision === "unattended");
+  const materialChanges = unattendedLanes.filter((l) => (l.records || []).length).length;
+  const stillRunning = unattendedLanes.filter((l) => l.execution === "live").length;
+
+  const longest = unattendedLanes
+    .flatMap((l) => l.runs || [])
+    .sort((a, b) => (b.hours || 0) - (a.hours || 0))[0] || null;
+
+  const clauses = [];
+  if (materialChanges) clauses.push(`${materialChanges} material change${materialChanges === 1 ? "" : "s"} unattended`);
+  if (stillRunning) clauses.push(`${stillRunning} still running`);
+  if (dueNow.length) clauses.push(`${dueNow.length} need${dueNow.length === 1 ? "s" : ""} you`);
+
+  return { clauses, materialChanges, stillRunning, dueNow: dueNow.length, longestRun: longest };
 }
 
 // focal:true marks the node that IS the current semantic centre. The visual
@@ -212,6 +302,8 @@ export function buildScene(data, { path = "", brief = "3m", now = Date.now(), pa
     card: null,
     breadcrumb: [],
     counts: { dueNow: dueNow.length, deferred: deferred.length, lanes: lanes.length, records: data?.totals?.mustReads ?? 0 },
+    away: awaySummary(data, now),
+    phase: temporalPhase(new Date(now)),
     page,
     pageCount: 1,
     hidden: 0,
@@ -241,10 +333,21 @@ export function buildScene(data, { path = "", brief = "3m", now = Date.now(), pa
       }));
     }
     for (const lane of shown) {
+      // The longest run is the one worth naming at entry: "unattended ·
+      // 03:58–11:53" tells her more than a record count, and it is ONE
+      // enclosure however many machine events it contains.
+      const run = (lane.runs || []).slice().sort((a, b) => (b.hours || 0) - (a.hours || 0))[0] || null;
       scene.nodes.push(node({
         key: lane.lane, kind: "root", label: lane.label, path: `lane/${lane.lane}`,
-        status: "committed", sub: `${(lane.records || []).length} changed`,
-        at: lane.lastSeen, autoRunUrl: lane.autoRunUrl, seedUrl: lane.seedUrl,
+        status: "committed",
+        sub: run && lane.supervision === "unattended"
+          ? `unattended · ${run.startedAt.slice(11, 16)}–${run.endedAt.slice(11, 16)}`
+          : `${(lane.records || []).length} changed`,
+        at: lane.lastSeen,
+        supervision: lane.supervision,
+        execution: lane.execution,
+        run,
+        autoRunUrl: lane.autoRunUrl, seedUrl: lane.seedUrl,
       }));
     }
     scene.hidden = Math.max(0, ranked.length - shown.length);
@@ -344,7 +447,13 @@ export function buildScene(data, { path = "", brief = "3m", now = Date.now(), pa
     }
     const list = FACETS.filter((f) => byFacet.has(f)).map((f) => [f, byFacet.get(f)]);
     const shown = window_(list, BUDGETS.z0 - 1);
-    scene.nodes.push(node({ key: lane.lane, kind: "origin", label: lane.label, path: `lane/${lane.lane}`, status: "committed", sub: `${items.length} records`, autoRunUrl: lane.autoRunUrl, seedUrl: lane.seedUrl }));
+    const laneRun = (lane.runs || []).slice().sort((a, b) => (b.hours || 0) - (a.hours || 0))[0] || null;
+    scene.nodes.push(node({
+      key: lane.lane, kind: "origin", label: lane.label, path: `lane/${lane.lane}`,
+      status: "committed", sub: `${items.length} records`,
+      supervision: lane.supervision, execution: lane.execution, run: laneRun,
+      autoRunUrl: lane.autoRunUrl, seedUrl: lane.seedUrl,
+    }));
     for (const [facet, group] of shown) {
       scene.nodes.push(node({
         key: facet, kind: "facet", label: facet, path: `lane/${lane.lane}/${encodeURIComponent(facet)}`,

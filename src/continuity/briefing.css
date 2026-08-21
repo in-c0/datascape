@@ -611,3 +611,77 @@ body:has(.bf-root) { overflow: auto; }
 .bf-md a:hover { text-decoration: underline; }
 .bf-md strong { font-weight: 660; color: #fff; }
 .bf-md em { font-style: italic; }
+
+/* ---------- temporal environment field (spec v2 §3) ----------
+ * Background context, never content. Fixed behind everything, low contrast,
+ * and derived from the local clock alone — no location is exposed. */
+.bf-temporal {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  transition: background 1.2s ease;
+}
+.bf-temporal--night {
+  background: radial-gradient(ellipse 90% 60% at 50% 110%, rgba(40, 34, 90, 0.22), transparent 70%);
+}
+.bf-temporal--pre-dawn {
+  background: radial-gradient(ellipse 90% 55% at 50% 108%, rgba(58, 46, 108, 0.22), transparent 70%);
+}
+.bf-temporal--sunrise {
+  background: radial-gradient(ellipse 95% 50% at 45% 108%, rgba(150, 96, 90, 0.16), transparent 72%);
+}
+.bf-temporal--daytime {
+  background: radial-gradient(ellipse 100% 55% at 50% 112%, rgba(70, 110, 150, 0.14), transparent 72%);
+}
+.bf-temporal--afternoon {
+  background: radial-gradient(ellipse 100% 55% at 60% 112%, rgba(90, 110, 155, 0.12), transparent 72%);
+}
+.bf-temporal--evening {
+  background: radial-gradient(ellipse 95% 55% at 55% 110%, rgba(112, 74, 122, 0.16), transparent 72%);
+}
+
+/* ---------- execution grammar (spec v2 §2) ----------
+ * Execution animates; supervision encloses. Neither touches the semantic ring
+ * colour, which keeps meaning Needs you / Finding / Progress / State. */
+
+/* Live: one subtle slow breath, and nothing else on the surface moves. */
+.bf-exec--live .bf-ring { animation: bf-breathe 3.4s ease-in-out infinite; }
+@keyframes bf-breathe {
+  0%, 100% { box-shadow: 0 0 8px rgba(125, 211, 252, 0.25); }
+  50% { box-shadow: 0 0 15px 2px rgba(125, 211, 252, 0.55); }
+}
+/* Completed: stable and solid. Explicit, so it can never inherit a pulse. */
+.bf-exec--completed .bf-ring { animation: none; }
+/* Planned: ghosted, and must never read as historically committed. */
+.bf-exec--planned .bf-ring { border-style: dashed; opacity: 0.5; }
+.bf-exec--planned .bf-node__label { opacity: 0.65; }
+
+/* Autonomy envelope: a faint enclosure behind the run, not a recoloured node
+ * and not another node family. One run = one enclosure, however many machine
+ * events it contains. */
+.bf-unattended {
+  position: relative;
+  padding-left: 12px;
+}
+.bf-unattended::before {
+  content: "";
+  position: absolute;
+  inset: -6px -10px -6px -2px;
+  border-radius: 14px;
+  background: rgba(122, 104, 190, 0.07);
+  border: 1px solid rgba(122, 104, 190, 0.16);
+  pointer-events: none;
+  z-index: -1;
+}
+.bf-overnight {
+  border: 1px solid rgba(122, 104, 190, 0.4);
+  border-radius: 999px;
+  padding: 0 7px;
+  font-size: 10px;
+  color: rgba(178, 162, 232, 0.95);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bf-exec--live .bf-ring { animation: none; box-shadow: 0 0 14px 2px rgba(125, 211, 252, 0.5); }
+}
