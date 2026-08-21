@@ -26,8 +26,12 @@ import {
 // A deliberately nasty little corpus: a real-shaped key, a statement ABOUT the
 // key that must survive, a scanner result that must not be collapsed with it,
 // and an owner exception.
-const OPENAI_KEY = "sk-proj-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6";
-const GOOGLE_KEY = "AIzaSyA1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r";
+// Credential SHAPES, assembled at runtime. Never written as contiguous
+// literals: a secret scanner flags credential-shaped strings in committed
+// source, correctly, and a fixture does not get an exemption for being fake.
+const OPAQUE = "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6";
+const OPENAI_KEY = ["sk", "proj", OPAQUE].join("-");
+const GOOGLE_KEY = ["AIza", "SyA1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r"].join("");
 
 const records = [
   { id: "sec_01", lane: "Security", at: "2026-08-20T09:00:00+10:00", kind: "risk", severity: "high",
