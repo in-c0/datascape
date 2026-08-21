@@ -4,6 +4,7 @@ import { config } from "../../datascape.config.js";
 import { actionsAvailable, recordAction } from "./actions.js";
 import Authored from "./authored.jsx";
 import TemporalStage, { MARGIN_X, STAGE_RIGHT } from "./TemporalStage.jsx";
+import SemanticStage from "./SemanticStage.jsx";
 import { excerptAuthored, parseAuthored } from "./authored.js";
 import { temporalAnchor, timeScale } from "./briefing.js";
 import {
@@ -793,7 +794,60 @@ function BriefingSurface({ data }) {
 }
 
 export default function BriefingView() {
+  // The deterministic fixture route (spec v3.1 §14). It renders the semantic
+  // altitude slice against authored fixture projections instead of the live
+  // corpus — no real data is touched, and nothing generative runs.
+  const fixture = new URL(window.location.href, "http://datascape.local/")
+    .searchParams.get("fixture");
+  if (fixture === "v3-projection") return <SemanticFixtureRoute />;
+
   const data = store.briefing;
   if (!data?.lanes && !data?.ownerActions) return <EmptyBriefing />;
   return <BriefingSurface data={data} />;
+}
+
+/**
+ * URL state for semantic zoom (§8): lens path plus centre, so Back restores
+ * altitude AND centre rather than merely the last page. Each semantic
+ * operation is one history entry, which is what makes Back walk the descent
+ * one step at a time.
+ */
+function readSemanticLocation(href) {
+  const url = new URL(href, "http://datascape.local/");
+  const lens = (url.searchParams.get("lens") || "").split(".").filter(Boolean);
+  return { lens, centre: url.searchParams.get("centre") || null };
+}
+
+function SemanticFixtureRoute() {
+  const first = useMemo(() => readSemanticLocation(window.location.href), []);
+  const [restored, setRestored] = useState(first);
+  const applied = useRef("");
+
+  useEffect(() => {
+    const onPop = () => setRestored(readSemanticLocation(window.location.href));
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+
+  const onStateChange = useCallback((state) => {
+    if (state.transition !== "settled") return;
+    const url = new URL(window.location.href);
+    url.searchParams.set("lens", state.lensPath.join("."));
+    if (state.semanticCentre) url.searchParams.set("centre", state.semanticCentre);
+    const next = url.toString();
+    if (next === window.location.href || applied.current === next) return;
+    applied.current = next;
+    window.history.pushState({}, "", next);
+  }, []);
+
+  return (
+    <main className="bf-root">
+      <SemanticStage
+        key={`${restored.lens.join(".")}|${restored.centre || ""}`}
+        initialLens={restored.lens}
+        initialCentre={restored.centre}
+        onStateChange={onStateChange}
+      />
+    </main>
+  );
 }

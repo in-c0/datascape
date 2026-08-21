@@ -242,7 +242,11 @@ export function buildProjectionGraph() {
   // Attach each routine shell, and every material record the concept graph did
   // not already reach, to the concept that owns that work.
   const ATTACH = {
-    "sf-vibo": ["routine-S01", "routine-S02"],
+    // NOT on sf-vibo: its constituents are named exactly in §4, and hanging
+    // bookkeeping shells there would put "S01 routine verification" into the
+    // canonical review frame. They attach below the descent instead.
+    "ba-static": ["routine-S01"],
+    "vibo-preview": ["routine-S02"],
     "sf-sumzup": ["routine-S03"],
     "dist-outreach": ["routine-S04"],
     "rel-gate-closed": ["routine-S05"],

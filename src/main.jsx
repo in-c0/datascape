@@ -2,6 +2,7 @@ import "./index.css";
 import "./continuity/continuity.css";
 import "./continuity/temporal.css";
 import "./continuity/briefing.css";
+import "./continuity/semantic.css";
 import { loadBriefing, loadData } from "./store.js";
 import { config } from "../datascape.config.js";
 
