@@ -210,3 +210,192 @@ export function altitudeScene(graph, { focus = null, via = [] } = {}) {
     altitude: Math.max(0, lensPath(graph, focal.id, { via }).length - 1),
   };
 }
+
+// ---------------------------------------------------------------------------
+// Semantic relationships (spec v3 §21).
+//
+// An edge kind is a claim about how two concepts relate, and `causes` is the
+// one claim a summariser must never make on its own: temporal sequence is not
+// causality, and a generated causal edge is indistinguishable from a real one
+// once it is in the graph. v3 therefore prohibits it outright rather than
+// gating it behind a confidence score.
+
+export const EDGE_KINDS = ["contains", "supports", "contradicts", "supersedes", "depends_on"];
+export const PROHIBITED_EDGE_KINDS = ["causes"];
+
+export function edgeIsAllowed(kind) {
+  return EDGE_KINDS.includes(kind);
+}
+
+/** Edges of one kind leaving `id`. */
+export function edgesFrom(graph, id, kind) {
+  return (graph?.edges || []).filter((e) => e.from === id && (!kind || e.kind === kind));
+}
+
+/**
+ * Both sides of a disagreement, or null when there is none.
+ *
+ * Contradiction must not be flattened into "migration status unclear" — the
+ * disagreement is usually the material part, so it stays recoverable as two
+ * constituent branches under one honestly-named projection.
+ */
+export function contradictionBranches(graph, id) {
+  const disputed = edgesFrom(graph, id, "contradicts");
+  if (!disputed.length) return null;
+  const byId = new Map((graph?.nodes || []).map((n) => [n.id, n]));
+  return disputed.map((e) => [byId.get(e.from), byId.get(e.to)]).flat().filter(Boolean);
+}
+
+// ---------------------------------------------------------------------------
+// Stable identity (spec v3 §10).
+//
+// Dynamic abstraction must not mean the graph reshuffles every tick. Browser
+// history, bookmarks, spatial memory and overnight comparison all depend on a
+// concept keeping its identity while its interpretation is refined.
+
+/**
+ * Fold new evidence into an existing projection.
+ *
+ * Same concept + compatible evidence REVISES the node; only a genuinely
+ * different concept earns a new identity. `revision` bumps when the
+ * interpretation materially changes, so an unchanged concept that merely
+ * gained a source does not churn its revision either.
+ */
+export function reviseProjection(existing, next) {
+  if (!existing) return { ...next, revision: 1, history: [] };
+  const sameConcept = next.conceptKey != null && next.conceptKey === existing.conceptKey;
+  if (!sameConcept) {
+    // Genuinely a different concept: a new identity, not a rewrite of the old
+    // one, so the old node stays inspectable in history.
+    return { ...next, revision: 1, history: [], supersedes: existing.id };
+  }
+  const materiallyChanged = next.label !== existing.label
+    || next.materiality !== existing.materiality
+    || next.status !== existing.status;
+  const sources = Array.from(new Set([...(existing.sourceObservationIds || []), ...(next.sourceObservationIds || [])]));
+  const childIds = Array.from(new Set([...(existing.childIds || []), ...(next.childIds || [])]));
+  return {
+    ...existing,
+    ...next,
+    id: existing.id,
+    conceptKey: existing.conceptKey,
+    childIds,
+    sourceObservationIds: sources,
+    revision: materiallyChanged ? (existing.revision || 1) + 1 : (existing.revision || 1),
+    history: materiallyChanged
+      ? [...(existing.history || []), { revision: existing.revision || 1, label: existing.label, at: existing.generatedAt }]
+      : (existing.history || []),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Materiality and incremental re-projection (spec v3 §11-§12).
+
+/**
+ * Whether a change matters at a higher altitude.
+ *
+ * Explicitly NOT a count. A thousand routine successful ticks collapse to "no
+ * material change"; one credential leak reaches A0 immediately. Volume is the
+ * least reliable signal there is, which is why it is absent here.
+ */
+const MATERIAL_KINDS = new Set([
+  "goal_impact", "decision_reversal", "new_blocker", "new_opportunity", "risk",
+  "dependency_impact", "commitment", "state_transition", "uncertainty_resolved",
+  "owner_attention",
+]);
+
+export function isMaterial(change) {
+  if (!change) return false;
+  if (change.ownerAttention === true) return true;
+  if (change.severity === "high" || change.severity === "critical") return true;
+  return MATERIAL_KINDS.has(change.kind);
+}
+
+/**
+ * Which projections a new observation dirties, walking up the DAG and stopping
+ * where the parent abstraction is materially unchanged.
+ *
+ * Re-summarising the whole corpus on every worker record is what makes an
+ * abstraction layer both expensive and unstable; propagation has to be a
+ * property of the change, not of the schedule.
+ */
+export function dirtyAncestors(graph, changedIds = [], change = null) {
+  const dirty = new Set();
+  const material = isMaterial(change);
+  const walk = (id, depth) => {
+    for (const parent of parentsOf(graph, id)) {
+      if (dirty.has(parent.id)) continue;
+      // The immediate ancestor always recomputes: it owns the record. Beyond
+      // that, only a material change keeps climbing.
+      if (depth > 0 && !material) return;
+      dirty.add(parent.id);
+      walk(parent.id, depth + 1);
+    }
+  };
+  for (const id of changedIds) walk(id, 0);
+  return [...dirty];
+}
+
+// ---------------------------------------------------------------------------
+// Live parallel cognition (spec v3 §13-§14).
+
+/**
+ * A projection's execution state.
+ *
+ * Live only when at least one MATERIALLY live descendant exists. A background
+ * lint agent being technically alive must never make "Company strategy" read as
+ * live — that is how a status surface becomes noise the operator learns to
+ * ignore.
+ */
+export function projectionExecution(graph, id, seen = new Set()) {
+  if (seen.has(id)) return "completed";
+  seen.add(id);
+  const byId = new Map((graph?.nodes || []).map((n) => [n.id, n]));
+  const node = byId.get(id);
+  if (!node) return "completed";
+  if (isAuthoredSource(node)) {
+    return node.execution === "live" && node.materiality !== "immaterial" ? "live" : "completed";
+  }
+  for (const child of childrenOf(graph, id)) {
+    if (projectionExecution(graph, child.id, seen) === "live") return "live";
+  }
+  return "completed";
+}
+
+/**
+ * Where a projection sits on the temporal field (spec v3 §15).
+ *
+ * The material transition it represents, not the earliest constituent record —
+ * a concept that materialised at 11:53 does not belong at 03:58 merely because
+ * that is when its first supporting tick fired. A live projection sits at NOW.
+ * The full contributing interval belongs to Inspect; the node itself never
+ * becomes a timeline bar.
+ */
+export function projectionAnchor(graph, id, now = Date.now()) {
+  const byId = new Map((graph?.nodes || []).map((n) => [n.id, n]));
+  const node = byId.get(id);
+  if (!node) return null;
+  if (projectionExecution(graph, id) === "live") return new Date(now).toISOString();
+  return node.materialAt || node.at || null;
+}
+
+/**
+ * What Inspect must answer for a derived node (spec v3 §22): why am I being
+ * shown this? Never rendered on the default screen.
+ */
+export function inspectProvenance(graph, id) {
+  const byId = new Map((graph?.nodes || []).map((n) => [n.id, n]));
+  const node = byId.get(id);
+  if (!node || !isProjection(node)) return null;
+  const weight = hiddenWeight(graph, id);
+  return {
+    label: node.label,
+    derived: true,
+    labelOrigin: labelOrigin(node),
+    directConcepts: (node.childIds || []).length,
+    sourceObservations: weight.records,
+    revision: node.revision || 1,
+    lastMaterialRevisionAt: node.generatedAt || null,
+    relationships: edgesFrom(graph, id).map((e) => ({ kind: e.kind, to: e.to })),
+  };
+}

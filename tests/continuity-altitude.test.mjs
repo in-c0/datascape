@@ -121,3 +121,133 @@ test("the lens path climbs to a root and its length is the altitude", () => {
   assert.equal(altitudeScene(graph, { focus: "rec_1", via: ["a0", "dist", "vibo-traction", "rec_1"] }).altitude, 3);
   assert.deepEqual(roots(graph).map((n) => n.id), ["a0"]);
 });
+
+// ---------------------------------------------------------------------------
+// Spec v3 §10-§22: identity, materiality, live cognition, provenance.
+
+import {
+  contradictionBranches,
+  dirtyAncestors,
+  edgeIsAllowed,
+  inspectProvenance,
+  isMaterial,
+  projectionAnchor,
+  projectionExecution,
+  reviseProjection,
+} from "../src/continuity/altitude.js";
+
+test("generated causal edges are prohibited, not merely discouraged", () => {
+  for (const kind of ["contains", "supports", "contradicts", "supersedes", "depends_on"]) {
+    assert.equal(edgeIsAllowed(kind), true);
+  }
+  assert.equal(edgeIsAllowed("causes"), false,
+    "temporal sequence alone never creates causality");
+  assert.equal(edgeIsAllowed("implies"), false, "the vocabulary is closed");
+});
+
+test("the same concept keeps its id across revisions; a different one does not", () => {
+  const first = {
+    id: "p1", type: "projection", conceptKey: "distribution-shift",
+    label: "Distribution strategy changed", childIds: ["rec_1"],
+    sourceObservationIds: ["obs_1"], generatedAt: "2026-08-21T10:00:00+10:00",
+    materiality: "material", status: "committed",
+  };
+  const revised = reviseProjection(first, { ...first, label: "Distribution shifted to short-form", childIds: ["rec_2"], sourceObservationIds: ["obs_2"] });
+  assert.equal(revised.id, "p1", "a refined interpretation must not delete and recreate the node");
+  assert.equal(revised.revision, 2);
+  assert.deepEqual(revised.childIds, ["rec_1", "rec_2"]);
+  assert.deepEqual(revised.sourceObservationIds, ["obs_1", "obs_2"]);
+  assert.equal(revised.history[0].label, "Distribution strategy changed",
+    "historical revisions remain inspectable");
+
+  // Same concept, same interpretation, one more source: no revision churn.
+  const quiet = reviseProjection(revised, { ...revised, sourceObservationIds: ["obs_3"] });
+  assert.equal(quiet.revision, 2, "gaining a source is not a material change");
+
+  // Negative control: a genuinely different concept earns a new identity.
+  const other = reviseProjection(first, { ...first, id: "p2", conceptKey: "security-risk", label: "Credential leak" });
+  assert.equal(other.id, "p2");
+  assert.equal(other.revision, 1);
+  assert.equal(other.supersedes, "p1");
+});
+
+test("many events are not material; one blocker is", () => {
+  assert.equal(isMaterial({ kind: "routine_tick" }), false);
+  assert.equal(isMaterial({ kind: "routine_tick", count: 1000 }), false,
+    "volume must never stand in for materiality");
+  assert.equal(isMaterial({ kind: "new_blocker" }), true);
+  assert.equal(isMaterial({ kind: "routine_tick", severity: "high" }), true);
+  assert.equal(isMaterial({ kind: "routine_tick", ownerAttention: true }), true);
+});
+
+test("an immaterial observation stops climbing; a material one reaches A0", () => {
+  const noise = dirtyAncestors(graph, ["rec_3"], { kind: "routine_tick" });
+  assert.ok(!noise.includes("a0"),
+    "a routine tick must not re-summarise the top of the graph");
+  assert.deepEqual(noise, ["ph-weak"], "its immediate ancestor still recomputes");
+
+  const leak = dirtyAncestors(graph, ["rec_3"], { kind: "new_blocker", severity: "high" });
+  assert.ok(leak.includes("a0"), "a material blocker can reach the top concept");
+});
+
+test("a projection is live only when a materially live descendant exists", () => {
+  const lint = {
+    nodes: [
+      { id: "strategy", type: "projection", label: "Company strategy", childIds: ["lint"],
+        revision: 1, sourceObservationIds: ["o"], generatedAt: "2026-08-21T10:00:00+10:00" },
+      { id: "lint", type: "source", text: "lint agent running", execution: "live", materiality: "immaterial" },
+    ],
+  };
+  assert.equal(projectionExecution(lint, "strategy"), "completed",
+    "a background lint agent must not make company strategy read as live");
+
+  const real = JSON.parse(JSON.stringify(lint));
+  real.nodes[1].materiality = "material";
+  assert.equal(projectionExecution(real, "strategy"), "live");
+});
+
+test("a live projection sits at NOW; a completed one at its material transition", () => {
+  const now = Date.parse("2026-08-21T18:40:00+10:00");
+  const g = {
+    nodes: [
+      { id: "done", type: "projection", label: "Gate cleared", childIds: ["s1"],
+        revision: 1, sourceObservationIds: ["o"], generatedAt: "2026-08-21T12:00:00+10:00",
+        at: "2026-08-21T04:00:00+10:00", materialAt: "2026-08-21T11:53:00+10:00" },
+      { id: "s1", type: "source", text: "gate cleared", execution: "completed" },
+    ],
+  };
+  assert.equal(projectionAnchor(g, "done", now), "2026-08-21T11:53:00+10:00",
+    "the material transition, not the earliest constituent record");
+
+  g.nodes[1].execution = "live";
+  g.nodes[1].materiality = "material";
+  assert.equal(Date.parse(projectionAnchor(g, "done", now)), now);
+});
+
+test("contradiction stays recoverable as two branches", () => {
+  const g = {
+    nodes: [
+      { id: "disputed", type: "projection", label: "Migration safety disputed", childIds: ["a", "b"],
+        revision: 1, sourceObservationIds: ["o"], generatedAt: "2026-08-21T12:00:00+10:00" },
+      { id: "a", type: "source", text: "migration safe" },
+      { id: "b", type: "source", text: "migration unsafe" },
+    ],
+    edges: [{ from: "disputed", to: "b", kind: "contradicts" }],
+  };
+  const branches = contradictionBranches(g, "disputed");
+  assert.ok(branches && branches.length >= 2, "both sides must survive the abstraction");
+  assert.equal(g.nodes[1].text, "migration safe");
+  assert.equal(g.nodes[2].text, "migration unsafe");
+  assert.equal(contradictionBranches(g, "a"), null, "no edge, no claimed dispute");
+});
+
+test("Inspect answers why am I being shown this, and default screens do not", () => {
+  const p = inspectProvenance(graph, "dist");
+  assert.equal(p.derived, true);
+  assert.equal(p.labelOrigin, "generated");
+  assert.equal(p.directConcepts, 2);
+  assert.ok(p.sourceObservations >= 3);
+  assert.equal(p.revision, 1);
+  // A source record has no derived provenance to expose.
+  assert.equal(inspectProvenance(graph, "rec_1"), null);
+});
