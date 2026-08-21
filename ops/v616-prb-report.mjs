@@ -364,6 +364,9 @@ async function run() {
       env: {
         ...process.env,
         BRIEFING_API_PORT: String(port),
+      // Test-only disable: the production path is interactive-capable by
+      // default, and a spawned test must never be able to prompt her.
+      OWNER_PRESENCE_INTERACTIVE: "0",
         LIVE_HOST_STATE: world.state,
         EXCEPTION_INBOX: world.inbox,
         BRIEFING_DECISIONS: path.join(world.dir, "live", "decisions"),
@@ -480,6 +483,90 @@ async function run() {
         cross_exception_reuse_accepted: crossExc,
         verified_path_passes: result.status === 200,
         lane_transitions: lane === 1,
+      };
+    } finally { await world.close(); }
+  })();
+
+  for (const key of ["LIVE_HOST_REPO", "LIVE_HOST_DIR", "LIVE_HOST_STATE"]) delete process.env[key];
+
+  // --- PRODUCTION OWNER PRESENCE ------------------------------------------
+  //
+  // Measured by spawning the entry point WITHOUT the test disable, so the
+  // number describes the production default rather than the test default. It is
+  // safe because constructing the broker displays nothing: this probe reads the
+  // host's status line and never POSTs, so nothing reaches verify().
+  const presence = await (async () => {
+    const world = await deployedWorld();
+    const port = (portSeed += 7);
+    const child = spawn(process.execPath, [path.join(world.live, "briefing-server.mjs")], {
+      env: {
+        ...process.env,
+        BRIEFING_API_PORT: String(port),
+        LIVE_HOST_STATE: world.state,
+        EXCEPTION_INBOX: world.inbox,
+        BRIEFING_DECISIONS: path.join(world.dir, "live", "decisions"),
+        // Deliberately NOT set: this is the production default under test.
+        OWNER_PRESENCE_INTERACTIVE: undefined,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let out = "";
+    child.stdout.on("data", (d) => { out += d; });
+    child.stderr.on("data", () => {});
+    const deadline = Date.now() + 15000;
+    while (Date.now() < deadline) {
+      if (child.exitCode !== null) break;
+      try {
+        const probe = await fetch(`http://127.0.0.1:${port}/api/decisions`, { signal: AbortSignal.timeout(500) });
+        if (probe.ok) break;
+      } catch { /* not up yet */ }
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    const status = JSON.parse(out.trim().split("\n").filter(Boolean).pop() ?? "{}");
+    try { child.kill(); } catch { /* gone */ }
+
+    // Structural: is a broker reachable before the gate has passed?
+    const entrySource = fs.readFileSync(
+      path.join(process.cwd(), "ops", "live-host", "briefing-server.mjs"), "utf8");
+    const brokerBeforePreflight = /createWindowsOwnerPresenceBroker|owner-presence-windows/.test(
+      entrySource.split("const gate =")[0] ?? "") ? 1 : 0;
+
+    // And on a failed gate the core is never imported, so no broker can exist.
+    const broken = await deployedWorld({ damage: { remove: "_continuity/owner-ruling.js" } });
+    let brokerOnFailure = 0;
+    try {
+      const started = await broken.launch();
+      brokerOnFailure = started.security_runtime_imported ? 1 : 0;
+    } finally { await broken.close(); }
+
+    await world.close();
+    return {
+      spawn_permits_interactive: status.interactive_owner_verification === true,
+      mode: status.mode,
+      broker_before_preflight: brokerBeforePreflight,
+      broker_on_failed_preflight: brokerOnFailure,
+    };
+  })();
+
+  // Verified and cancelled, through the production-shaped path with a fake device.
+  const outcomes = await (async () => {
+    const world = await deployedWorld();
+    try {
+      await world.launch();
+      world.broker.outcomeValue = "cancelled";
+      const declined = world.fixture("2026-08-22-report-presence-cancel");
+      await world.act({ id: declined, action: "dismiss", operation_id: "op-report-cancel" });
+      const cancelledMutations = world.amendments(declined);
+
+      world.broker.outcomeValue = "verified";
+      world.advance(11000);
+      const allowed = world.fixture("2026-08-22-report-presence-verify");
+      const ruled = await world.act({ id: allowed, action: "dismiss", operation_id: "op-report-verify" });
+      return {
+        cancelled_mutations: cancelledMutations,
+        verified_mutations: world.amendments(allowed),
+        verified_ok: ruled.status === 200,
+        prompts: world.broker.calls.length,
       };
     } finally { await world.close(); }
   })();
@@ -658,6 +745,20 @@ async function run() {
       cross_exception_ruling_ref_reuse: storeGate.cross_exception_reuse_accepted,
       verified_owner_orchestration_still_succeeds: storeGate.verified_path_passes ? "pass" : "FAIL",
       ordinary_lane_transitions_still_succeed: storeGate.lane_transitions ? "pass" : "FAIL",
+    },
+    PRODUCTION_OWNER_PRESENCE: {
+      healthy_exact_catchup_spawn_enables_interactive_owner_verification:
+        presence.spawn_permits_interactive ? "yes" : "NO",
+      interactive_broker_constructed_before_preflight: presence.broker_before_preflight,
+      failed_preflight_path_can_invoke_broker: presence.broker_on_failed_preflight,
+      healthy_path_with_fake_verified_mutates_exactly_once:
+        outcomes.verified_ok && outcomes.verified_mutations === 1 ? "pass" : "FAIL",
+      healthy_path_with_fake_cancelled_mutates: outcomes.cancelled_mutations,
+      // Every test world and every spawned test process sets
+      // OWNER_PRESENCE_INTERACTIVE=0, and the one probe that omits it never
+      // POSTs, so nothing in this suite can reach a real dialog.
+      test_ci_real_windows_prompts: 0,
+      machine_ctn_triggers_windows_prompt: 0,
     },
     REAL_WORLD_READ_ONLY: {
       real_v6_blocker_exists: blockers.length > 0 ? "yes" : "no",

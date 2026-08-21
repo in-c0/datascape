@@ -109,7 +109,10 @@ export async function acceptanceWorld() {
   process.env.EXCEPTION_INBOX = inbox;
   process.env.BRIEFING_DECISIONS = path.join(dir, "decisions");
   // Belt and braces: nothing in this suite may reach an interactive broker.
-  delete process.env.OWNER_PRESENCE_INTERACTIVE;
+  // Explicitly DISABLE interactive verification for every test world. The
+  // production default is now interactive-capable, so deleting this variable
+  // would leave a suite able to raise a real Windows dialog on this machine.
+  process.env.OWNER_PRESENCE_INTERACTIVE = "0";
 
   const server = await import(pathToFileURL(path.join(ops, "_continuity", "briefing-server-core.mjs")).href);
   const presence = await import(pathToFileURL(path.join(ops, "_continuity", "owner-presence.js")).href);

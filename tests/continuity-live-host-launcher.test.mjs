@@ -172,6 +172,9 @@ async function spawnLikeCatchup(world, port) {
     env: {
       ...process.env,
       BRIEFING_API_PORT: String(port),
+      // Test-only disable: the production path is interactive-capable by
+      // default, and a spawned test must never be able to prompt her.
+      OWNER_PRESENCE_INTERACTIVE: "0",
       LIVE_HOST_STATE: world.state,
       EXCEPTION_INBOX: world.inbox,
       BRIEFING_DECISIONS: path.join(world.dir, "live", "decisions"),
@@ -371,4 +374,59 @@ test("portability: no module hand-builds a file:// URL", () => {
   };
   walk(dir);
   assert.deepEqual(offenders, [], "use pathToFileURL() — it is correct on both platforms");
+});
+
+// ---------------------------------------------------------------------------
+// The production host must actually be able to verify her
+// ---------------------------------------------------------------------------
+
+test("presence: the production host permits interactive verification by default", () => {
+  const core = fs.readFileSync(new URL("../ops/live-host/briefing-server-core.mjs", import.meta.url), "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  // Opt-IN was the defect: nothing set the variable, so the real spawn path
+  // loaded the verified runtime and could never complete a ruling.
+  assert.ok(!/OWNER_PRESENCE_INTERACTIVE\s*===\s*["']1["']/.test(core),
+    "interactive verification must not depend on somebody remembering an env var");
+  assert.match(core, /OWNER_PRESENCE_INTERACTIVE\s*!==\s*["']0["']/,
+    "the production default is capable; the disable is explicit and test-only");
+
+  // And the broker's own default stays safe.
+  const broker = fs.readFileSync(
+    new URL("../src/continuity/control/owner-presence-windows.js", import.meta.url), "utf8");
+  assert.match(broker, /allowInteractive = false/, "the broker itself must still default to non-interactive");
+});
+
+test("presence: the interactive broker cannot exist before the gate passes", async () => {
+  const world = await deployedWorld({ damage: { remove: "_continuity/owner-ruling.js" } });
+  try {
+    const started = await world.launch();
+    assert.equal(started.mode, "read_only");
+    // The core is where the broker is constructed. On a failed gate it is never
+    // imported, so there is no path from a broken deployment to a device call —
+    // which is stronger than constructing one and declining to use it.
+    assert.equal(started.security_runtime_imported, false);
+    assert.equal(started.core, undefined, "no core module, therefore no broker");
+    assert.equal(world.broker.calls.length, 0);
+  } finally { await world.close(); }
+});
+
+test("presence: a healthy production-shaped host mutates once on verified, never on cancelled", async () => {
+  const world = await deployedWorld();
+  try {
+    await world.launch();
+
+    world.broker.outcomeValue = "cancelled";
+    const declined = world.fixture("2026-08-22-presence-cancelled");
+    const refused = await world.act({ id: declined, action: "dismiss", operation_id: "op-presence-cancel" });
+    assert.equal(refused.body.mutation_performed, false);
+    assert.equal(world.amendments(declined), 0, "a cancelled verification must mutate nothing");
+
+    world.broker.outcomeValue = "verified";
+    world.advance(11000);
+    const allowed = world.fixture("2026-08-22-presence-verified");
+    const ruled = await world.act({ id: allowed, action: "dismiss", operation_id: "op-presence-verify" });
+    assert.equal(ruled.status, 200, JSON.stringify(ruled.body));
+    assert.equal(world.amendments(allowed), 1, "exactly once");
+    assert.equal(world.status(allowed), "resolved");
+  } finally { await world.close(); }
 });

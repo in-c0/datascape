@@ -250,7 +250,25 @@ export function createOwnerRulingDeps({
   verifier = null,
   journalFile = process.env.OWNER_RULING_JOURNAL
     || path.join(process.env.LOCALAPPDATA || HERE, "datascape", "live-host", "owner-rulings.json"),
-  allowInteractive = process.env.OWNER_PRESENCE_INTERACTIVE === "1",
+  // INTERACTIVE BY DEFAULT, disabled by an explicit "0".
+  //
+  // This was opt-in via OWNER_PRESENCE_INTERACTIVE=1, and nothing sets it —
+  // not catchup, not the entry point, not any operator instruction. So the
+  // exact production spawn path loaded the whole verified runtime and then
+  // could never complete a ruling, because the broker returns failure before
+  // it ever asks Windows. PR B would have shipped without delivering the thing
+  // it exists for: replacing the fail-closed inbox with the real owner path.
+  //
+  // Requiring a human to remember an environment variable is the same
+  // release-path configuration gap in a smaller costume. The broker's own
+  // default stays safe (non-interactive) — it is THIS host, after a passed
+  // preflight, that explicitly permits verification.
+  //
+  // Safe because construction displays nothing. Only a request that has already
+  // survived Host/Origin/method/content-type, canonical preparation,
+  // current-state validity, the idempotency lookup and the prompt budget ever
+  // reaches verify().
+  allowInteractive = process.env.OWNER_PRESENCE_INTERACTIVE !== "0",
   now = () => Date.now(),
 } = {}) {
   const journal = createRulingJournal({ storage: createRulingJournalStorage(journalFile), now })
@@ -264,6 +282,10 @@ export function createOwnerRulingDeps({
     applyMutation: applyOwnerMutation,
     journal,
     budget: createPromptBudget({ now }),
+    // Stated so the host can report whether it is actually able to verify her.
+    // The previous shape was silently incapable: the runtime loaded, the route
+    // answered, and no ruling could ever complete.
+    interactive_permitted: verifier ? null : allowInteractive,
     verifier: verifier ?? createOwnerPresenceVerifier({
       broker: createWindowsOwnerPresenceBroker({ allowInteractive }),
       now,

@@ -205,6 +205,9 @@ if (invokedDirectly) {
     owner_rulings: started.owner_rulings,
     deployed_from_commit: started.gate.deployed_from_commit,
     exception_store_guarded: started.gate.exception_store_guarded ?? false,
+    // Whether this host can complete an owner ruling at all. Reporting it makes
+    // a silently-incapable host visible instead of merely disappointing.
+    interactive_owner_verification: started.deps?.interactive_permitted ?? null,
     reason: started.gate.reason,
   }));
   if (started.mode === "read_only") {

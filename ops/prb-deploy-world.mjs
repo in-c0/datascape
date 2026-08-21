@@ -116,7 +116,10 @@ export async function deployedWorld({ damage = null } = {}) {
   process.env.LIVE_HOST_STATE = state;
   process.env.EXCEPTION_INBOX = inbox;
   process.env.BRIEFING_DECISIONS = decisions;
-  delete process.env.OWNER_PRESENCE_INTERACTIVE;
+  // Explicitly DISABLE interactive verification for every test world. The
+  // production default is now interactive-capable, so deleting this variable
+  // would leave a suite able to raise a real Windows dialog on this machine.
+  process.env.OWNER_PRESENCE_INTERACTIVE = "0";
 
   const fresh = () => Math.random().toString(36).slice(2);
   const deployMod = await import(`./live-host-deploy.mjs?w=${fresh()}`);
