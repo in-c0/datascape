@@ -209,8 +209,25 @@ export function rankLanes(lanes = [], dueNowActions = []) {
 
 export const TEMPORAL_PHASES = ["night", "pre-dawn", "sunrise", "daytime", "afternoon", "evening"];
 
-export function temporalPhase(date = new Date()) {
-  const hour = date.getHours() + date.getMinutes() / 60;
+// The hour AS SEEN IN SYDNEY, not in whatever zone the process happens to run
+// in. `getHours()` returns runner-local hours, so a 13:00+10:00 run read as
+// 03:00 in a UTC CI box and was labelled "overnight" — a real mislabelling that
+// only stayed invisible because this machine is already in Sydney. The whole
+// portfolio reads Sydney time; the code should too.
+export const SURFACE_TZ = "Australia/Sydney";
+
+export function localHour(value, timeZone = SURFACE_TZ) {
+  const date = value instanceof Date ? value : new Date(Date.parse(value));
+  if (!Number.isFinite(date.getTime())) return null;
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone, hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+  }).formatToParts(date);
+  const get = (type) => Number(parts.find((p) => p.type === type)?.value);
+  return get("hour") + get("minute") / 60;
+}
+
+export function temporalPhase(date = new Date(), timeZone = SURFACE_TZ) {
+  const hour = localHour(date, timeZone) ?? 12;
   if (hour < 4) return "night";
   if (hour < 6) return "pre-dawn";
   if (hour < 8) return "sunrise";
@@ -221,12 +238,13 @@ export function temporalPhase(date = new Date()) {
 }
 
 /** Does a run cross the small hours? Derived context, never a supervision state. */
-export function spansNight(run) {
-  const from = new Date(Date.parse(run.startedAt));
-  const to = new Date(Date.parse(run.endedAt));
-  if (!Number.isFinite(from.getTime()) || !Number.isFinite(to.getTime())) return false;
-  const startHour = from.getHours();
-  const endHour = to.getHours();
+export function spansNight(run, timeZone = SURFACE_TZ) {
+  const from = Date.parse(run?.startedAt);
+  const to = Date.parse(run?.endedAt);
+  if (!Number.isFinite(from) || !Number.isFinite(to)) return false;
+  const startHour = localHour(new Date(from), timeZone);
+  const endHour = localHour(new Date(to), timeZone);
+  if (startHour == null || endHour == null) return false;
   return startHour < 6 || endHour < 6 || (to - from) > 6 * 3600 * 1000;
 }
 
