@@ -26,7 +26,9 @@ const root = document.getElementById("root");
 const requestedView = new URLSearchParams(window.location.search).get("view");
 // Continuity ships two planes now: the semantic viewport and the catch-up
 // briefing. Both are projections over the same runtime data boundary.
-const VIEWS = new Set(["continuity", "briefing"]);
+// `authority` is the V6.1.4 owner-authoring surface. It is REVIEW-ONLY: it
+// binds to fixture state, has no write path, and cannot grant real authority.
+const VIEWS = new Set(["continuity", "briefing", "authority"]);
 const view = VIEWS.has(requestedView) ? requestedView : "landscape";
 
 function screen(html) {
@@ -37,7 +39,11 @@ function screen(html) {
 screen(`<div class="boot__brand">${config.siteName.toUpperCase()}</div>
   <div class="boot__msg">loading ${view}…</div>`);
 
-(view === "briefing" ? loadBriefing(config.dataBase) : loadData(config.dataBase))
+// The authority surface reads no portfolio data at all — another reason it
+// cannot touch owner state.
+(view === "authority"
+  ? Promise.resolve()
+  : view === "briefing" ? loadBriefing(config.dataBase) : loadData(config.dataBase))
   .then(async () => {
     // Dynamic import AFTER data is in the store. Continuity is another
     // projection over the same runtime data boundary, not a second app/data silo.
@@ -48,7 +54,9 @@ screen(`<div class="boot__brand">${config.siteName.toUpperCase()}</div>
       ? import("./continuity/ContinuityView.jsx")
       : view === "briefing"
         ? import("./continuity/BriefingView.jsx")
-        : import("./App.jsx");
+        : view === "authority"
+          ? import("./continuity/AuthorityView.jsx")
+          : import("./App.jsx");
     const [{ StrictMode }, { createRoot }, { default: App }] = await Promise.all([
       import("react"),
       import("react-dom/client"),

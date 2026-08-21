@@ -820,3 +820,12 @@ body:has(.bf-root) { overflow: auto; }
   }
   .bf-env { display: none; }
 }
+
+/* Entry into the V6.1.4 authority surface. One exception, two doorways —
+ * never a second "autonomy setup" inbox (spec V6.1.4 §14). */
+.bf-authorityentry {
+  display: inline-block; margin: 0 14px 6px 0; font-size: 13.5px; font-weight: 540;
+  color: var(--bf-violet); text-decoration: none;
+  border-bottom: 1px solid rgba(167, 139, 250, 0.35); padding-bottom: 1px;
+}
+.bf-authorityentry:hover { border-bottom-color: var(--bf-violet); }

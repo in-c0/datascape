@@ -181,6 +181,9 @@ function Node({ node, onSelect, refCallback, focal, keyboard, now }) {
 // link rather than a fifth button.
 // ---------------------------------------------------------------------------
 
+/** Loops whose resolution is an authored envelope, not a yes/no on a proposal. */
+const AUTHORING_LOOPS = new Set(["datascape/v6-execution-authority"]);
+
 function CTA({ action, onDone, api }) {
   const [mode, setMode] = useState(null);        // null | 'reply' | 'defer' | 'dismiss'
   const [text, setText] = useState("");
@@ -195,7 +198,15 @@ function CTA({ action, onDone, api }) {
 
   // Publish the keyboard handles (spec §11: A / R / D). Registered only while a
   // Z2 owner card is mounted, so the shortcuts cannot fire from anywhere else.
-  const hasProposedAction = Boolean(String(action.proposed || "").trim());
+  // An approval affordance may exist ONLY where a concrete thing exists to
+  // approve. The V6 authority blocker has no envelope or task yet — the owner
+  // still has to author one — so "Approve proposed" would be semantically
+  // false, and once a real write path exists it becomes exactly the accidental
+  // shortcut V6 was built to prevent. Approval and authoring are different
+  // acts, and clicking approve must never be reinterpreted as "open the
+  // authoring flow".
+  const requiresAuthoring = AUTHORING_LOOPS.has(action.loop);
+  const hasProposedAction = !requiresAuthoring && Boolean(String(action.proposed || "").trim());
   useEffect(() => {
     if (!api) return undefined;
     api.current = {
@@ -243,6 +254,12 @@ function CTA({ action, onDone, api }) {
   return (
     <div className="bf-cta">
       <div className="bf-cta__row">
+        {requiresAuthoring && (
+          <>
+            <a className="bf-cta__btn bf-cta__btn--approve" href="?view=authority">Set an autonomy envelope →</a>
+            <a className="bf-cta__btn" href="?view=authority&state=F4">Authorize one bounded task →</a>
+          </>
+        )}
         {hasProposed && (
           <button type="button" className="bf-cta__btn bf-cta__btn--approve" disabled={Boolean(pending)}
             onClick={() => run("approve")}>
