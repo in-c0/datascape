@@ -19,11 +19,17 @@ export const CLASSES = [
 
 /** Which scheduling class does a ready intent fall into? First match wins. */
 export function classify(intent, { deadlineSoon = false } = {}) {
-  if (intent.owner_gate_ids.length === 0 && intent.unblocks.length > 0 && intent.materially_live) {
+  // Tolerant of a partial intent. The shadow mapping and the simulator both
+  // build intent-shaped objects from external sources, and a scheduler that
+  // throws on a missing optional array would take the whole run down rather
+  // than classify the one record that lacked it.
+  const gates = intent.owner_gate_ids ?? [];
+  const unblocks = intent.unblocks ?? [];
+  if (gates.length === 0 && unblocks.length > 0 && intent.materially_live) {
     return "owner_independent_blocker_removal";
   }
   if (intent.materially_live) return "materially_live_continuation";
-  if (intent.unblocks.length > 0) return "dependency_unblocking";
+  if (unblocks.length > 0) return "dependency_unblocking";
   if (deadlineSoon || intent.deadline) return "deadline_sensitive";
   return "ordinary_ready";
 }
