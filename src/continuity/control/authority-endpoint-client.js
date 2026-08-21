@@ -16,8 +16,21 @@
 
 export const AUTHORITY_ENDPOINT = "/__continuity/authority";
 
+/**
+ * The browser may PROBE whether the fixed endpoint exists. It may not supply
+ * one (spec V6.1.6 §1).
+ *
+ * A page-chosen endpoint could return fabricated authority state, or receive
+ * her authority drafts. The path is therefore a constant here, and the
+ * `endpoint` option exists only so tests can point at a fake transport — it is
+ * refused whenever the transport is the real one.
+ */
 export function createAuthorityEndpointClient({ endpoint = AUTHORITY_ENDPOINT, transport = globalThis.fetch } = {}) {
   if (typeof transport !== "function") throw new Error("an authority endpoint client requires a transport");
+  const usingRealTransport = transport === globalThis.fetch;
+  if (usingRealTransport && endpoint !== AUTHORITY_ENDPOINT) {
+    throw new Error("the authority endpoint is fixed; the page may not choose one");
+  }
 
   const call = async (op, body) => {
     const response = await transport(`${endpoint}/${op}`, {
@@ -42,6 +55,9 @@ export function createAuthorityEndpointClient({ endpoint = AUTHORITY_ENDPOINT, t
     holdsAuthenticator: false,
 
     authorize: (request) => call("authorize", request),
+    // §3: ask the host to prepare a review and return the exact preview to
+    // render plus an opaque receipt.
+    prepareAuthority: (request) => call("prepare", request),
     // ONE contextual read. The page never learns or sends a goal id.
     authorityContext: () => call("context", {}),
     readCurrentAuthority: (goalId) => call("current", { goal_id: goalId }),

@@ -29,6 +29,12 @@ export async function loadAuthorityContext(adapter) {
   // storage — the worst possible failure for an authority UI.
   if (typeof adapter.authorityContext === "function") {
     const ctx = await adapter.authorityContext();
+    // Every owner-facing read authenticates now, so a refusal here is the
+    // honest answer — degrading it into "no originating exception" would tell
+    // the surface the wrong thing about why it cannot proceed.
+    if (ctx && ctx.ok === false) {
+      return { ready: false, failure: ctx.failure, reason: ctx.reason, blocker: null, currentAuthority: null, catalogue: [], suggestions: [], seedDraft: null };
+    }
     return {
       ready: true,
       blocker: ctx?.blocker ?? null,
@@ -76,7 +82,13 @@ function unwrap(key) {
  * Promise at the moment the request is built.
  */
 export async function authorizeFromContext({ adapter, context, draft, policyIdentity, action }) {
-  if (!context?.ready) return { ok: false, failure: "not_hydrated", reason: "the authority context was never loaded" };
+  if (!context?.ready) {
+    return {
+      ok: false,
+      failure: context?.failure ?? "not_hydrated",
+      reason: context?.reason ?? "the authority context was never loaded",
+    };
+  }
   const request = {
     operation_id: `auth:${draft.draft_id}:${policyIdentity}`,
     authorization_action: action,

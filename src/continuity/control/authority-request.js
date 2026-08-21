@@ -8,6 +8,10 @@
 const CLIENT_FIELDS = [
   "draft_id", "policy_identity", "operation_id", "expected_authority_revision",
   "authorization_action", "draft", "goal_id", "scope_refs", "source_exception_id",
+  // The opaque receipt from a host-prepared review. It is an IDENTIFIER, not a
+  // capability: the host looks it up in its own store, so a forged one simply
+  // does not resolve.
+  "preview_receipt",
 ];
 
 /** Fields a caller might supply that must NEVER influence authentication. */

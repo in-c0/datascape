@@ -14,12 +14,28 @@
 
 import { createAuthorityStore, createOwnerBoundary, shadowReauditRequest } from "./authority-store.js";
 import { sanitizeClientRequest } from "./authority-request.js";
+import { composeEnvelope, renderPreview } from "./authority-draft.js";
+import { createReceiptStore, receiptPreview } from "./authority-receipt.js";
 
 /** The small, explicit failure taxonomy (§17). No stack traces cross this line. */
 export const FAILURES = [
   "not_authenticated", "not_owner", "stale_preview", "stale_revision",
   "invalid_scope", "not_admissible", "transaction_failed", "already_completed",
+  // Receipt failures (V6.1.6 §3). Distinct cases, because each is a different
+  // attack and lumping them together loses the reason.
+  "no_receipt", "expired_receipt", "receipt_domain_mismatch", "stale_receipt_revision",
 ];
+
+/**
+ * EVERY owner-facing operation authenticates, not just the writes (§2).
+ *
+ * The authority context carries the current authority, the blocker, the
+ * owner-authored suggestions, drafts and private scope metadata. Authenticating
+ * only `authorize` would leave all of that readable by anything that could
+ * reach the endpoint. The V6 control plane reads authority internally and does
+ * not need this browser-facing API at all.
+ */
+export const AUTHENTICATED_OPERATIONS = ["context", "prepare", "authorize", "current", "blocker", "catalogue", "suggestions", "draft"];
 
 /**
  * Build the privileged handler.
@@ -28,7 +44,10 @@ export const FAILURES = [
  * check the page cannot participate in. It receives NOTHING from the request,
  * which is what makes it un-spoofable rather than merely un-spoofed.
  */
-export function createAuthorityEndpoint({ authenticateCaller, exceptions, now, storage = null, shadowAudit = null, readContext = null, faultInjector = null }) {
+export function createAuthorityEndpoint({
+  authenticateCaller, exceptions, now, storage = null, shadowAudit = null,
+  readContext = null, faultInjector = null, receipts = null, requireReceipt = false,
+}) {
   if (typeof authenticateCaller !== "function") {
     throw new Error("the authority endpoint requires a host-provided caller authenticator");
   }
@@ -37,6 +56,9 @@ export function createAuthorityEndpoint({ authenticateCaller, exceptions, now, s
   // faultInjector is a construction-time TEST capability. Nothing in a request
   // can reach it.
   const store = createAuthorityStore({ boundary, exceptions, now, storage, faultInjector });
+  // Receipts live in the privileged process and never cross the boundary as
+  // anything but an opaque id.
+  const receiptStore = receipts ?? createReceiptStore({ now });
 
   const fail = (failure, reason, extra = {}) => ({ ok: false, failure, reason, ...extra });
 
@@ -50,12 +72,35 @@ export function createAuthorityEndpoint({ authenticateCaller, exceptions, now, s
     if (!principal) return fail("not_authenticated", "no authenticated caller", { stripped_identity_fields });
     if (principal.role !== "owner") return fail("not_owner", "the caller is not the owner", { stripped_identity_fields });
 
+    // §3: authorization refers to the object the TRUSTED boundary prepared,
+    // not to a draft the browser could have replaced after the preview. The
+    // browser supplies a receipt id and an operation id; nothing else about
+    // the policy is taken from it.
+    let policy = { draft: request.draft, policy_identity: request.policy_identity, source_exception_id: request.source_exception_id };
+    if (requireReceipt) {
+      const amending = request.authorization_action === "narrow_authority"
+        || request.authorization_action === "revoke_authority";
+      const verified = receiptStore.verify(request.preview_receipt, {
+        sourceExceptionId: amending ? null : request.source_exception_id ?? null,
+        baseRevision: amending ? request.expected_authority_revision ?? null : null,
+      });
+      if (!verified.ok) return fail(verified.failure, verified.reason, { stripped_identity_fields });
+      const bound = verified.receipt;
+      policy = {
+        draft: bound.normalized_policy,
+        policy_identity: bound.policy_identity,
+        source_exception_id: bound.source_exception_id,
+      };
+      // Single use: a receipt cannot authorize twice.
+      receiptStore.consume(request.preview_receipt);
+    }
+
     const result = store.commit({
       operation_id: request.operation_id,
       action: request.authorization_action,
-      draft: request.draft,
-      policy_identity: request.policy_identity,
-      source_exception_id: request.source_exception_id,
+      draft: policy.draft,
+      policy_identity: policy.policy_identity,
+      source_exception_id: policy.source_exception_id,
       goal_id: request.goal_id,
       expected_revision: request.expected_authority_revision,
       scope_refs: request.scope_refs,
@@ -95,8 +140,40 @@ export function createAuthorityEndpoint({ authenticateCaller, exceptions, now, s
     };
   }
 
+  /**
+   * Prepare a review (§3).
+   *
+   * The host normalizes, validates, computes the identity, binds the domain and
+   * base revision, and returns BOTH the receipt and the exact preview to
+   * render. The browser has nothing else to draw from, so the displayed policy
+   * and the bound policy are one object by construction.
+   */
+  function prepare(rawBody) {
+    const { request } = sanitizeClientRequest(rawBody);
+    if (!request.draft) return fail("transaction_failed", "no draft supplied");
+
+    const domain = readContext?.domain?.() ?? readContext?.blocker?.()?.id ?? null;
+    const amending = request.authorization_action === "narrow_authority"
+      || request.authorization_action === "revoke_authority";
+    const receipt = receiptStore.issue({
+      draft: request.draft,
+      kind: request.authorization_action ?? "authorize_goal",
+      // Bound HOST-side. A browser cannot point a review at another domain.
+      sourceExceptionId: amending ? null : domain,
+      baseRevision: amending ? (store.current(request.goal_id)?.revision ?? null) : null,
+    });
+    const envelope = composeEnvelope(receipt.normalized_policy.allowed_capabilities);
+    return {
+      ok: true,
+      preview_receipt: receipt.receipt_id,
+      expires_at: receipt.expires_at,
+      preview: receiptPreview(receipt, envelope, renderPreview),
+    };
+  }
+
   const handlers = {
     authorize,
+    prepare,
     /**
      * ONE atomic contextual read (PR B third review, P0-1).
      *
@@ -136,10 +213,27 @@ export function createAuthorityEndpoint({ authenticateCaller, exceptions, now, s
   };
 
   return {
-    /** Route one request. `op` comes from the path, the body from the client. */
+    /**
+     * Route one request. `op` comes from the path, the body from the client.
+     *
+     * Authentication happens HERE, for every owner-facing operation, so a read
+     * cannot leak the current authority, the blocker, her drafts or her private
+     * scope metadata to an unauthenticated caller.
+     */
     handle(op, body) {
       const handler = handlers[op];
       if (!handler) return fail("transaction_failed", `unknown operation: ${op}`);
+      if (AUTHENTICATED_OPERATIONS.includes(op)) {
+        const principal = authenticateCaller();
+        if (!principal || principal.role !== "owner") {
+          // Report what was stripped even on an auth refusal, so a spoof
+          // attempt is visible in the response rather than only in the denial.
+          const { stripped_identity_fields } = sanitizeClientRequest(body ?? {});
+          return principal
+            ? fail("not_owner", "the caller is not the owner", { stripped_identity_fields })
+            : fail("not_authenticated", "no authenticated caller", { stripped_identity_fields });
+        }
+      }
       return handler(body ?? {});
     },
     history: store.history,
