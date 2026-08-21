@@ -44,6 +44,7 @@ const REPO_SOURCES = [
   "src/continuity/control/owner-ruling-policy.js",
   "src/continuity/control/exception-atomic.js",
   "src/continuity/control/owner-presence-windows.js",
+  "src/continuity/control/owner-presence-coordinator.js",
 ];
 
 function installHostDependency(liveDir, name, fallback) {

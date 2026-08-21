@@ -433,3 +433,46 @@ test("presence: a healthy production-shaped host mutates once on verified, never
     assert.equal(world.status(allowed), "resolved");
   } finally { await world.close(); }
 });
+
+// ---------------------------------------------------------------------------
+// One owner-presence coordinator per host
+// ---------------------------------------------------------------------------
+
+test("presence: every route that can prompt shares ONE verifier and ONE budget", async () => {
+  const world = await deployedWorld();
+  try {
+    const started = await world.launch();
+    assert.equal(started.mode, "owner_rulings");
+
+    const stats = started.deps.presence.stats();
+    // Two independently-constructed verifiers could each honour "one
+    // outstanding prompt" and still put two Windows dialogs on screen; two
+    // independent budgets could each be evaded by alternating routes.
+    assert.equal(stats.verifier_instances, 1);
+    assert.equal(stats.budget_instances, 1);
+    assert.ok(stats.subsystems.includes("owner_rulings"));
+
+    // A second subsystem takes a HANDLE, not a new device.
+    const authority = started.deps.presence.forSubsystem("authority");
+    assert.equal(authority.verifier, started.deps.verifier, "same verifier object");
+    assert.equal(authority.budget, started.deps.budget, "same budget object");
+    assert.equal(started.deps.presence.stats().verifier_instances, 1);
+
+    // And the budget really is shared: a refusal on one route cools down the
+    // other, which is the property that makes lockout unevadable.
+    const id = world.fixture("2026-08-22-shared-budget");
+    world.broker.outcomeValue = "cancelled";
+    assert.equal((await world.act({ id, action: "dismiss", operation_id: "op-shared-1" })).body.error, "cancelled");
+    assert.equal(authority.budget.mayPrompt().ok, false,
+      "the authority route must inherit the cooldown the exception route just incurred");
+  } finally { await world.close(); }
+});
+
+test("presence: the deployed artifact ships the coordinator", async () => {
+  const world = await deployedWorld();
+  try {
+    assert.ok(world.deployed.files.some((f) => f.dest === "_continuity/owner-presence-coordinator.js"),
+      "a shared coordinator that is not deployed is not shared with anything");
+    assert.equal(world.deployMod.preflight({ liveDir: world.live }).ok, true);
+  } finally { await world.close(); }
+});

@@ -49,6 +49,7 @@ import {
 import { createOwnerPresenceVerifier, stripClaimedVerification } from "./owner-presence.js"
 import { applyRulingAtomically, exceptionFile } from "./exception-atomic.js"
 import { createWindowsOwnerPresenceBroker } from "./owner-presence-windows.js"
+import { createOwnerPresenceCoordinator } from "./owner-presence-coordinator.js"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 // HERE is now `<ops>/_continuity`, so the decisions mirror is two levels up.
@@ -246,8 +247,30 @@ export function applyOwnerMutation(mutation) {
  * verifier and an isolated store — and so nothing here can reach a Windows
  * dialog unless a broker that can show one was deliberately supplied.
  */
+/**
+ * The host's single owner-presence coordinator.
+ *
+ * Created once, after the base preflight passes, and shared by every route that
+ * can ask for her. Two independently-constructed verifiers could each honour
+ * "one outstanding prompt" and still put two Windows dialogs on screen; two
+ * independent prompt budgets could each be evaded by alternating routes.
+ */
+export function createHostPresence({
+  allowInteractive = process.env.OWNER_PRESENCE_INTERACTIVE !== "0",
+  now = () => Date.now(),
+  verifier = null,
+  budget = null,
+} = {}) {
+  return createOwnerPresenceCoordinator({
+    now, verifier, budget,
+    broker: verifier ? null : createWindowsOwnerPresenceBroker({ allowInteractive }),
+    randomChallenge: () => crypto.randomUUID(),
+  })
+}
+
 export function createOwnerRulingDeps({
   verifier = null,
+  presence = null,
   journalFile = process.env.OWNER_RULING_JOURNAL
     || path.join(process.env.LOCALAPPDATA || HERE, "datascape", "live-host", "owner-rulings.json"),
   // INTERACTIVE BY DEFAULT, disabled by an explicit "0".
@@ -271,6 +294,12 @@ export function createOwnerRulingDeps({
   allowInteractive = process.env.OWNER_PRESENCE_INTERACTIVE !== "0",
   now = () => Date.now(),
 } = {}) {
+  // One coordinator for the whole host. A caller may hand one in (the entry
+  // point does, so authority shares it); otherwise this route creates the
+  // host's coordinator and later subsystems take handles from it.
+  const coordinator = presence ?? createHostPresence({ allowInteractive, now, verifier })
+  const mine = coordinator.forSubsystem("owner_rulings")
+
   const journal = createRulingJournal({ storage: createRulingJournalStorage(journalFile), now })
   // Forward recovery on startup: any ruling that was mid-flight when a previous
   // process died is resolved by looking for its ref in the exception itself.
@@ -281,16 +310,15 @@ export function createOwnerRulingDeps({
     readException,
     applyMutation: applyOwnerMutation,
     journal,
-    budget: createPromptBudget({ now }),
+    presence: coordinator,
+    budget: mine.budget,
     // Stated so the host can report whether it is actually able to verify her.
     // The previous shape was silently incapable: the runtime loaded, the route
     // answered, and no ruling could ever complete.
     interactive_permitted: verifier ? null : allowInteractive,
-    verifier: verifier ?? createOwnerPresenceVerifier({
-      broker: createWindowsOwnerPresenceBroker({ allowInteractive }),
-      now,
-      randomChallenge: () => crypto.randomUUID(),
-    }),
+    verifier: mine.verifier,
+    // Startup recovery results. Dropped by an earlier edit and caught by the
+    // crash-window tests, which is exactly what they are for.
     recovered,
   }
 }

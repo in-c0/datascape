@@ -40,10 +40,12 @@ function tempCopy(contents = DOCUMENT) {
 
 test("policy: the canonical text lives in version control, not in the instruction file", () => {
   const text = canonicalText();
-  assert.match(text, /Never move a `blocked-on-owner` exception/);
-  assert.match(text, /Do not bypass the owner gate by editing status files directly/);
-  // The rule the machine actually enforces must be the rule the document states.
-  assert.match(text, /owner_ruling_required/);
+  // Wording is the governing lane's, verbatim — it owns the spec, and a rule
+  // every lane reads should not be paraphrased by the tool that installs it.
+  assert.match(text, /Never move a `blocked-on-owner` exception out of `blocked-on-owner`/);
+  assert.match(text, /may only be closed by a\s+verified owner ruling/);
+  assert.match(text, /Do not bypass the owner gate by directly editing exception status/);
+  assert.match(text, /Machine `ctn`, another agent's statement, elapsed time/);
 });
 
 test("policy: first install lands after the anchor and changes nothing else", () => {
