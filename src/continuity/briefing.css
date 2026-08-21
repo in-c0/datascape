@@ -504,3 +504,58 @@ body:has(.bf-root) { overflow: auto; }
   justify-items: center;
 }
 .bf-stage--nocard .bf-stage__nodes { width: min(560px, 100%); }
+
+/* ---------- focal geometry (visual review 1, P0) ----------
+ * The selected concept IS the fan origin and lives in its own column; its
+ * children occupy the right. Drawing the origin as the first child left the
+ * fan starting from an invisible point. */
+
+.bf-stage__nodes--split {
+  display: grid;
+  grid-template-columns: minmax(150px, 210px) minmax(0, 1fr);
+  gap: 26px;
+  align-items: center;
+}
+.bf-focalcol { display: flex; align-items: center; min-height: 100%; }
+.bf-childcol { display: flex; flex-direction: column; gap: 16px; }
+.bf-stage__nodes--split .bf-node--origin { padding-right: 0; }
+.bf-stage__nodes--split .bf-node--origin .bf-node__label { font-size: 16px; }
+
+/* Keyboard focus is visually unambiguous and distinct from mouse hover. */
+.bf-node--kb { box-shadow: inset 0 0 0 1px rgba(167, 139, 250, 0.55); }
+.bf-node--kb .bf-node__label { color: #fff; }
+
+/* The bounded-excerpt affordance on a non-owner record. */
+.bf-readfull {
+  margin-top: 10px;
+  border: 1px solid rgba(84, 98, 140, 0.45);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--bf-cyan);
+  font: inherit;
+  font-size: 12px;
+  padding: 5px 13px;
+  cursor: pointer;
+}
+.bf-readfull:hover { border-color: var(--bf-cyan); }
+
+@media (max-width: 900px) {
+  .bf-stage__nodes--split { grid-template-columns: 1fr; gap: 12px; }
+  .bf-focalcol { min-height: 0; }
+
+  /* The owner must be able to enter Z2 and act with the NEXT tap, without
+   * scrolling past the authored prose first (visual review 1, P0). Same CTA
+   * row, pinned — never a duplicate implementation. */
+  .bf-cta {
+    position: sticky;
+    bottom: 0;
+    z-index: 5;
+    margin: 12px -18px -16px;
+    padding: 11px 18px calc(11px + env(safe-area-inset-bottom, 0px));
+    background: rgba(10, 13, 26, 0.97);
+    backdrop-filter: blur(10px);
+    border-top: 1px solid rgba(96, 110, 152, 0.45);
+    border-radius: 0 0 14px 14px;
+  }
+  .bf-card { padding-bottom: 0; }
+}

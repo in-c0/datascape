@@ -8,7 +8,10 @@ import {
   buildScene,
   buildUrl,
   effortLabel,
+  excerpt,
+  nextDueInBucket,
   parentPath,
+  parsePath,
   readLocation,
   resolveDeferPreset,
   writeLocation,
@@ -94,7 +97,7 @@ function ThreadFan({ geometry, origin, enabled }) {
   );
 }
 
-function Node({ node, onSelect, refCallback, focal }) {
+function Node({ node, onSelect, refCallback, focal, keyboard }) {
   const interactive = Boolean(onSelect);
   const activate = (event) => {
     if (!interactive || (event.key !== "Enter" && event.key !== " ")) return;
@@ -103,7 +106,7 @@ function Node({ node, onSelect, refCallback, focal }) {
   };
   return (
     <div
-      className={`bf-node bf-node--${node.kind}${node.dim ? " bf-node--dim" : ""}${focal ? " bf-node--focal" : ""}`}
+      className={`bf-node bf-node--${node.kind}${node.dim ? " bf-node--dim" : ""}${focal ? " bf-node--focal" : ""}${keyboard ? " bf-node--kb" : ""}`}
       role={interactive ? "button" : undefined}
       tabIndex={interactive ? 0 : undefined}
       onClick={onSelect}
@@ -136,7 +139,7 @@ function Node({ node, onSelect, refCallback, focal }) {
 // link rather than a fifth button.
 // ---------------------------------------------------------------------------
 
-function CTA({ action, onDone }) {
+function CTA({ action, onDone, api }) {
   const [mode, setMode] = useState(null);        // null | 'reply' | 'defer' | 'dismiss'
   const [text, setText] = useState("");
   const [pending, setPending] = useState(null);
@@ -147,6 +150,20 @@ function CTA({ action, onDone }) {
   useEffect(() => {
     if (mode === "reply") inputRef.current?.focus();
   }, [mode]);
+
+  // Publish the keyboard handles (spec §11: A / R / D). Registered only while a
+  // Z2 owner card is mounted, so the shortcuts cannot fire from anywhere else.
+  const hasProposedAction = Boolean(String(action.proposed || "").trim());
+  useEffect(() => {
+    if (!api) return undefined;
+    api.current = {
+      approve: () => { if (hasProposedAction && !result) run("approve"); },
+      openReply: () => { if (!result) setMode("reply"); },
+      openDefer: () => { if (!result) setMode("defer"); },
+    };
+    return () => { api.current = null; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [api, action.id, hasProposedAction, result]);
 
   if (!actionsAvailable()) {
     return <p className="bf-note">Read-only — launch with <code>node D:/Projects/.tools/catchup.mjs</code> to act from here.</p>;
@@ -161,6 +178,8 @@ function CTA({ action, onDone }) {
       </p>
     );
   }
+
+  const hasProposed = hasProposedAction;
 
   async function run(kind, payload = {}) {
     setError(null);
@@ -177,7 +196,7 @@ function CTA({ action, onDone }) {
     }
   }
 
-  const hasProposed = Boolean(String(action.proposed || "").trim());
+
 
   return (
     <div className="bf-cta">
@@ -248,7 +267,7 @@ function CTA({ action, onDone }) {
   );
 }
 
-function OwnerCard({ action, onDone }) {
+function OwnerCard({ action, onDone, api }) {
   const hints = action.steps || [];
   return (
     <div className="bf-card">
@@ -269,7 +288,7 @@ function OwnerCard({ action, onDone }) {
 
       {/* CTA sits ABOVE provenance: the spec forbids making her open details
           before she can act. */}
-      <CTA action={action} onDone={onDone} />
+      <CTA action={action} onDone={onDone} api={api} />
 
       {hints.length > 0 && (
         <div className="bf-card__section">
@@ -294,12 +313,22 @@ function OwnerCard({ action, onDone }) {
   );
 }
 
-function RecordCard({ item }) {
+// A non-owner record at Z2 shows a BOUNDED verbatim excerpt, not the whole
+// authored record. The visual review's P1: the graph stopped being overloaded
+// but one node reintroduced the same overload inside its card. The full text is
+// one semantic level deeper — still verbatim, never summarised.
+function RecordCard({ item, full, onOpenFull }) {
+  const body = full ? { text: item.detail, truncated: false } : excerpt(item.detail);
   return (
     <div className="bf-card">
-      <div className="bf-card__eyebrow">{item.facet}<span>{agoLabel(item.at)}</span></div>
+      <div className="bf-card__eyebrow">{item.facet}<span>{agoLabel(item.at)}</span>{full && <span>full record</span>}</div>
       <h2 className="bf-card__title">{item.title}</h2>
-      {item.detail && <p className="bf-verbatim">{item.detail}</p>}
+      {body.text && <p className="bf-verbatim">{body.text}{body.truncated ? "…" : ""}</p>}
+      {body.truncated && (
+        <button type="button" className="bf-readfull" onClick={onOpenFull}>
+          Read full authored record →
+        </button>
+      )}
       {(item.links?.length > 0 || item.refs?.exceptions?.length > 0 || item.refs?.prs?.length > 0) && (
         <div className="bf-refs">
           {item.links?.map((link) => <a key={link.href} href={link.href} target="_blank" rel="noreferrer noopener">{link.text} ↗</a>)}
@@ -404,28 +433,88 @@ function BriefingSurface({ data }) {
   }, [path, brief, page]);
 
   const [containerRef, ringRef, geometry] = useMeasuredThreads([scene.nodes.length, scene.path, scene.card]);
-  const origin = { x: 64, y: Math.max(70, geometry.height / 2) };
 
-  // Keyboard: Escape climbs one semantic level (spec §11).
+  // Split the scene into the focal column and its children. Z2 keeps its single
+  // column (that screenshot passed review); Z0/Z1 get the corrected geometry.
+  const focalNodes = scene.nodes.filter((n) => n.kind === "origin");
+  const childNodes = scene.nodes.filter((n) => n.kind !== "origin");
+  const hasFocalColumn = focalNodes.length > 0;
+  const focalPoint = geometry.points.find((p) => p.key === focalNodes[0]?.key)
+    || { x: 64, y: Math.max(70, geometry.height / 2) };
+
+  // ---- keyboard (spec §11) ----
+  const selectable = scene.nodes.filter((n) => n.kind !== "focus" && n.kind !== "absent" && n.kind !== "origin");
+  const [kbIndex, setKbIndex] = useState(-1);
+  const kbKey = selectable[kbIndex]?.key ?? null;
+  const ctaApi = useRef(null);
+
+  useEffect(() => { setKbIndex(-1); }, [scene.path]);
+
   useEffect(() => {
     const onKey = (event) => {
-      if (event.key === "Escape" && scene.path) {
-        event.preventDefault();
-        go(parentPath(scene.path));
+      // Never steal keys from a composer the owner is typing in.
+      const tag = String(event.target?.tagName || "").toLowerCase();
+      if (tag === "input" || tag === "textarea" || event.target?.isContentEditable) {
+        if (event.key === "Escape") event.target.blur();
+        return;
       }
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+
+      if (event.key === "Escape") {
+        if (scene.path) { event.preventDefault(); go(parentPath(scene.path)); }
+        return;
+      }
+      if (event.key === "ArrowDown" || event.key === "ArrowRight") {
+        if (!selectable.length) return;
+        event.preventDefault();
+        setKbIndex((i) => Math.min(selectable.length - 1, i + 1));
+        return;
+      }
+      if (event.key === "ArrowUp" || event.key === "ArrowLeft") {
+        if (!selectable.length) return;
+        event.preventDefault();
+        setKbIndex((i) => Math.max(0, i - 1));
+        return;
+      }
+      if (event.key === "Enter") {
+        const target = selectable[kbIndex];
+        if (target) { event.preventDefault(); go(target.path); }
+        return;
+      }
+      // A/R/D act on the focused Z2 owner card only. A destructive dismiss is
+      // deliberately absent from the keyboard map.
+      if (!ctaApi.current) return;
+      const key = event.key.toLowerCase();
+      if (key === "a") { event.preventDefault(); ctaApi.current.approve(); }
+      else if (key === "r") { event.preventDefault(); ctaApi.current.openReply(); }
+      else if (key === "d") { event.preventDefault(); ctaApi.current.openDefer(); }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [scene.path, go]);
+  }, [scene.path, go, selectable, kbIndex]);
 
-  const hasOrigin = scene.nodes.some((n) => n.kind === "origin" || n.kind === "parent");
   const away = awayLabel(data.lanes || []);
   const { counts } = scene;
 
+  // §9 auto-advance: after a ruling, focus the next due decision in the same
+  // bucket so clearing ten reads "read → click → read → click" instead of
+  // returning to a list between each one.
   const onRuled = useCallback((response) => {
     // Render the server's rebuilt queue; never optimistically remove an item.
-    if (response?.ownerActions) setLiveActions(response.ownerActions);
-  }, []);
+    const fresh = response?.ownerActions || null;
+    if (fresh) setLiveActions(fresh);
+    const position = parsePath(scene.path);
+    if (position.kind !== "needs" || !position.bucket) return;
+    const next = nextDueInBucket(fresh || data.ownerActions || [], position.bucket, position.record);
+    setTimeout(() => {
+      if (next) go(`needs/${position.bucket}/${next.id}`, "replace");
+      else {
+        // Bucket cleared: step up rather than leaving her on a dead node.
+        const remaining = (fresh || []).length;
+        go(remaining ? "needs" : "", "replace");
+      }
+    }, 700);
+  }, [scene.path, go, data.ownerActions]);
 
   return (
     <main className="bf-root">
@@ -468,21 +557,47 @@ function BriefingSurface({ data }) {
       {/* Without a card the stage is a single centred column — the spec warns
           against "an enormous empty right-side stage". */}
       <section className={`bf-stage${scene.card ? "" : " bf-stage--nocard"}`} ref={containerRef}>
-        <ThreadFan geometry={geometry} origin={origin} enabled={hasOrigin} />
-        <div className="bf-stage__nodes">
-          {scene.nodes.map((n) => (
-            <Node
-              key={n.key}
-              node={n}
-              focal={n.kind === "focus"}
-              refCallback={ringRef(n.key)}
-              onSelect={n.kind === "focus" || n.kind === "absent" ? undefined : () => go(n.path)}
-            />
-          ))}
+        <ThreadFan geometry={geometry} origin={focalPoint} enabled={hasFocalColumn} />
+        {/* The focal node IS the fan origin, in its own column. Drawing it as
+            the first child (with the fan starting from an invisible point) was
+            the visual review's P0: the eye could not tell what it was inside. */}
+        <div className={`bf-stage__nodes${hasFocalColumn ? " bf-stage__nodes--split" : ""}`}>
+          {hasFocalColumn && (
+            <div className="bf-focalcol">
+              {focalNodes.map((n) => (
+                <Node
+                  key={n.key}
+                  node={n}
+                  focal
+                  keyboard={kbKey === n.key}
+                  refCallback={ringRef(n.key)}
+                  onSelect={n.kind === "focus" || n.kind === "absent" ? undefined : () => go(n.path)}
+                />
+              ))}
+            </div>
+          )}
+          <div className="bf-childcol">
+            {(hasFocalColumn ? childNodes : scene.nodes).map((n) => (
+              <Node
+                key={n.key}
+                node={n}
+                focal={!hasFocalColumn && n.kind === "focus"}
+                keyboard={kbKey === n.key}
+                refCallback={ringRef(n.key)}
+                onSelect={n.kind === "focus" || n.kind === "absent" ? undefined : () => go(n.path)}
+              />
+            ))}
+          </div>
         </div>
 
-        {scene.card?.kind === "owner_action" && <OwnerCard action={scene.card.action} onDone={onRuled} />}
-        {scene.card?.kind === "record" && <RecordCard item={scene.card.item} />}
+        {scene.card?.kind === "owner_action" && <OwnerCard action={scene.card.action} onDone={onRuled} api={ctaApi} />}
+        {scene.card?.kind === "record" && (
+          <RecordCard
+            item={scene.card.item}
+            full={scene.level === "z3"}
+            onOpenFull={() => go(scene.path + "/full")}
+          />
+        )}
         {scene.card?.kind === "hint" && (
           <HintCard card={scene.card} onNav={(i) => go(`${parentPath(scene.path)}/hint/${i}`, "replace")} />
         )}

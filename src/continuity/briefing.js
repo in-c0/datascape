@@ -98,7 +98,7 @@ export function parsePath(path) {
   const parts = String(path || "").split("/").filter(Boolean);
   if (!parts.length) return { kind: "entry", parts };
   if (parts[0] === "needs") return { kind: "needs", bucket: parts[1], record: parts[2], hint: parts[3] === "hint" ? Number(parts[4]) : null, parts };
-  if (parts[0] === "lane") return { kind: "lane", lane: parts[1], facet: parts[2] && decodeURIComponent(parts[2]), record: parts[3], hint: parts[4] === "hint" ? Number(parts[5]) : null, parts };
+  if (parts[0] === "lane") return { kind: "lane", lane: parts[1], facet: parts[2] && decodeURIComponent(parts[2]), record: parts[3], full: parts[4] === "full", hint: parts[4] === "hint" ? Number(parts[5]) : null, parts };
   return { kind: "entry", parts };
 }
 
@@ -111,6 +111,9 @@ export function levelOf(path) {
     if (p.bucket) return "z1";
     return "z0";
   }
+  // A lane record's complete authored text is one semantic level deeper than
+  // its bounded excerpt (visual review 1, P1).
+  if (p.full) return "z3";
   if (p.record) return "z2";
   if (p.facet) return "z1";
   return "z0";
@@ -179,7 +182,12 @@ export function rankLanes(lanes = [], dueNowActions = []) {
   });
 }
 
-const node = (props) => ({ dashed: false, dim: false, ...props });
+// focal:true marks the node that IS the current semantic centre. The visual
+// review failed Z0/Z1 because the origin was drawn as the first CHILD while the
+// fan started from an invisible point, so the eye could not answer "what am I
+// inside?" without reading the breadcrumb.
+const FOCAL_KINDS = new Set(["origin", "parent", "focus"]);
+const node = (props) => ({ dashed: false, dim: false, focal: FOCAL_KINDS.has(props.kind), ...props });
 
 /**
  * Build the scene for a semantic position.
@@ -381,6 +389,43 @@ export function buildScene(data, { path = "", brief = "3m", now = Date.now(), pa
   }
   scene.card = { kind: "record", item, lane };
   return scene;
+}
+
+/**
+ * The next due owner decision after afterId within the same bucket.
+ *
+ * Spec 9: clearing decisions should read "read → click → read → click", so
+ * after a ruling the surface advances itself instead of sending her back to a
+ * list. Returns null when the bucket is empty, which the caller renders as a
+ * step back up rather than a dead end.
+ */
+export function nextDueInBucket(actions = [], bucket, afterId, now = Date.now()) {
+  const { dueNow } = partitionActions(actions, now);
+  const ordered = orderOwnerActions(dueNow.filter((a) => laneBucketKey(a) === bucket));
+  if (!ordered.length) return null;
+  const index = ordered.findIndex((a) => a.id === afterId);
+  // The ruled item is normally gone from the fresh queue, so the item now at
+  // its position is the next one; if it is still present (a defer), step past it.
+  const candidate = index >= 0 ? ordered[index + 1] : ordered[0];
+  return candidate || ordered[0] || null;
+}
+
+export function bucketOf(action) {
+  return laneBucketKey(action);
+}
+
+/**
+ * A bounded verbatim excerpt — deterministic source text, never a summary.
+ * Cuts at a sentence or word boundary so the excerpt reads as prose rather than
+ * a truncation artefact.
+ */
+export function excerpt(text, limit = 320) {
+  const source = String(text || "").trim();
+  if (source.length <= limit) return { text: source, truncated: false };
+  const window_ = source.slice(0, limit);
+  const sentence = window_.lastIndexOf(". ");
+  const cut = sentence > limit * 0.5 ? sentence + 1 : window_.lastIndexOf(" ");
+  return { text: source.slice(0, cut > 0 ? cut : limit).trim(), truncated: true };
 }
 
 // ---------------------------------------------------------------------------
