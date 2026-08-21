@@ -26,9 +26,12 @@ const root = document.getElementById("root");
 const requestedView = new URLSearchParams(window.location.search).get("view");
 // Continuity ships two planes now: the semantic viewport and the catch-up
 // briefing. Both are projections over the same runtime data boundary.
-// `authority` is the V6.1.4 owner-authoring surface. It is REVIEW-ONLY: it
-// binds to fixture state, has no write path, and cannot grant real authority.
-const VIEWS = new Set(["continuity", "briefing", "authority"]);
+// Two structurally separate authority routes (spec V6.1.5 PR B section 1).
+// `authority` is the live composition; `authority-review` is fixture-only and
+// its import graph contains no authority writer at all. A query-string change
+// cannot turn a fixture caller into an authenticated owner caller, because the
+// two routes load different modules with different capabilities.
+const VIEWS = new Set(["continuity", "briefing", "authority", "authority-review"]);
 const view = VIEWS.has(requestedView) ? requestedView : "landscape";
 
 function screen(html) {
@@ -41,7 +44,7 @@ screen(`<div class="boot__brand">${config.siteName.toUpperCase()}</div>
 
 // The authority surface reads no portfolio data at all — another reason it
 // cannot touch owner state.
-(view === "authority"
+(view === "authority" || view === "authority-review"
   ? Promise.resolve()
   : view === "briefing" ? loadBriefing(config.dataBase) : loadData(config.dataBase))
   .then(async () => {
@@ -55,8 +58,10 @@ screen(`<div class="boot__brand">${config.siteName.toUpperCase()}</div>
       : view === "briefing"
         ? import("./continuity/BriefingView.jsx")
         : view === "authority"
-          ? import("./continuity/AuthorityView.jsx")
-          : import("./App.jsx");
+          ? import("./continuity/LiveAuthorityView.jsx")
+          : view === "authority-review"
+            ? import("./continuity/ReviewAuthorityView.jsx")
+            : import("./App.jsx");
     const [{ StrictMode }, { createRoot }, { default: App }] = await Promise.all([
       import("react"),
       import("react-dom/client"),

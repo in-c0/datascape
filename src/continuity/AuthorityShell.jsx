@@ -1,11 +1,13 @@
-// The authority declaration surface — spec V6.1.4 PR B.
+// The authority declaration surface — spec V6.1.4 PR B, re-composed for
+// V6.1.5 PR B §1.
 //
-// REVIEW MODE IS INCAPABLE OF GRANTING AUTHORITY. The Authorize action is bound
-// to fixture state and never to owner state; there is no write path in this
-// file, and `authorize()` is called with a synthetic actor so its own owner
-// check is not the only thing standing between a click and a ruling.
+// PRESENTATIONAL ONLY. This module imports no authority store, no client and
+// no owner boundary; the ability to write authority arrives as `adapter`, which
+// the two route modules supply. So the review composition is not this component
+// with a flag turned off — it is this component handed an adapter that has no
+// mutation method at all.
 //
-// The visual question this has to answer: does autonomous authority become
+// The visual question it answers: does autonomous authority become
 // comprehensible enough that a person can deliberately grant it, without having
 // read the control plane underneath?
 
@@ -28,10 +30,13 @@ const EVIDENCE = [{
 
 const STEPS = ["choose", "goal", "capabilities", "limits", "review", "authorized"];
 
-export default function AuthorityView() {
+export default function AuthorityShell({ adapter }) {
   const params = new URLSearchParams(window.location.search);
   const fixtures = fixtureStates();
   const initial = params.get("state") || "F1";
+  // The only capability distinction between the two routes. A review adapter
+  // reports false because it has no writer, not because it was told to behave.
+  const canWrite = Boolean(adapter?.canWriteAuthority);
   const forcedStep = params.get("step");
 
   const [path, setPath] = useState(initial === "F4" || initial === "F5" ? "canary" : initial === "F1" ? null : "goal");
@@ -261,17 +266,19 @@ export default function AuthorityView() {
               </button>
               <button className="au-btn au-btn--ghost" type="button" onClick={() => setStep("limits")}>Back</button>
             </div>
-            <p className="au__reviewnote">
-              Review mode. This screen is bound to fixture state and cannot grant real authority —
-              the button advances the mock, it does not write a ruling.
-              {wouldAuthorize.reason ? ` Draft check: ${wouldAuthorize.reason}.` : ""}
-            </p>
+            {!canWrite && (
+              <p className="au__reviewnote">
+                Review mode. This screen is bound to fixture state and cannot grant real authority —
+                the button advances the mock, it does not write a ruling.
+                {wouldAuthorize.reason ? ` Draft check: ${wouldAuthorize.reason}.` : ""}
+              </p>
+            )}
           </>
         )}
 
         {step === "authorized" && (
           <Authorized
-            preview={preview} revoked={revoked} narrowed={narrowed} paused={paused}
+            preview={preview} revoked={revoked} narrowed={narrowed} paused={paused} canWrite={canWrite}
             onPause={() => setPaused((p) => !p)}
             onNarrow={() => setNarrowed(true)}
             onRevoke={() => setRevoked(true)}
@@ -346,7 +353,7 @@ function Preview({ preview }) {
   );
 }
 
-function Authorized({ preview, revoked, narrowed, paused, onPause, onNarrow, onRevoke, onEdit }) {
+function Authorized({ preview, revoked, narrowed, paused, canWrite, onPause, onNarrow, onRevoke, onEdit }) {
   const state = revoked ? "off" : paused ? "paused" : "on";
   const label = revoked ? "Revoked — no new work will start"
     : paused ? "Paused — running work stops at its next safe point"
@@ -383,7 +390,9 @@ function Authorized({ preview, revoked, narrowed, paused, onPause, onNarrow, onR
           <button className="au-btn au-btn--danger" type="button" onClick={onRevoke}>Stop entirely</button>
         </div>
       )}
-      <p className="au__reviewnote">Review mode — fixture state only. No real authority exists or is created here.</p>
+      {!canWrite && (
+        <p className="au__reviewnote">Review mode — fixture state only. No real authority exists or is created here.</p>
+      )}
     </>
   );
 }
