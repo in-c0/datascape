@@ -2,85 +2,96 @@
 //
 // It exists so that closing the browser bypass does not just move the bypass to
 // a terminal. It performs owner rulings through the SAME orchestration the HTTP
-// route uses — canonical prepared mutation, idempotency before prompting,
-// verification, staleness after, one-shot presence, then the exact mutation.
+// route uses, and — this is the part the first version got wrong — through the
+// same DEPLOYED BYTES.
+//
+// The first version imported `performOwnerRuling` and the transition policy at
+// the top of this file, from `../src/continuity/control/`. `realDeps()` dutifully
+// loaded the deployed modules and then nothing used them, so the HTTP route ran
+// reviewed code while the CLI ran whatever happened to be checked out. That is
+// the exact drift the file-set deployment rule exists to prevent, reintroduced
+// through the terminal.
+//
+// So this file is now a SHELL: argument parsing and process plumbing. Every
+// security decision — which classes exist, what the transaction does, what the
+// policy permits — comes from the deployed artifact at call time.
 //
 // An agent may run this. It will get a bounded Windows prompt and nothing else:
-// without a human at the machine the ruling does not complete. That is the
-// intended shape — the CLI is not privileged, it is merely convenient.
-//
-// Lanes withdrawing their own question do not come through here at all; they
-// use `--withdraw`, which is lane authority and is recorded as a withdrawal so
-// nobody later reads it as her decision.
+// without a human at the machine the ruling does not complete.
 import crypto from "node:crypto";
 import path from "node:path";
 import process from "node:process";
 
-// The orchestration and the policy come from the repo, because argument parsing
-// and the withdraw/rule split are this CLI's own logic. The SECURITY layer does
-// not: `realDeps()` loads it from the deployed host, so a manual owner ruling
-// runs the same reviewed bytes the HTTP route does. Importing the orchestrator
-// from here would reintroduce exactly the drift the deployment rule exists to
-// prevent — a security layer read out of a mutable working tree.
-import { OWNER_ACTIONS, performOwnerRuling } from "../src/continuity/control/owner-ruling.js";
-import { authorizeTransition, LANE_WITHDRAWAL_STATUS } from "../src/continuity/control/owner-ruling-policy.js";
+export const DEFAULT_LIVE_DIR = "D:/Projects/_ship_inbox/ops";
 
-export const USAGE = [
-  "node ops/owner-rule.mjs <exception-id> <action> [--note \"...\"] [--until <iso>]",
-  `  action: ${OWNER_ACTIONS.join(" | ")}`,
-  "",
-  "node ops/owner-rule.mjs <exception-id> --withdraw --note \"why the lane no longer needs her\"",
-  "  lane authority; returns the item to the lane, never records an owner ruling",
-].join("\n");
+export function usage(actions = []) {
+  return [
+    "node ops/owner-rule.mjs <exception-id> <action> [--note \"...\"] [--until <iso>]",
+    actions.length ? `  action: ${actions.join(" | ")}` : "",
+    "",
+    "An owner ruling requires the owner. Running this without a human at the",
+    "machine produces one bounded prompt and no ruling.",
+  ].filter(Boolean).join("\n");
+}
 
 export function parseArgs(argv) {
-  const [id, maybeAction, ...rest] = argv;
+  const [id, ...rest] = argv;
   const flags = {};
+  let action;
   for (let i = 0; i < rest.length; i += 1) {
-    if (!rest[i].startsWith("--")) continue;
+    // The action is the first bare word. Anything starting with `--` is a flag,
+    // including in the action position — otherwise `<id> --withdraw` parsed as
+    // an action literally named "--withdraw" and never reached the check that
+    // refuses it.
+    if (!rest[i].startsWith("--")) {
+      if (action === undefined) action = rest[i];
+      continue;
+    }
     const key = rest[i].slice(2);
     const next = rest[i + 1];
     if (next === undefined || next.startsWith("--")) flags[key] = true;
     else { flags[key] = next; i += 1; }
   }
-  if (maybeAction === "--withdraw") return { id, withdraw: true, ...flags };
-  return { id, action: maybeAction, ...flags };
+  return { id, action, ...flags };
 }
 
 /**
- * @param deps.host the live-host module (exception access + mutation)
+ * `--withdraw` is deliberately absent.
+ *
+ * "The filing lane may take its own question back" is a sound idea and a
+ * genuinely useful escape from a queue full of stale gates. But this CLI has no
+ * trustworthy caller identity: any local process could have run
+ *
+ *   owner-rule <somebody-else's-gate> --withdraw
+ *
+ * and removed an item from her queue with no presence and no lane check. That
+ * is not lane authority, it is an unauthenticated process claiming it. It comes
+ * back when an authenticated lane-control path can establish
+ * `caller lane == filing lane`, and not before.
  */
 export async function runOwnerRule(argv, deps) {
   const args = parseArgs(argv);
-  if (!args.id) return { ok: false, failure: "usage", detail: USAGE };
-
-  const current = deps.readException(args.id);
-  if (!current) return { ok: false, failure: "unknown_exception", detail: `no exception ${args.id}` };
-
+  const actions = deps.OWNER_ACTIONS ?? [];
+  if (!args.id) return { ok: false, failure: "usage", detail: usage(actions) };
   if (args.withdraw) {
-    // Lane authority. Deliberately cannot resolve: taking a question back is
-    // not the same as it having been answered.
-    const verdict = authorizeTransition({ from: current.status, to: LANE_WITHDRAWAL_STATUS });
-    if (!verdict.ok) return { ok: false, failure: verdict.failure, detail: verdict.remedy };
-    const note = typeof args.note === "string" ? args.note : "";
     return {
-      ok: true, class: verdict.class, prompt_shown: false,
-      result: deps.withdraw({ id: current.id, status: LANE_WITHDRAWAL_STATUS, note, record_as: verdict.record_as }),
+      ok: false, failure: "unsupported",
+      detail: "lane withdrawal is not available: this interface cannot establish which lane is calling.",
     };
   }
 
-  if (!OWNER_ACTIONS.includes(args.action)) {
-    return { ok: false, failure: "invalid_action", detail: USAGE };
-  }
+  const current = deps.readException(args.id);
+  if (!current) return { ok: false, failure: "unknown_exception", detail: `no exception ${args.id}` };
+  if (!actions.includes(args.action)) return { ok: false, failure: "invalid_action", detail: usage(actions) };
 
-  // A CLI invocation is one user action, so it gets one operation id derived
-  // from what it asks for — a rerun of the identical command after an ambiguous
+  // One CLI invocation is one user action, so its operation id is derived from
+  // what it asks for — rerunning the identical command after an ambiguous
   // failure replays rather than ruling twice.
   const operation_id = `cli-${crypto.createHash("sha256")
     .update(JSON.stringify([current.id, args.action, args.note ?? "", args.until ?? ""]))
     .digest("hex").slice(0, 24)}`;
 
-  const outcome = await performOwnerRuling({
+  const outcome = await deps.performOwnerRuling({
     request: { id: current.id, action: args.action, note: args.note, until: args.until, operation_id },
     readException: deps.readException,
     applyMutation: deps.applyMutation,
@@ -90,19 +101,25 @@ export async function runOwnerRule(argv, deps) {
     now: deps.now,
   });
 
-  if (!outcome.ok) return { ok: false, failure: outcome.failure, detail: outcome.reason, prompt_shown: outcome.prompt_shown };
+  if (!outcome.ok) {
+    return { ok: false, failure: outcome.failure, detail: outcome.reason, prompt_shown: outcome.prompt_shown };
+  }
   return {
-    ok: true, class: "owner_ruling", replayed: Boolean(outcome.replayed),
-    prompt_shown: outcome.prompt_shown, ruling_ref: outcome.operation_ref ?? outcome.result?.ruling_ref,
+    ok: true, replayed: Boolean(outcome.replayed), prompt_shown: outcome.prompt_shown,
+    ruling_ref: outcome.operation_ref ?? outcome.result?.ruling_ref,
     result: outcome.result,
   };
 }
 
-/** The real dependencies. Built only when the CLI is actually invoked. */
-export async function realDeps({ liveDir = "D:/Projects/_ship_inbox/ops", now = () => Date.now() } = {}) {
+/**
+ * Load the DEPLOYED security layer and build the real dependencies.
+ *
+ * Every module here comes from the live host's `_continuity/`. Nothing security
+ * relevant is imported from this repository at run time.
+ */
+export async function realDeps({ liveDir = DEFAULT_LIVE_DIR, now = () => Date.now() } = {}) {
   const url = (file) => `file:///${path.resolve(liveDir, file).split(path.sep).join("/")}`;
   const host = await import(url("briefing-server.mjs"));
-  // The DEPLOYED security layer, not the repo's copy of it.
   const ruling = await import(url("_continuity/owner-ruling.js"));
   const presence = await import(url("_continuity/owner-presence.js"));
   const windows = await import(url("_continuity/owner-presence-windows.js"));
@@ -116,9 +133,10 @@ export async function realDeps({ liveDir = "D:/Projects/_ship_inbox/ops", now = 
 
   return {
     now,
+    OWNER_ACTIONS: ruling.OWNER_ACTIONS,
+    performOwnerRuling: ruling.performOwnerRuling,
     readException: host.readException,
     applyMutation: host.applyOwnerMutation,
-    withdraw: host.withdrawOwnerQuestion,
     journal,
     budget: ruling.createPromptBudget({ now }),
     verifier: presence.createOwnerPresenceVerifier({

@@ -56,6 +56,9 @@ export const ARTIFACT = [
   { dest: "briefing-server.mjs", source: "ops/live-host/briefing-server.mjs" },
   { dest: "_continuity/owner-ruling.js", source: "src/continuity/control/owner-ruling.js" },
   { dest: "_continuity/owner-presence.js", source: "src/continuity/control/owner-presence.js" },
+  { dest: "_continuity/owner-ruling-policy.js", source: "src/continuity/control/owner-ruling-policy.js" },
+  { dest: "_continuity/exception-atomic.js", source: "src/continuity/control/exception-atomic.js" },
+  { dest: "_continuity/owner-gate.js", source: "src/continuity/control/owner-gate.js" },
   { dest: "_continuity/owner-presence-windows.js", source: "src/continuity/control/owner-presence-windows.js" },
 ];
 
@@ -220,6 +223,37 @@ export function verifyAgainstCommit({ commit, liveDir = LIVE_DIR, only = null } 
     };
   });
   return { ok: files.every((f) => f.matches), commit: resolved, files };
+}
+
+/**
+ * The startup gate.
+ *
+ * Deployment replaces the artifact files one at a time, so a machine or process
+ * failure mid-deploy can leave an old server beside a new orchestrator, or a
+ * `_continuity/` set with a file missing. Nothing previously refused to run in
+ * that state — the host would simply start and serve owner rulings out of a
+ * half-installed security layer.
+ *
+ * A launcher calls this before deciding whether the owner-mutation route may
+ * exist at all. The server itself never needs to know about Git.
+ */
+export function preflight({ liveDir = LIVE_DIR } = {}) {
+  const status = verifyDeployment({ liveDir });
+  const present = (status.files ?? []).filter((f) => f.live_hash !== null).length;
+  const complete = present === ARTIFACT.length;
+
+  return {
+    ok: Boolean(status.ok) && complete,
+    artifact_complete: complete,
+    artifact_expected: ARTIFACT.length,
+    artifact_present: present,
+    matches_reviewed_source: Boolean(status.matches_reviewed_source),
+    deployed_from_commit: status.deployed_from_commit ?? null,
+    mismatched: (status.files ?? []).filter((f) => !f.matches).map((f) => f.dest),
+    reason: status.ok && complete
+      ? null
+      : (complete ? status.reason : `the deployed security layer is incomplete: ${present}/${ARTIFACT.length} files`),
+  };
 }
 
 /**

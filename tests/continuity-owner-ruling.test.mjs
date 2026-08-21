@@ -5,11 +5,12 @@ import fs from "node:fs";
 import {
   ACTION_SEMANTICS, OWNER_ACTIONS, createMemoryJournalStorage, createPromptBudget,
   createRulingJournal, exceptionFingerprint, performOwnerRuling, prepareOwnerMutation, promptFor,
+  validateCurrentState,
 } from "../src/continuity/control/owner-ruling.js";
 import {
   LANE_WITHDRAWAL_STATUS, authorizeTransition, classifyTransition,
 } from "../src/continuity/control/owner-ruling-policy.js";
-import { runOwnerRule, parseArgs } from "../ops/owner-rule.mjs";
+import { parseArgs } from "../ops/owner-rule.mjs";
 
 const EXCEPTION = {
   id: "2026-08-22-unit-0001",
@@ -173,27 +174,103 @@ test("owner-ruling: every non-verified outcome means nothing happened", async ()
   }
 });
 
-test("owner-ruling: recovery rolls forward from the ref in the exception, never re-applies", () => {
+test("owner-ruling: recovery needs the WHOLE postcondition, not just the ref", () => {
+  const h = harness();
+  const storage = createMemoryJournalStorage();
+  const journal = createRulingJournal({ storage, now: h.now });
+  const prepare = (action, id) => prepareOwnerMutation({
+    request: { action, operation_id: id }, exception: h.state.current, at: h.now(),
+  }).mutation;
+
+  // Complete: the mutation landed, the process died before the journal commit.
+  const done = prepare("dismiss", "op-crash");
+  journal.begin(done);
+  h.applyMutation(done);
+  assert.deepEqual(journal.recover(h.readException),
+    [{ operation_id: "op-crash", outcome: "rolled_forward", result: journal.completed("op-crash").result }]);
+  assert.ok(journal.completed("op-crash").result.ruling_ref,
+    "a rolled-forward operation must still be able to answer a retry");
+
+  // Nothing landed: nothing is claimed.
+  const h2 = harness();
+  const j2 = createRulingJournal({ storage: createMemoryJournalStorage(), now: h2.now });
+  const orphan = prepareOwnerMutation({
+    request: { action: "reply_no", operation_id: "op-orphan" }, exception: h2.state.current, at: h2.now(),
+  }).mutation;
+  j2.begin(orphan);
+  assert.deepEqual(j2.recover(h2.readException), [{ operation_id: "op-orphan", outcome: "aborted" }]);
+  assert.equal(j2.completed("op-orphan"), null);
+});
+
+test("owner-ruling: a half-applied ruling fails closed instead of being rounded", async () => {
   const h = harness();
   const storage = createMemoryJournalStorage();
   const journal = createRulingJournal({ storage, now: h.now });
   const mutation = prepareOwnerMutation({
-    request: { action: "dismiss", operation_id: "op-crash" }, exception: h.state.current, at: h.now(),
+    request: { action: "reply_done", operation_id: "op-half" }, exception: h.state.current, at: h.now(),
   }).mutation;
 
   journal.begin(mutation);
-  // The mutation landed; the process died before the journal committed.
-  h.applyMutation(mutation);
-  assert.deepEqual(journal.recover(h.readException), [{ operation_id: "op-crash", outcome: "rolled_forward" }]);
-  assert.equal(journal.completed("op-crash").phase, "committed");
+  // The amendment landed; the status change did not. Searching the body for the
+  // ref would call this committed and lose her ruling silently.
+  h.state.current = { ...h.state.current, body: `OWNER [${mutation.operation_ref}]` };
 
-  // The mirror case: nothing landed, so nothing is claimed.
-  const orphan = prepareOwnerMutation({
-    request: { action: "reply_no", operation_id: "op-orphan" }, exception: h.state.current, at: h.now(),
-  }).mutation;
-  journal.begin(orphan);
-  assert.deepEqual(journal.recover(h.readException), [{ operation_id: "op-orphan", outcome: "aborted" }]);
-  assert.equal(journal.completed("op-orphan"), null);
+  const recovered = journal.recover(h.readException);
+  assert.deepEqual(recovered, [{ operation_id: "op-half", outcome: "partial_application" }]);
+  assert.equal(journal.completed("op-half"), null, "half a ruling is not a ruling");
+
+  // And the orchestrator refuses to rule again over the top of it.
+  const blocked = await performOwnerRuling({
+    request: { id: EXCEPTION.id, action: "reply_done", operation_id: "op-half" }, ...h, journal,
+  });
+  assert.equal(blocked.failure, "partial_application");
+  assert.equal(blocked.prompt_shown, false);
+  assert.equal(h.mutations.length, 0);
+});
+
+test("owner-ruling: an aborted attempt retries on the SAME record", async () => {
+  const h = harness({ outcome: "cancelled" });
+  const request = { id: EXCEPTION.id, action: "dismiss", operation_id: "op-retry-after-cancel" };
+
+  const cancelled = await rule(h, request);
+  assert.equal(cancelled.failure, "cancelled");
+  assert.equal(h.journal.all().length, 1);
+
+  // The browser deliberately keeps the operation id after a non-200, so this
+  // path is reached constantly. It used to append a second row with the same
+  // id, and `update` then patched whichever came first.
+  h.advance(11000);
+  h.verifier.nextOutcome = "verified";
+  const retried = await performOwnerRuling({ request, ...h, verifier: { ...h.verifier,
+    verify: async ({ purpose, operationRef }) => {
+      h.prompts.push({ purpose, operationRef });
+      const v = { outcome: "verified", operation_ref: operationRef };
+      h.verifier.issued.add(v);
+      return v;
+    } } });
+  assert.equal(retried.ok, true);
+  const rows = h.journal.all().filter((e) => e.operation_id === request.operation_id);
+  assert.equal(rows.length, 1, "one operation is one journal record, always");
+  assert.equal(rows[0].phase, "committed");
+  assert.equal(rows[0].attempt, 2);
+});
+
+test("owner-ruling: a ruling on an item nobody is waiting on never prompts", async () => {
+  for (const [status, action, proposed] of [
+    ["resolved", "reply_done", "spend $40"],
+    ["investigating", "defer", "spend $40"],
+    ["blocked-on-owner", "approve", ""],
+  ]) {
+    const h = harness({ exception: { ...EXCEPTION, status, proposed } });
+    const result = await rule(h, {
+      id: EXCEPTION.id, action, operation_id: `op-${status}-${action}`,
+      until: "2026-08-24T09:00:00+10:00",
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.failure, "action_not_currently_valid", `${status}/${action}`);
+    assert.equal(h.prompts.length, 0, `${status}/${action} raised a prompt`);
+    assert.equal(h.mutations.length, 0);
+  }
 });
 
 test("owner-ruling: prompt budget cools down, locks out, and recovers", () => {
@@ -255,47 +332,8 @@ test("policy: a ruling ref is only evidence in the process that produced it", ()
   assert.equal(real.ok, true);
 });
 
-test("cli: the owner CLI cannot complete a ruling without verification", async () => {
-  const h = harness({ outcome: "cancelled" });
-  const deps = { ...h, withdraw: () => { throw new Error("not a withdrawal"); } };
-
-  const result = await runOwnerRule([EXCEPTION.id, "reply_done"], deps);
-  assert.equal(result.ok, false);
-  assert.equal(result.failure, "cancelled");
-  assert.equal(result.prompt_shown, true, "an agent running this gets a prompt and nothing else");
-  assert.equal(h.mutations.length, 0);
-});
-
-test("cli: a verified ruling works, and rerunning the identical command replays", async () => {
-  const h = harness();
-  const deps = { ...h, withdraw: () => { throw new Error("not a withdrawal"); } };
-
-  const first = await runOwnerRule([EXCEPTION.id, "reply_done"], deps);
-  assert.equal(first.ok, true);
-  assert.equal(h.mutations.length, 1);
-
-  const again = await runOwnerRule([EXCEPTION.id, "reply_done"], deps);
-  assert.equal(again.replayed, true);
-  assert.equal(h.prompts.length, 1);
-  assert.equal(h.mutations.length, 1);
-});
-
-test("cli: a lane withdraws without a prompt, and cannot resolve", async () => {
-  const h = harness();
-  const withdrawals = [];
-  const deps = { ...h, withdraw: (w) => { withdrawals.push(w); return { ok: true }; } };
-
-  const result = await runOwnerRule([EXCEPTION.id, "--withdraw", "--note", "answered upstream"], deps);
-  assert.equal(result.ok, true);
-  assert.equal(result.class, "lane_withdrawal");
-  assert.equal(result.prompt_shown, false);
-  assert.equal(withdrawals[0].status, LANE_WITHDRAWAL_STATUS,
-    "a withdrawal returns the item to the lane; it never closes it as answered");
-  assert.match(withdrawals[0].record_as, /LANE WITHDREW/);
-  assert.equal(h.prompts.length, 0);
-});
-
-test("cli: argument parsing keeps the action closed", () => {
+test("cli: argument parsing keeps the action closed and flags out of it", () => {
   assert.deepEqual(parseArgs(["id-1", "reply_done", "--note", "ok"]), { id: "id-1", action: "reply_done", note: "ok" });
-  assert.deepEqual(parseArgs(["id-1", "--withdraw"]), { id: "id-1", withdraw: true });
+  // A flag in the action position is a flag, not an action named "--withdraw".
+  assert.deepEqual(parseArgs(["id-1", "--withdraw"]), { id: "id-1", action: undefined, withdraw: true });
 });

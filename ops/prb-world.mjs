@@ -9,6 +9,8 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { patchExceptionSource } from "./exception-guard-patch.mjs";
+
 const REPO = process.cwd();
 // Overridable so a run can PROVE the stand-in path works rather than assuming
 // CI exercises it. A gate whose fallback has never executed is a guess.
@@ -19,6 +21,9 @@ export const ARTIFACT = [
   { dest: "briefing-server.mjs", source: "ops/live-host/briefing-server.mjs" },
   { dest: "_continuity/owner-ruling.js", source: "src/continuity/control/owner-ruling.js" },
   { dest: "_continuity/owner-presence.js", source: "src/continuity/control/owner-presence.js" },
+  { dest: "_continuity/owner-ruling-policy.js", source: "src/continuity/control/owner-ruling-policy.js" },
+  { dest: "_continuity/exception-atomic.js", source: "src/continuity/control/exception-atomic.js" },
+  { dest: "_continuity/owner-gate.js", source: "src/continuity/control/owner-gate.js" },
   { dest: "_continuity/owner-presence-windows.js", source: "src/continuity/control/owner-presence-windows.js" },
 ];
 
@@ -90,6 +95,15 @@ export async function acceptanceWorld() {
   ];
   fs.writeFileSync(path.join(ops, "briefing.mjs"), STUB_BRIEFING);
 
+  // Install the owner gate into the store, exactly as deployment does. The
+  // acceptance world has to include it or the suite would prove the HTTP route
+  // is safe while the CLI bypass it replaces is still wide open.
+  const storeFile = path.join(ops, "exception.mjs");
+  const patched = patchExceptionSource(fs.readFileSync(storeFile, "utf8"));
+  if (!patched.ok) throw new Error(`the owner gate could not be installed: ${patched.reason}`);
+  fs.writeFileSync(storeFile, patched.source);
+  dependencies.push({ name: "owner-gate", source: patched.already ? "already present" : "installed" });
+
   process.env.EXCEPTION_INBOX = inbox;
   process.env.BRIEFING_DECISIONS = path.join(dir, "decisions");
   // Belt and braces: nothing in this suite may reach an interactive broker.
@@ -124,6 +138,8 @@ export async function acceptanceWorld() {
       });
       return { status: response.status, body: await response.json().catch(() => ({})) };
     },
+    /** The host's own store, as the legacy CLI would reach it. */
+    store: await import(pathToFileURL(path.join(ops, "exception.mjs")).href),
     file(id) { return fs.readFileSync(path.join(inbox, `${id}.md`), "utf8"); },
     /** How many owner rulings are actually recorded in the exception itself. */
     amendments(id) { return (world.file(id).match(/OWNER [A-Z ]+ /g) || []).length; },

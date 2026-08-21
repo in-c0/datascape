@@ -47,6 +47,7 @@ import {
   createPromptBudget, createRulingJournal, createRulingJournalStorage, performOwnerRuling,
 } from "./_continuity/owner-ruling.js"
 import { createOwnerPresenceVerifier, stripClaimedVerification } from "./_continuity/owner-presence.js"
+import { applyRulingAtomically, exceptionFile } from "./_continuity/exception-atomic.js"
 import { createWindowsOwnerPresenceBroker } from "./_continuity/owner-presence-windows.js"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -152,27 +153,8 @@ export const ACTIONS = {
   dismiss: { status: "resolved", kind: "dismissed", verb: "DISMISSED" },
 }
 
-// `deferred_until` — optional frontmatter, ISO-8601 with an explicit offset.
-// Written through the exception layer so `updated` still bumps.
-export function setDeferredUntil(id, iso) {
-  // The exception layer's own directory, not a second guess at it. These
-  // disagreed whenever EXCEPTION_INBOX was set, which is exactly the
-  // configuration an isolated acceptance world uses.
-  const file = path.join(exceptions.INBOX, `${id}.md`)
-  const raw = fs.readFileSync(file, "utf8")
-  const FRONT = new RegExp("^---\\r?\\n([\\s\\S]*?)\\r?\\n---")
-  const match = raw.match(FRONT)
-  if (!match) throw new Error(`${id} has no frontmatter`)
-  const keep = match[1]
-    .split(/\r?\n/)
-    .filter((line) => !/^deferred_until:/.test(line))
-  if (iso) keep.push(`deferred_until: ${iso}`)
-  const rebuilt = "---" + "\n" + keep.join("\n") + "\n" + "---"
-  fs.writeFileSync(file, raw.replace(match[0], rebuilt), "utf8")
-}
-
 /**
- * Read the authoritative exception, shaped for fingerprinting.
+ * Read the authoritative exception, shaped for fingerprinting and recovery.
  *
  * Everything the ruling depends on comes from here. The request supplies which
  * exception and which class; it supplies no state.
@@ -202,6 +184,10 @@ export function readException(id) {
  * original payload is consulted here — if it were, the operation Windows
  * described and the operation performed could differ, which is the whole thing
  * this layer exists to prevent.
+ *
+ * ONE authoritative write. The earlier version called amend, setStatus and
+ * setDeferredUntil in sequence, and every gap between them was a half-commit a
+ * crash could leave behind.
  */
 export function applyOwnerMutation(mutation) {
   const spec = ACTIONS[mutation.action]
@@ -214,28 +200,24 @@ export function applyOwnerMutation(mutation) {
   const at = sydneyIso()
   const text = mutation.payload.text ? String(mutation.payload.text).trim() : ""
 
-  if (mutation.action === "defer") {
-    // Persist the ABSOLUTE instant only — "Tonight" is a UI convenience and
-    // must never reach the file. It was normalized at prepare time.
-    setDeferredUntil(realId, sydneyIso(new Date(Date.parse(mutation.payload.deferred_until))))
-  }
-
-  // Her words, verbatim, stamped as hers and appended — never overwriting an
-  // earlier ruling. The lane must be able to tell an owner ruling from another
-  // loop's commentary.
-  //
-  // The operation_ref rides along because it is what makes this append
-  // recoverable: if the process dies between the amendment and the journal
-  // commit, recovery finds this ref in the exception and rolls forward instead
-  // of appending her ruling a second time.
+  // The operation_ref rides along because it is what makes this write
+  // recoverable: recovery checks for the ref AND the resulting status AND the
+  // deferred instant, so a partial application cannot read as a committed one.
   const amendment = `OWNER ${spec.verb} ${at} (via datascape/briefing) [${mutation.operation_ref}]`
     + `${text ? ` — ${text}` : ""}`
-  exceptions.amend(realId, { note: amendment })
-  // The status line REFERS to the ruling rather than repeating it. Passing the
-  // full amendment here wrote her words into the exception twice for every
-  // status-changing action, which makes a reader — and a recovery check —
-  // unable to tell one ruling from two.
-  if (spec.status) exceptions.setStatus(realId, spec.status, `owner ruling ${mutation.operation_ref}`)
+
+  const applied = applyRulingAtomically({
+    file: exceptionFile(exceptions.INBOX, realId),
+    amendment,
+    status: spec.status,
+    statusNote: `owner ruling ${mutation.operation_ref}`,
+    // Persist the ABSOLUTE instant only — "Tonight" is a UI convenience and
+    // must never reach the file. It was normalized at prepare time.
+    deferredUntil: mutation.action === "defer"
+      ? sydneyIso(new Date(Date.parse(mutation.payload.deferred_until)))
+      : null,
+    at,
+  })
 
   const entry = {
     at,
@@ -245,33 +227,15 @@ export function applyOwnerMutation(mutation) {
     note: text || null,
     operation_ref: mutation.operation_ref,
     ruling_ref: mutation.operation_ref,
-    deferredUntil: mutation.action === "defer" ? sydneyIso(new Date(Date.parse(mutation.payload.deferred_until))) : null,
+    deferredUntil: applied.deferred_until,
     title: found.meta.title,
     loop: found.meta.loop || null,
-    resultingStatus: spec.status || found.meta.status,
+    resultingStatus: applied.status,
   }
+  // A non-authoritative mirror, written AFTER the authoritative state. It must
+  // never be what decides whether the ruling committed.
   recordDecision(entry)
   return entry
-}
-
-/**
- * A lane taking its own question back.
- *
- * Lane authority, no owner presence, and recorded as a WITHDRAWAL so nobody
- * reading the file later mistakes it for her ruling. It cannot resolve the
- * item: a question the lane no longer needs answered is still not a question
- * that was answered.
- */
-export function withdrawOwnerQuestion({ id, status, note = "", record_as = "LANE WITHDREW — no owner ruling" }) {
-  const found = exceptions.find(id)
-  if (!found) throw new Error(`no exception ${id}`)
-  const realId = found.meta.id
-  const at = sydneyIso()
-  const text = String(note || "").trim()
-  const amendment = `${record_as} ${at}${text ? ` — ${text}` : ""}`
-  exceptions.amend(realId, { note: amendment })
-  exceptions.setStatus(realId, status, amendment)
-  return { at, id: realId, action: "withdraw", kind: "lane-withdrawal", note: text || null, resultingStatus: status }
 }
 
 /**
@@ -357,10 +321,14 @@ const REFUSAL_STATUS = {
   prompt_lockout: 429,
 }
 
-export function createServer(deps = null) {
+export function createServer(deps = null, { ownerRulings = true, unverifiedReason = null } = {}) {
   // Built once per server, not per request: the prompt budget and the
   // one-outstanding-prompt rule are only meaningful if they are shared.
-  const owner = deps ?? createOwnerRulingDeps()
+  //
+  // `ownerRulings: false` is what a failed startup provenance gate produces: a
+  // half-installed security layer must serve reads and refuse rulings, never
+  // rule out of code nobody reviewed as a set.
+  const owner = ownerRulings ? (deps ?? createOwnerRulingDeps()) : null
 
   return http.createServer(async (req, res) => {
     const origin = req.headers.origin
@@ -406,6 +374,17 @@ export function createServer(deps = null) {
         // Deliberately NOT behind an environment variable. An escape hatch that
         // restores unauthenticated owner writes is the same hole with a longer
         // name.
+        if (!owner) {
+          // Fail closed, before the body is read and with no broker in
+          // existence. Reads are untouched.
+          return send(res, 503, {
+            error: "deployment_unverified",
+            mutation_performed: false,
+            detail: "This host's security layer does not match a reviewed deployment, so owner rulings are disabled. "
+              + (unverifiedReason || "Redeploy from a reviewed commit and restart."),
+          }, origin)
+        }
+
         const body = await readJsonBody(req)
         // Any claimed verification in the payload is removed rather than
         // rejected, so no code written later can read it by accident.

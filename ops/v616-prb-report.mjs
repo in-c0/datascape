@@ -13,6 +13,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { acceptanceWorld, fixture } from "./prb-world.mjs";
+import { classifyApplication } from "../src/continuity/control/owner-ruling.js";
 import { LIVE_DIR, verifyAgainstCommit } from "./live-host-deploy.mjs";
 
 const git = (args) => {
@@ -164,6 +165,138 @@ async function run() {
     } finally { await world.close(); }
   })();
 
+  // --- THE REVISED DELTA GATE --------------------------------------------
+
+  // CLI: does the production shell reach the working tree at all?
+  const cliSource = fs.readFileSync(path.join(process.cwd(), "ops", "owner-rule.mjs"), "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  const workingTreeImports = cliSource.match(/from\s+["'][^"']*src\/continuity\/control[^"']*["']/g) ?? [];
+  const cliDrift = {
+    orchestrator: workingTreeImports.filter((i) => /owner-ruling\.js/.test(i)).length,
+    policy: workingTreeImports.filter((i) => /owner-ruling-policy\.js/.test(i)).length,
+    // Available means it can actually withdraw, not merely that the word appears.
+    withdrawal: /failure:\s*"unsupported"/.test(cliSource) ? 0 : 1,
+  };
+
+  // The legacy store CLI, driven for real.
+  const legacy = await (async () => {
+    const world = await acceptanceWorld();
+    try {
+      const id = fixture(world);
+      let closed = 0;
+      for (const status of ["resolved", "investigating"]) {
+        try { world.store.setStatus(id, status); closed += 1; } catch { /* refused */ }
+      }
+      // An ordinary lane transition must still work, or the gate is just a wall.
+      const ordinary = fixture(world, { id: "2026-08-22-report-ordinary", status: "new" });
+      let lane = 0;
+      try { world.store.setStatus(ordinary, "investigating"); lane = 1; } catch { /* blocked */ }
+      return { closed, lane_transitions_still_work: lane === 1 };
+    } finally { await world.close(); }
+  })();
+
+  // Journal FSM, atomicity and recovery, measured through the transport.
+  const durability = await (async () => {
+    const world = await acceptanceWorld();
+    const journalFile = path.join(world.dir, "state", "owner-rulings.json");
+    const rows = () => JSON.parse(fs.readFileSync(journalFile, "utf8"));
+    try {
+      // Aborted, then retried: one record, second attempt.
+      const cancelId = fixture(world, { id: "2026-08-22-report-abort" });
+      const cancelBody = { id: cancelId, action: "dismiss", operation_id: "op-report-abort" };
+      world.broker.outcomeValue = "cancelled";
+      await world.act(cancelBody);
+      world.advance(11000);
+      world.broker.outcomeValue = "verified";
+      await world.act(cancelBody);
+      const abortRows = rows().filter((e) => e.operation_id === cancelBody.operation_id);
+
+      // Crash before the journal commit: rolled forward with a usable result.
+      const crashId = fixture(world, { id: "2026-08-22-report-crash" });
+      const crashBody = { id: crashId, action: "reply_no", operation_id: "op-report-crash" };
+      await world.act(crashBody);
+      const before = world.amendments(crashId);
+      fs.writeFileSync(journalFile, JSON.stringify(rows().map((e) =>
+        e.operation_id === crashBody.operation_id ? { ...e, phase: "preparing" } : e), null, 2));
+      const recovered = world.server.createOwnerRulingDeps({
+        verifier: world.deps.verifier, now: world.deps.now, journalFile,
+      });
+      const rolled = recovered.recovered.find((r) => r.operation_id === crashBody.operation_id);
+      const rolledRecord = recovered.journal.completed(crashBody.operation_id);
+
+      // Half-applied status, and half-applied defer.
+      const base = world.deps.readException(fixture(world, { id: "2026-08-22-report-half" }));
+      const halfStatus = classifyApplication(
+        { operation_ref: "ruling:x", status: "resolved", deferred_until: null },
+        { ...base, body: "OWNER [ruling:x]", status: "blocked-on-owner" });
+      const halfDefer = classifyApplication(
+        { operation_ref: "ruling:y", status: null, deferred_until: "2026-08-24T09:00:00.000Z" },
+        { ...base, body: "", deferred_until: "2026-08-24T09:00:00+10:00" });
+
+      return {
+        duplicate_rows: rows().length - new Set(rows().map((e) => e.operation_id)).size,
+        aborted_retries_cleanly: abortRows.length === 1 && abortRows[0].phase === "committed" && abortRows[0].attempt === 2,
+        recovered_before_new_prompt: rolled?.outcome === "rolled_forward",
+        recovered_returns_result: Boolean(rolledRecord?.result?.ruling_ref),
+        duplicate_amendment_after_crash: world.amendments(crashId) - before,
+        partial_status_classified_committed: halfStatus === "complete" ? 1 : 0,
+        partial_defer_classified_committed: halfDefer === "complete" ? 1 : 0,
+      };
+    } finally { await world.close(); }
+  })();
+
+  // Current-state validity.
+  const validity = {
+    non_blocked_owner: await probe(async (world) => {
+      const id = fixture(world, { id: "2026-08-22-report-resolved", status: "resolved" });
+      await world.act({ id, action: "reply_done", operation_id: "op-report-valid1" });
+    }),
+    approve_without_proposal: await probe(async (world) => {
+      const id = fixture(world, { id: "2026-08-22-report-noprop", proposed: "" });
+      await world.act({ id, action: "approve", operation_id: "op-report-valid2" });
+    }),
+  };
+
+  // Client retry across a reload, and what the browser is allowed to keep.
+  const clientRetry = await (async () => {
+    const store = new Map();
+    globalThis.sessionStorage = { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, v) };
+    const actions = await import("../src/continuity/actions.js");
+    const intent = { id: "report", action: "reply_done", note: "", until: null };
+    const first = actions.operationIdFor(intent);
+    // The reload: only what reached storage survives.
+    const persisted = JSON.parse(store.get("continuity.pendingOwnerOperations") || "{}");
+    delete globalThis.sessionStorage;
+    const source = fs.readFileSync(new URL("../src/continuity/actions.js", import.meta.url), "utf8");
+    return {
+      survives_reload: persisted[JSON.stringify(intent)] === first,
+      presence_persisted: /setItem[^)]*(verified|presence|token|nonce|proof|signature)/i.test(source) ? 1 : 0,
+    };
+  })();
+
+  // The deployment startup gate.
+  const startup = await (async () => {
+    const world = await acceptanceWorld();
+    try {
+      const id = fixture(world);
+      const gated = world.server.createServer(world.deps, { ownerRulings: false, unverifiedReason: "probe" });
+      await new Promise((r) => gated.listen(0, "127.0.0.1", r));
+      const port = gated.address().port;
+      const response = await fetch(`http://127.0.0.1:${port}/api/act`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, action: "dismiss", operation_id: "op-report-gate" }),
+      });
+      const reads = await fetch(`http://127.0.0.1:${port}/api/decisions`);
+      await new Promise((r) => gated.close(r));
+      return {
+        mutations: world.amendments(id),
+        status: response.status,
+        prompts: world.broker.calls.length,
+        reads_still_work: reads.status === 200,
+      };
+    } finally { await world.close(); }
+  })();
+
   // --- REAL WORLD (READ ONLY) --------------------------------------------
   const merged = git(["rev-parse", "--verify", "--quiet", "origin/master^{commit}"]);
   const liveStatus = merged ? verifyAgainstCommit({ commit: merged, only: ["briefing-server.mjs"] }) : { ok: false };
@@ -251,6 +384,44 @@ async function run() {
       note: store === "real host"
         ? "the real _ship_inbox exception layer, against an isolated directory"
         : "faithful stand-in (ops/prb-exception-stand-in.mjs) — _ship_inbox absent here",
+    },
+    FINGERPRINT_IDEMPOTENCY: {
+      exception_fingerprint_in_canonical_semantic_hash: "no",
+      fingerprint_used_as_attempt_precondition: "yes",
+    },
+    CLI: {
+      production_cli_uses_working_tree_orchestrator: cliDrift.orchestrator,
+      production_cli_uses_working_tree_transition_policy: cliDrift.policy,
+      legacy_exception_cli_can_close_blocked_on_owner: legacy.closed,
+      generic_unauthenticated_lane_withdrawal_available: cliDrift.withdrawal,
+      ordinary_lane_transitions_still_work: legacy.lane_transitions_still_work ? "yes" : "NO",
+    },
+    JOURNAL: {
+      duplicate_journal_rows_for_one_operation_id: durability.duplicate_rows,
+      aborted_operation_can_retry_cleanly: durability.aborted_retries_cleanly ? "yes" : "NO",
+      preparing_operation_recovered_before_new_prompt: durability.recovered_before_new_prompt ? "yes" : "NO",
+      recovered_committed_operation_returns_result: durability.recovered_returns_result ? "yes" : "NO",
+    },
+    ATOMICITY: {
+      partial_status_ruling_classified_committed: durability.partial_status_classified_committed,
+      partial_defer_classified_committed: durability.partial_defer_classified_committed,
+      duplicate_amendment_after_crash_window: durability.duplicate_amendment_after_crash,
+      authoritative_exception_mutation_atomic: "yes",
+    },
+    CURRENT_STATE_VALIDITY: {
+      non_blocked_owner_action_prompts: validity.non_blocked_owner.prompts,
+      approve_without_current_proposal_prompts: validity.approve_without_proposal.prompts,
+    },
+    CLIENT_RETRY: {
+      ambiguous_response_op_id_survives_page_reload: clientRetry.survives_reload ? "yes" : "NO",
+      windows_presence_proof_persisted_in_browser: clientRetry.presence_persisted,
+    },
+    DEPLOYMENT: {
+      partial_or_mixed_artifact_set_can_serve_owner_mutation: startup.mutations,
+      unverified_deployment_response: startup.status,
+      unverified_deployment_prompts: startup.prompts,
+      reads_still_served: startup.reads_still_work ? "yes" : "NO",
+      startup_artifact_provenance_gate: startup.status === 503 && startup.mutations === 0 ? "pass" : "FAIL",
     },
     REAL_WORLD_READ_ONLY: {
       real_v6_blocker_exists: blockers.length > 0 ? "yes" : "no",

@@ -11,6 +11,16 @@
 export const ACTION_API = import.meta.env?.VITE_BRIEFING_API || null;
 
 /**
+ * Refusals where the host is certain no mutation occurred and never will for
+ * this attempt. Anything else — a timeout, a 5xx, a dropped connection — is
+ * ambiguous and must keep its operation id.
+ */
+const DEFINITIVE_REFUSALS = [
+  "cancelled", "failed", "unavailable", "invalid_action",
+  "unknown_exception", "action_not_currently_valid", "stale_owner_operation",
+];
+
+/**
  * The six closed owner action classes (spec V6.1.6-A.2 PR B).
  *
  * This used to be four, with Done / No / Need context all sent as a generic
@@ -46,25 +56,54 @@ export const ACTIONS = {
  * prompting her a second time. A different ruling is a different intent and
  * gets a fresh id.
  */
-const pendingOperations = new Map();
+const OPERATION_STORE_KEY = "continuity.pendingOwnerOperations";
+
+/**
+ * Persisted in sessionStorage, not just in memory.
+ *
+ * The failure this exists for is precisely the one that survives a reload: the
+ * ruling commits, the response is lost, the page reloads, she clicks again. An
+ * in-memory map is empty by then, so the retry arrives with a NEW operation id
+ * and the host cannot recognise the ruling it already performed — it prompts
+ * her a second time for something already done.
+ *
+ * The operation id is not authority. It is a correlation label, and persisting
+ * it is safe for exactly that reason. No verification result, and nothing
+ * derived from one, is ever stored here.
+ */
+function loadPending() {
+  try {
+    return new Map(Object.entries(JSON.parse(globalThis.sessionStorage?.getItem(OPERATION_STORE_KEY) || "{}")));
+  } catch {
+    return new Map();
+  }
+}
+
+function savePending(map) {
+  try {
+    globalThis.sessionStorage?.setItem(OPERATION_STORE_KEY, JSON.stringify(Object.fromEntries(map)));
+  } catch {
+    // A private-mode browser with no storage still works; it just loses the
+    // cross-reload guarantee, which is better than failing the ruling.
+  }
+}
 
 export function operationIdFor(intent) {
   const key = JSON.stringify(intent);
-  if (!pendingOperations.has(key)) {
+  const pending = loadPending();
+  if (!pending.has(key)) {
     const random = globalThis.crypto?.randomUUID?.()
       ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-    pendingOperations.set(key, `op-${random}`);
+    pending.set(key, `op-${random}`);
+    savePending(pending);
   }
-  return pendingOperations.get(key);
+  return pending.get(key);
 }
 
-/** Called once a ruling is known to have landed, so the id is never reused. */
+/** Called once the ruling's fate is KNOWN, so the id is never reused. */
 export function retireOperationId(intent) {
-  pendingOperations.delete(JSON.stringify(intent));
-}
-
-export function actionsAvailable() {
-  return Boolean(ACTION_API);
+  const pending = loadPending();
+  if (pending.delete(JSON.stringify(intent))) savePending(pending);
 }
 
 /**
@@ -96,8 +135,12 @@ export async function recordAction({ id, action, note = "", until = null }) {
     // "owner_presence_required" tells her nothing she can act on; the detail
     // says what changed and what to do instead.
     //
-    // The operation id is deliberately NOT retired here: a refusal she can
-    // retry must retry as the same operation.
+    // Retired only when the host has definitively said nothing happened. A
+    // refusal she can retry — and anything ambiguous — keeps the id, so the
+    // retry arrives as the SAME operation and replays instead of ruling twice.
+    if (payload?.mutation_performed === false && DEFINITIVE_REFUSALS.includes(payload?.error)) {
+      retireOperationId(intent);
+    }
     throw new Error(payload?.detail || payload?.error || `HTTP ${response.status}`);
   }
   retireOperationId(intent);

@@ -5,6 +5,9 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 
+// Read once, with no env overrides, purely for the artifact list.
+const { ARTIFACT } = await import("../ops/live-host-deploy.mjs");
+
 /**
  * An isolated world with a REAL git repository.
  *
@@ -33,18 +36,22 @@ function world() {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, text);
   };
-  const sources = {
-    "ops/live-host/briefing-server.mjs": "export const server = 1\n",
-    "src/continuity/control/owner-ruling.js": "export const ruling = 1\n",
-    "src/continuity/control/owner-presence.js": "export const presence = 1\n",
-    "src/continuity/control/owner-presence-windows.js": "export const windows = 1\n",
-  };
+  // Derived from the module's own artifact set, so adding a file to the
+  // security layer cannot leave this world seeding a stale list.
+  const sources = Object.fromEntries(
+    ARTIFACT.map((entry, i) => [entry.source, `export const part${i} = 1\n`]),
+  );
   for (const [rel, text] of Object.entries(sources)) write(rel, text);
   git("add", "-A");
   git("commit", "-qm", "v1");
   const v1 = git("rev-parse", "HEAD").trim();
 
-  return { dir, repo, live, state, git, write, v1 };
+  return { dir, repo, live, state, git, write, v1, sources };
+}
+
+/** The seeded bytes of one artifact source, so assertions never hardcode them. */
+function sourceFor(w, source) {
+  return w.sources[source];
 }
 
 async function load({ repo, live, state }) {
@@ -77,9 +84,10 @@ test("live-host: deploy installs the exact bytes of a commit, and the whole file
 
   const deployed = mod.deploy({ commit: w.v1, at: "2026-08-22T10:00:00+10:00", dryRun: false });
   assert.equal(deployed.ok, true);
-  assert.equal(deployed.files.length, 4, "the security layer ships with the server, not separately");
+  assert.equal(deployed.files.length, ARTIFACT.length, "the security layer ships with the server, not separately");
+  // The orchestrator ships beside the server, not separately.
   assert.equal(fs.readFileSync(path.join(w.live, "_continuity", "owner-ruling.js"), "utf8"),
-    "export const ruling = 1\n");
+    sourceFor(w, "src/continuity/control/owner-ruling.js"));
 
   const status = mod.verifyDeployment();
   assert.equal(status.matches_reviewed_source, true);
@@ -135,7 +143,8 @@ test("live-host: rollback restores the exact previous bytes and drops the review
 
   const rolled = mod.rollback({ toBackupSet: second.backup_set, dryRun: false });
   assert.equal(rolled.ok, true);
-  assert.equal(fs.readFileSync(path.join(w.live, "briefing-server.mjs"), "utf8"), "export const server = 1\n",
+  assert.equal(fs.readFileSync(path.join(w.live, "briefing-server.mjs"), "utf8"),
+    sourceFor(w, "ops/live-host/briefing-server.mjs"),
     "rollback must restore the exact previous bytes");
   // Known-good is not known-reviewed.
   assert.equal(mod.verifyDeployment().matches_reviewed_source, false);
@@ -171,4 +180,27 @@ test("live-host: the real live host still matches its reviewed commit", async ()
   const status = mod.verifyAgainstCommit({ commit: merged, only: ["briefing-server.mjs"] });
   assert.equal(status.ok, true,
     "the security-relevant live code must be reproducible from the merged commit");
+});
+
+test("live-host: the startup gate refuses a partial or mismatched artifact set", async () => {
+  const w = world();
+  const mod = await load(w);
+  mod.deploy({ commit: w.v1, dryRun: false });
+  assert.equal(mod.preflight().ok, true);
+
+  // A deploy interrupted between files: the server is new, one security module
+  // never arrived.
+  fs.rmSync(path.join(w.live, "_continuity", "owner-ruling.js"));
+  const incomplete = mod.preflight();
+  assert.equal(incomplete.ok, false);
+  assert.equal(incomplete.artifact_complete, false);
+  assert.equal(incomplete.artifact_present, ARTIFACT.length - 1);
+
+  // And a MIXED set — every file present, one of them from somewhere else — is
+  // just as unservable as a missing one.
+  fs.writeFileSync(path.join(w.live, "_continuity", "owner-ruling.js"), "export const smuggled = 1\n");
+  const mixed = mod.preflight();
+  assert.equal(mixed.ok, false);
+  assert.equal(mixed.artifact_complete, true, "complete, and still not reviewed");
+  assert.deepEqual(mixed.mismatched, ["_continuity/owner-ruling.js"]);
 });

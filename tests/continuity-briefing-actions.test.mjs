@@ -32,14 +32,41 @@ test("actions: the chips send a class, never their label", () => {
 });
 
 test("actions: a retry after an ambiguous response reuses the operation id", () => {
+  // sessionStorage is what makes this survive the reload it exists for.
+  const store = new Map();
+  globalThis.sessionStorage = {
+    getItem: (k) => store.get(k) ?? null,
+    setItem: (k, v) => store.set(k, v),
+  };
+
   const intent = { id: "x-1", action: "reply_done", note: "", until: null };
   const first = operationIdFor(intent);
   assert.equal(operationIdFor({ ...intent }), first, "the same ruling retries as the same operation");
+  assert.notEqual(operationIdFor({ ...intent, action: "dismiss" }), first,
+    "a different ruling is a different intent");
 
-  // A different ruling is a different intent.
-  assert.notEqual(operationIdFor({ ...intent, action: "dismiss" }), first);
+  // The page reloads: module state is gone, storage is not. This is the exact
+  // failure the persistence exists for — the ruling committed, the response was
+  // lost, and a fresh id would make the host prompt her all over again.
+  assert.ok(store.get("continuity.pendingOwnerOperations").includes(first));
+  const reloaded = new Map(Object.entries(JSON.parse(store.get("continuity.pendingOwnerOperations"))));
+  assert.equal(reloaded.get(JSON.stringify(intent)), first);
 
-  // Once it has landed the id is retired, so a later identical ruling is new.
+  // Once its fate is known the id is retired, so a later identical ruling is new.
   retireOperationId(intent);
   assert.notEqual(operationIdFor(intent), first);
+  delete globalThis.sessionStorage;
+});
+
+test("actions: no verification result is ever persisted in the browser", () => {
+  const source = strip(fs.readFileSync(new URL("../src/continuity/actions.js", import.meta.url), "utf8"));
+  // Only the unprivileged correlation id may be stored. Anything derived from
+  // owner presence living in browser storage would be a transferable
+  // credential with extra steps.
+  const stored = source.match(/setItem\([^)]*\)/g) ?? [];
+  assert.equal(stored.length, 1, "exactly one thing is persisted");
+  assert.match(stored[0], /OPERATION_STORE_KEY/);
+  for (const forbidden of ["verified", "presence", "token", "nonce", "proof", "signature"]) {
+    assert.ok(!new RegExp(`setItem[^)]*${forbidden}`, "i").test(source), `${forbidden} must not be persisted`);
+  }
 });

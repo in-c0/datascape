@@ -19,6 +19,10 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { describePurpose, requiresOwnerPresence } from "./owner-presence.js";
+import { registerVerifiedRuling } from "./owner-gate.js";
+
+/** The status an owner ruling is a ruling ON. */
+export const OWNER_GATED_STATUS = "blocked-on-owner";
 
 /** The six closed owner action classes. No prose is ever classified. */
 export const OWNER_ACTIONS = ["approve", "reply_done", "reply_no", "reply_need_context", "defer", "dismiss"];
@@ -144,6 +148,40 @@ export function promptFor(mutation) {
 }
 
 /**
+ * Is this ruling valid against the exception as it stands RIGHT NOW?
+ *
+ * Deliberately separate from `prepareOwnerMutation`, and deliberately checked
+ * AFTER the idempotency lookup. A successful ruling moves the item out of
+ * `blocked-on-owner`, so checking validity first would reject the legitimate
+ * retry of a completed ruling instead of replaying it — the exact failure the
+ * idempotency record exists to prevent.
+ *
+ * Checked BEFORE the prompt, so an action that is not currently valid still
+ * costs zero dialogs.
+ */
+export function validateCurrentState(mutation, exception) {
+  if (!exception) return { ok: false, failure: "unknown_exception", reason: "the exception is gone" };
+
+  // Every one of the six classes rules on a question that is waiting for her.
+  // Ruling on an item nobody is waiting on is not a ruling.
+  if (exception.status !== OWNER_GATED_STATUS) {
+    return {
+      ok: false, failure: "action_not_currently_valid",
+      reason: `${exception.id} is ${exception.status}, not waiting on her`,
+    };
+  }
+  if (mutation.action === "approve" && !String(exception.proposed ?? "").trim()) {
+    // "Approve the proposed action" with no proposed action is a prompt with
+    // nothing behind it.
+    return {
+      ok: false, failure: "action_not_currently_valid",
+      reason: `${exception.id} has no current proposal to approve`,
+    };
+  }
+  return { ok: true };
+}
+
+/**
  * File-backed journal storage.
  *
  * Lives outside the repository by default. It is private host state: it records
@@ -170,111 +208,179 @@ export function createRulingJournalStorage(file) {
 
   return {
     read: load,
-    append(entry) {
-      const entries = load();
+    // ONE record per operation_id, always. The first version appended, so a
+    // retry after a cancellation wrote a second row with the same id and
+    // `update` then patched whichever came first — leaving the live attempt
+    // stranded and the journal lying about what happened.
+    put(entry) {
+      const entries = load().filter((e) => e.operation_id !== entry.operation_id);
       entries.push(entry);
       save(entries);
     },
-    update(operationId, patch) {
-      const entries = load();
-      const index = entries.findIndex((e) => e.operation_id === operationId);
-      if (index === -1) throw new Error(`no journal entry for ${operationId}`);
-      entries[index] = { ...entries[index], ...patch };
-      save(entries);
+    get(operationId) {
+      return load().find((e) => e.operation_id === operationId) ?? null;
     },
   };
 }
 
 /** In-memory storage, for tests and for a host with no durable directory yet. */
 export function createMemoryJournalStorage() {
-  const entries = [];
+  let entries = [];
   return {
     read: () => entries.map((e) => ({ ...e })),
-    append: (entry) => { entries.push({ ...entry }); },
-    update(operationId, patch) {
-      const index = entries.findIndex((e) => e.operation_id === operationId);
-      if (index === -1) throw new Error(`no journal entry for ${operationId}`);
-      entries[index] = { ...entries[index], ...patch };
+    put(entry) {
+      entries = entries.filter((e) => e.operation_id !== entry.operation_id);
+      entries.push({ ...entry });
+    },
+    get: (operationId) => {
+      const found = entries.find((e) => e.operation_id === operationId);
+      return found ? { ...found } : null;
     },
   };
 }
 
 /**
+ * What the exception MUST look like for this ruling to count as committed.
+ *
+ * Searching the body for the operation_ref was not enough. `applyOwnerMutation`
+ * used to make several authoritative writes, so a crash between them could
+ * leave the ref present with the status never changed — and recovery would call
+ * that committed. The postcondition is now the whole intended end state.
+ */
+export function expectedPostcondition(mutation) {
+  const semantics = ACTION_SEMANTICS[mutation.action];
+  return {
+    operation_ref: mutation.operation_ref,
+    status: semantics.status ?? null,
+    deferred_until: mutation.payload.deferred_until ?? null,
+  };
+}
+
+/**
+ * Did the ruling land completely, not at all, or half way?
+ *
+ * A half-applied owner ruling is the one answer that must never be rounded to
+ * either of the others.
+ */
+export function classifyApplication(expected, exception) {
+  if (!exception) return "none";
+  const signals = [String(exception.body ?? "").includes(expected.operation_ref)];
+  if (expected.status) signals.push(exception.status === expected.status);
+  if (expected.deferred_until) {
+    signals.push(Date.parse(exception.deferred_until ?? "") === Date.parse(expected.deferred_until));
+  }
+  if (signals.every(Boolean)) return "complete";
+  if (signals.every((s) => !s)) return "none";
+  return "partial";
+}
+
+/**
  * The durable owner-ruling journal.
  *
- * Exists because `setStatus()` may be harmlessly repeatable while the amendment
- * text attached to it is not: a retry after a lost response could append her
- * ruling twice. The journal records intent before the mutation and completion
- * after it, and recovery rolls forward by looking for `operation_ref` in the
- * exception itself.
+ * Exists because the amendment attached to a ruling is not harmlessly
+ * repeatable: a retry after a lost response could append her ruling twice. One
+ * record per operation, moving through a closed set of phases:
+ *
+ *   new -> preparing -> committed
+ *   new -> preparing -> aborted -> preparing (next attempt) -> committed
  */
 export function createRulingJournal({ storage, now }) {
-  const read = () => storage.read();
-
   return {
     /** Has this exact operation already completed? */
     completed(operationId) {
-      return read().find((e) => e.operation_id === operationId && e.phase === "committed") ?? null;
+      const entry = storage.get(operationId);
+      return entry?.phase === "committed" ? entry : null;
     },
 
     /**
-     * Idempotency, checked BEFORE any prompt.
+     * Idempotency, decided BEFORE any prompt.
      *
-     * Same id and same canonical semantics replays. Same id, different
-     * semantics is a collision — and neither costs a Windows dialog.
+     * `preparing` means a previous attempt died mid-flight and must be
+     * recovered against the exception before anything else happens.
      */
     check(mutation) {
-      const prior = read().find((e) => e.operation_id === mutation.operation_id);
+      const prior = storage.get(mutation.operation_id);
       if (!prior) return { outcome: "new" };
       if (prior.canonical_hash !== mutation.canonical_hash) {
         return { outcome: "idempotency_collision", reason: "this operation id already means something else" };
       }
       if (prior.phase === "committed") return { outcome: "replay", record: prior };
+      if (prior.phase === "aborted") return { outcome: "retryable", record: prior };
       return { outcome: "recoverable", record: prior };
     },
 
-    begin(mutation) {
-      storage.append({
+    /** Claim the record for a new attempt. Never a second row. */
+    begin(mutation, result = null) {
+      const prior = storage.get(mutation.operation_id);
+      storage.put({
         operation_id: mutation.operation_id,
         operation_ref: mutation.operation_ref,
         canonical_hash: mutation.canonical_hash,
         exception_id: mutation.exception_id,
+        action: mutation.action,
+        payload: mutation.payload,
+        // Enough to verify the postcondition and to rebuild a replay result
+        // after a recovery, which the first version could not do.
+        expected: expectedPostcondition(mutation),
         phase: "preparing",
+        attempt: (prior?.attempt ?? 0) + 1,
         started_at: now(),
+        result,
       });
       return mutation.operation_ref;
     },
 
     complete(mutation, result) {
-      storage.update(mutation.operation_id, { phase: "committed", committed_at: now(), result });
+      const prior = storage.get(mutation.operation_id) ?? {};
+      storage.put({ ...prior, phase: "committed", committed_at: now(), result });
       return result;
     },
 
     abort(mutation, reason) {
-      storage.update(mutation.operation_id, { phase: "aborted", reason, aborted_at: now() });
+      const prior = storage.get(mutation.operation_id) ?? {};
+      storage.put({ ...prior, phase: "aborted", reason, aborted_at: now() });
     },
 
     /**
-     * Recovery: an amendment carrying this operation_ref proves the mutation
-     * landed even though the journal never recorded it.
+     * Resolve one mid-flight record against the authoritative exception.
+     *
+     * Rolls forward on a COMPLETE postcondition, releases the record when
+     * nothing was applied, and fails closed on a half-application rather than
+     * guessing which way to round it.
      */
-    recover(readException) {
-      const recovered = [];
-      for (const entry of read()) {
-        if (entry.phase !== "preparing") continue;
-        const exception = readException(entry.exception_id);
-        const applied = exception && String(exception.body ?? "").includes(entry.operation_ref);
-        storage.update(entry.operation_id, {
-          phase: applied ? "committed" : "aborted",
-          recovered_at: now(),
-          reason: applied ? "amendment found in the exception" : "no amendment; never applied",
-        });
-        recovered.push({ operation_id: entry.operation_id, outcome: applied ? "rolled_forward" : "aborted" });
+    resolve(entry, readException) {
+      const exception = readException(entry.exception_id);
+      const applied = classifyApplication(entry.expected, exception);
+      if (applied === "complete") {
+        const result = entry.result ?? {
+          id: entry.exception_id,
+          action: entry.action,
+          ruling_ref: entry.operation_ref,
+          operation_ref: entry.operation_ref,
+          resultingStatus: entry.expected.status ?? exception?.status ?? null,
+          recovered: true,
+        };
+        storage.put({ ...entry, phase: "committed", committed_at: now(), recovered_at: now(), result });
+        return { outcome: "rolled_forward", result };
       }
-      return recovered;
+      if (applied === "none") {
+        storage.put({ ...entry, phase: "aborted", reason: "never applied", aborted_at: now() });
+        return { outcome: "aborted" };
+      }
+      // Half-applied. Somebody has to look at it; inventing the rest of the
+      // ruling, or pretending it never happened, are both worse.
+      storage.put({ ...entry, phase: "preparing", partial: true, detected_at: now() });
+      return { outcome: "partial_application" };
     },
 
-    all: read,
+    /** Startup recovery across every mid-flight record. */
+    recover(readException) {
+      return storage.read()
+        .filter((entry) => entry.phase === "preparing")
+        .map((entry) => ({ operation_id: entry.operation_id, ...this.resolve(entry, readException) }));
+    },
+
+    all: () => storage.read(),
   };
 }
 
@@ -345,7 +451,27 @@ export async function performOwnerRuling({
   }
 
   // 2. Idempotency BEFORE prompting.
-  const idempotent = journal.check(mutation);
+  let idempotent = journal.check(mutation);
+
+  if (idempotent.outcome === "recoverable") {
+    // A previous attempt died mid-flight. It has to be resolved against the
+    // authoritative exception before this one may proceed — otherwise a retry
+    // prompts her for a ruling that may already have landed.
+    const resolved = journal.resolve(idempotent.record, readException);
+    if (resolved.outcome === "rolled_forward") {
+      return { ok: true, replayed: true, recovered: true, result: resolved.result, prompt_shown: false, mutation_performed: false };
+    }
+    if (resolved.outcome === "partial_application") {
+      // Fail closed. Half a ruling is not a ruling, and neither completing it
+      // blind nor re-running it is safe.
+      return {
+        ok: false, failure: "partial_application", prompt_shown: false, mutation_performed: false,
+        reason: "a previous attempt left this exception half-ruled; it needs repair before another ruling",
+      };
+    }
+    idempotent = journal.check(mutation);
+  }
+
   if (idempotent.outcome === "replay") {
     return { ok: true, replayed: true, result: idempotent.record.result, prompt_shown: false, mutation_performed: false };
   }
@@ -353,7 +479,11 @@ export async function performOwnerRuling({
     return { ok: false, failure: "idempotency_collision", reason: idempotent.reason, prompt_shown: false, mutation_performed: false };
   }
 
-  // 3. Prompt budget, checked before a dialog can be requested.
+  // 3. Current-state validity, still before anything can cost a dialog.
+  const valid = validateCurrentState(mutation, exception);
+  if (!valid.ok) return { ok: false, ...valid, prompt_shown: false, mutation_performed: false };
+
+  // 4. Prompt budget, checked before a dialog can be requested.
   const allowed = budget.mayPrompt();
   if (!allowed.ok) return { ok: false, ...allowed, prompt_shown: false, mutation_performed: false };
 
@@ -394,6 +524,10 @@ export async function performOwnerRuling({
     return { ok: false, failure: "presence_not_valid", reason: consumed.reason, prompt_shown: true, mutation_performed: false };
   }
 
+  // The store's owner gate accepts a ruling ref only if THIS process produced
+  // it through verified presence. Registered before the mutation, so a store
+  // path that consults the gate sees it.
+  registerVerifiedRuling(mutation.operation_ref);
   const result = applyMutation(mutation);
   journal.complete(mutation, result);
   return {

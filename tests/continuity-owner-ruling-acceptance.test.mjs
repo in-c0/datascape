@@ -14,6 +14,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { acceptanceWorld, fixture } from "../ops/prb-world.mjs";
 
@@ -189,7 +190,7 @@ test("acceptance: the same operation id meaning something else is a collision, n
   } finally { await world.close(); }
 });
 
-test("acceptance: a crash between the amendment and the journal commit does not double-apply", async () => {
+test("acceptance: a crash before the journal commit rolls forward, never re-applies", async () => {
   const world = await acceptanceWorld();
   try {
     const id = fixture(world);
@@ -198,9 +199,8 @@ test("acceptance: a crash between the amendment and the journal commit does not 
     assert.equal(first.status, 200);
     assert.equal(world.amendments(id), 1);
 
-    // Simulate the crash window: the exception was amended, the journal never
-    // reached `committed`. This is the case where a naive retry appends her
-    // ruling twice.
+    // The exception was written completely; the journal never reached
+    // `committed`. A naive retry appends her ruling twice.
     const journalFile = path.join(world.dir, "state", "owner-rulings.json");
     const entries = JSON.parse(fs.readFileSync(journalFile, "utf8"));
     entries[0] = { ...entries[0], phase: "preparing" };
@@ -211,9 +211,118 @@ test("acceptance: a crash between the amendment and the journal commit does not 
     const recoveredDeps = world.server.createOwnerRulingDeps({
       verifier: world.deps.verifier, now: world.deps.now, journalFile,
     });
-    assert.deepEqual(recoveredDeps.recovered, [{ operation_id: op("crash"), outcome: "rolled_forward" }]);
+    assert.equal(recoveredDeps.recovered[0].outcome, "rolled_forward");
     assert.equal(recoveredDeps.journal.completed(op("crash")).phase, "committed");
+    assert.ok(recoveredDeps.journal.completed(op("crash")).result.ruling_ref,
+      "a recovered operation must still be able to answer a retry");
     assert.equal(world.amendments(id), 1, "recovery must roll forward, never re-apply");
+  } finally { await world.close(); }
+});
+
+test("acceptance: the authoritative exception write is atomic across every class", async () => {
+  const world = await acceptanceWorld();
+  try {
+    // Every ruling is ONE file replacement. The earlier shape wrote the
+    // amendment, the status and the defer field separately, so a crash between
+    // them left a half-ruled exception that recovery could not classify.
+    for (const [action, extra] of [
+      ["reply_done", {}],
+      ["defer", { until: "2026-08-24T09:00:00+10:00" }],
+    ]) {
+      const id = fixture(world, { id: `2026-08-22-atomic-${action}` });
+      const target = path.join(world.inbox, `${id}.md`);
+      const inPlace = [];
+      const renames = [];
+      const realWrite = fs.writeFileSync;
+      const realRename = fs.renameSync;
+      // `${id}.md.tmp` also "includes" `${id}.md`, so match the exact path —
+      // the first version of this check counted the temp write and failed the
+      // code for doing precisely the right thing.
+      fs.writeFileSync = (file, ...rest) => {
+        if (path.resolve(String(file)) === path.resolve(target)) inPlace.push(String(file));
+        return realWrite(file, ...rest);
+      };
+      fs.renameSync = (from, to, ...rest) => {
+        if (path.resolve(String(to)) === path.resolve(target)) renames.push(String(to));
+        return realRename(from, to, ...rest);
+      };
+      try {
+        await world.act({ id, action, ...extra, operation_id: op(`atomic-${action}`) });
+      } finally {
+        fs.writeFileSync = realWrite;
+        fs.renameSync = realRename;
+      }
+      assert.equal(inPlace.length, 0,
+        `${action}: the exception must never be written in place — a reader could see half a ruling`);
+      assert.equal(renames.length, 1,
+        `${action}: one ruling is ONE authoritative replacement, not a sequence of them`);
+      assert.equal(world.amendments(id), 1);
+    }
+  } finally { await world.close(); }
+});
+
+test("acceptance: a HALF-applied ruling is refused, not rounded either way", async () => {
+  const world = await acceptanceWorld();
+  try {
+    const id = fixture(world);
+    const body = { id, action: "reply_done", operation_id: op("half") };
+    await world.act(body);
+
+    // Rewind the STATUS but leave the amendment: the shape a crash between two
+    // separate writes would have left, and the shape a ref-only recovery check
+    // would have called committed.
+    fs.writeFileSync(path.join(world.inbox, `${id}.md`),
+      world.file(id).replace(/^status: resolved$/m, "status: blocked-on-owner"));
+    const journalFile = path.join(world.dir, "state", "owner-rulings.json");
+    const entries = JSON.parse(fs.readFileSync(journalFile, "utf8"));
+    entries[0] = { ...entries[0], phase: "preparing" };
+    fs.writeFileSync(journalFile, JSON.stringify(entries, null, 2));
+
+    const recoveredDeps = world.server.createOwnerRulingDeps({
+      verifier: world.deps.verifier, now: world.deps.now, journalFile,
+    });
+    assert.equal(recoveredDeps.recovered[0].outcome, "partial_application");
+
+    const blocked = await world.act(body);
+    assert.equal(blocked.body.error, "partial_application");
+    assert.equal(blocked.body.mutation_performed, false);
+    assert.equal(world.amendments(id), 1, "a half-ruled exception must not be ruled over the top of");
+  } finally { await world.close(); }
+});
+
+test("acceptance: an aborted attempt retries on the same journal record", async () => {
+  const world = await acceptanceWorld();
+  try {
+    const id = fixture(world);
+    const body = { id, action: "dismiss", operation_id: op("abort-retry") };
+    world.broker.outcomeValue = "cancelled";
+    assert.equal((await world.act(body)).body.error, "cancelled");
+
+    world.advance(11000);
+    world.broker.outcomeValue = "verified";
+    const retried = await world.act(body);
+    assert.equal(retried.status, 200, JSON.stringify(retried.body));
+
+    const rows = JSON.parse(fs.readFileSync(path.join(world.dir, "state", "owner-rulings.json"), "utf8"))
+      .filter((e) => e.operation_id === body.operation_id);
+    assert.equal(rows.length, 1, "one operation is one journal record, always");
+    assert.equal(rows[0].phase, "committed");
+    assert.equal(rows[0].attempt, 2);
+  } finally { await world.close(); }
+});
+
+test("acceptance: a ruling on an item nobody is waiting on never prompts", async () => {
+  const world = await acceptanceWorld();
+  try {
+    const resolved = fixture(world, { id: "2026-08-22-already-resolved", status: "resolved" });
+    const noProposal = fixture(world, { id: "2026-08-22-no-proposal", proposed: "" });
+
+    for (const [id, action] of [[resolved, "reply_done"], [noProposal, "approve"]]) {
+      const result = await world.act({ id, action, operation_id: op(`invalid-${id}`) });
+      assert.equal(result.body.error, "action_not_currently_valid", JSON.stringify(result.body));
+      assert.equal(world.broker.calls.length, 0, `${id} raised a prompt`);
+      assert.equal(world.amendments(id), 0);
+    }
   } finally { await world.close(); }
 });
 
@@ -325,5 +434,171 @@ test("acceptance: the world records which exception implementation it exercised"
     await world.act({ id, action: "dismiss", operation_id: "op-store" });
     assert.equal(world.amendments(id), 1);
     assert.equal(world.status(id), "resolved");
+  } finally { await world.close(); }
+});
+
+// ---------------------------------------------------------------------------
+// The legacy CLI is no longer a second authority
+// ---------------------------------------------------------------------------
+
+test("acceptance: the raw exception store cannot close an owner-gated item", async () => {
+  const world = await acceptanceWorld();
+  try {
+    const id = fixture(world);
+
+    // This is the original impersonation route, unchanged: the command that
+    // moves an item out of her queue and leaves a record reading as though she
+    // answered. Adding a safe CLI does not remove the unsafe one.
+    for (const status of ["resolved", "investigating", "new"]) {
+      assert.throws(() => world.store.setStatus(id, status),
+        (error) => error.code === "owner_ruling_required",
+        `setStatus(${status}) must be refused on a blocked-on-owner item`);
+    }
+    // A ref typed on a command line is a string, not evidence.
+    assert.throws(() => world.store.setStatus(id, "resolved", "", "ruling:i-made-this-up"),
+      (error) => error.code === "unverified_ruling_ref");
+
+    assert.equal(world.status(id), "blocked-on-owner", "nothing moved");
+    assert.equal(world.broker.calls.length, 0, "and nothing prompted her either");
+  } finally { await world.close(); }
+});
+
+test("acceptance: ordinary lane transitions are untouched by the gate", async () => {
+  const world = await acceptanceWorld();
+  try {
+    // A control that made agents ask her before updating routine workflow state
+    // would be switched off within a week, and then nothing would be guarded.
+    const open = fixture(world, { id: "2026-08-22-ordinary-work", status: "new" });
+    assert.equal(world.store.setStatus(open, "investigating"), open);
+    assert.equal(world.status(open), "investigating");
+    assert.equal(world.store.setStatus(open, "resolved"), open);
+    assert.equal(world.status(open), "resolved");
+
+    // Including raising a new owner gate.
+    const raising = fixture(world, { id: "2026-08-22-raise-a-gate", status: "investigating" });
+    assert.equal(world.store.setStatus(raising, "blocked-on-owner"), raising);
+    assert.equal(world.broker.calls.length, 0);
+  } finally { await world.close(); }
+});
+
+test("acceptance: a verified ruling still moves the item, through the gate", async () => {
+  const world = await acceptanceWorld();
+  try {
+    const id = fixture(world);
+    const result = await world.act({ id, action: "reply_done", operation_id: op("gate-pass") });
+    assert.equal(result.status, 200);
+    assert.equal(world.status(id), "resolved",
+      "the gate must not block the one path that has her verification");
+  } finally { await world.close(); }
+});
+
+// ---------------------------------------------------------------------------
+// The manual owner CLI runs DEPLOYED bytes
+// ---------------------------------------------------------------------------
+
+test("acceptance: sabotaging the working tree does not change the owner CLI", async () => {
+  const world = await acceptanceWorld();
+  try {
+    // A repo-shaped world whose src/continuity/control is booby-trapped. If the
+    // CLI still imports its orchestrator or its policy from the working tree —
+    // which it did, while its commit message said otherwise — importing it here
+    // throws and this test fails loudly.
+    const repo = path.join(world.dir, "sabotaged-repo");
+    const control = path.join(repo, "src", "continuity", "control");
+    fs.mkdirSync(path.join(repo, "ops"), { recursive: true });
+    fs.mkdirSync(control, { recursive: true });
+    for (const name of ["owner-ruling.js", "owner-ruling-policy.js", "owner-presence.js", "owner-presence-windows.js"]) {
+      fs.writeFileSync(path.join(control, name),
+        `throw new Error("the CLI loaded ${name} from the working tree");\n`);
+    }
+    fs.copyFileSync(path.join(process.cwd(), "ops", "owner-rule.mjs"), path.join(repo, "ops", "owner-rule.mjs"));
+
+    const cli = await import(pathToFileURL(path.join(repo, "ops", "owner-rule.mjs")).href);
+
+    // Dependencies assembled from the DEPLOYED artifact, as realDeps() does.
+    const staged = (f) => import(pathToFileURL(path.join(world.ops, "_continuity", f)).href);
+    const ruling = await staged("owner-ruling.js");
+    const id = fixture(world);
+    const deps = {
+      now: world.deps.now,
+      OWNER_ACTIONS: ruling.OWNER_ACTIONS,
+      performOwnerRuling: ruling.performOwnerRuling,
+      readException: world.deps.readException,
+      applyMutation: world.deps.applyMutation,
+      journal: world.deps.journal,
+      budget: world.deps.budget,
+      verifier: world.deps.verifier,
+    };
+
+    const result = await cli.runOwnerRule([id, "reply_done"], deps);
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.equal(world.amendments(id), 1);
+    assert.equal(world.status(id), "resolved");
+
+    // Rerunning the identical command replays rather than ruling twice.
+    const again = await cli.runOwnerRule([id, "reply_done"], deps);
+    assert.equal(again.replayed, true);
+    assert.equal(world.amendments(id), 1);
+    assert.equal(world.broker.calls.length, 1);
+  } finally { await world.close(); }
+});
+
+test("acceptance: the owner CLI offers no unauthenticated lane withdrawal", async () => {
+  const world = await acceptanceWorld();
+  try {
+    const cli = await import(pathToFileURL(path.join(process.cwd(), "ops", "owner-rule.mjs")).href);
+    const ruling = await import(pathToFileURL(path.join(world.ops, "_continuity", "owner-ruling.js")).href);
+    const id = fixture(world);
+    const deps = { ...world.deps, OWNER_ACTIONS: ruling.OWNER_ACTIONS, performOwnerRuling: ruling.performOwnerRuling };
+
+    // Any local process could have run this against somebody else's gate and
+    // emptied it from her queue with no presence and no lane check.
+    const withdrawn = await cli.runOwnerRule([id, "--withdraw", "--note", "not needed"], deps);
+    assert.equal(withdrawn.ok, false);
+    assert.equal(withdrawn.failure, "unsupported");
+    assert.equal(world.status(id), "blocked-on-owner");
+    assert.equal(world.amendments(id), 0);
+    assert.equal(world.broker.calls.length, 0);
+  } finally { await world.close(); }
+});
+
+// ---------------------------------------------------------------------------
+// A half-installed security layer must not rule
+// ---------------------------------------------------------------------------
+
+test("acceptance: a mixed or incomplete deployment serves reads and refuses rulings", async () => {
+  const world = await acceptanceWorld();
+  try {
+    const id = fixture(world);
+
+    // Deployment replaces the artifact one file at a time. This is what a crash
+    // in the middle leaves behind, and until now the host would have started
+    // anyway and ruled out of a half-installed security layer.
+    const gated = world.server.createServer(world.deps, {
+      ownerRulings: false,
+      unverifiedReason: "the deployed _continuity set is incomplete.",
+    });
+    await new Promise((resolve) => gated.listen(0, "127.0.0.1", resolve));
+    const port = gated.address().port;
+    try {
+      const refused = await fetch(`http://127.0.0.1:${port}/api/act`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, action: "dismiss", operation_id: op("unverified") }),
+      });
+      assert.equal(refused.status, 503);
+      const payload = await refused.json();
+      assert.equal(payload.error, "deployment_unverified");
+      assert.equal(payload.mutation_performed, false);
+      assert.match(payload.detail, /incomplete/);
+      assert.equal(world.amendments(id), 0);
+      assert.equal(world.broker.calls.length, 0, "an unverified deployment must not reach the device");
+
+      // Reads are untouched: she can still see her briefing.
+      const reads = await fetch(`http://127.0.0.1:${port}/api/decisions`);
+      assert.equal(reads.status, 200);
+    } finally {
+      await new Promise((resolve) => gated.close(resolve));
+    }
   } finally { await world.close(); }
 });
