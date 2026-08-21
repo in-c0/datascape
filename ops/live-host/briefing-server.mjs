@@ -29,6 +29,7 @@
 // that can resolve exceptions is exactly the shape that must not repeat it.
 
 import http from "node:http"
+import crypto from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
 import process from "node:process"
@@ -37,6 +38,16 @@ import { fileURLToPath } from "node:url"
 import { build } from "./briefing.mjs"
 import { sydneyIso, sydneyDate } from "./mustread.mjs"
 import * as exceptions from "./exception.mjs"
+
+// The security layer is DEPLOYED beside this file as a recorded artifact, not
+// imported from a development working tree. `./_continuity/` exists only in a
+// staged or installed live host, so a production process cannot silently pick
+// up whatever happens to be checked out in the repo right now.
+import {
+  createPromptBudget, createRulingJournal, createRulingJournalStorage, performOwnerRuling,
+} from "./_continuity/owner-ruling.js"
+import { createOwnerPresenceVerifier, stripClaimedVerification } from "./_continuity/owner-presence.js"
+import { createWindowsOwnerPresenceBroker } from "./_continuity/owner-presence-windows.js"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const DECISIONS = process.env.BRIEFING_DECISIONS || path.join(HERE, "..", "decisions")
@@ -121,14 +132,20 @@ export function readDecisions({ limit = 40 } = {}) {
 // ---------------------------------------------------------------------------
 
 export const ACTIONS = {
-  // Spec §6. Each maps onto a status the exception inbox already understands —
-  // no new lifecycle, no parallel queue.
+  // Spec §6, now the six CLOSED owner classes of V6.1.6-A.2 PR B. Each maps
+  // onto a status the exception inbox already understands — no new lifecycle,
+  // no parallel queue.
   //
-  // `approve` and `reply` move the item to `investigating` because the filing
-  // lane now owns the next move; the item is no longer waiting on her, but it
-  // is not finished either. Resolving here would drop the follow-up.
+  // `approve` and the non-final replies move the item to `investigating`
+  // because the filing lane now owns the next move; the item is no longer
+  // waiting on her, but it is not finished either.
+  //
+  // The old generic `reply` is gone. It carried her meaning as prose, which
+  // meant the host either ignored the distinction or recovered it by keyword.
   approve: { status: "investigating", kind: "approved-proposed", verb: "APPROVED PROPOSED" },
-  reply: { status: "investigating", kind: "custom", verb: "REPLIED" },
+  reply_done: { status: "resolved", kind: "done", verb: "REPLIED DONE" },
+  reply_no: { status: "investigating", kind: "declined", verb: "REPLIED NO" },
+  reply_need_context: { status: "investigating", kind: "needs-context", verb: "ASKED FOR CONTEXT" },
   // Defer keeps it blocked-on-owner and sets an absolute timestamp; it simply
   // stops being due-now until then. No reminder, no scheduler mutation.
   defer: { status: null, kind: "deferred", verb: "DEFERRED" },
@@ -138,7 +155,10 @@ export const ACTIONS = {
 // `deferred_until` — optional frontmatter, ISO-8601 with an explicit offset.
 // Written through the exception layer so `updated` still bumps.
 export function setDeferredUntil(id, iso) {
-  const file = path.join(HERE, "..", "exceptions", `${id}.md`)
+  // The exception layer's own directory, not a second guess at it. These
+  // disagreed whenever EXCEPTION_INBOX was set, which is exactly the
+  // configuration an isolated acceptance world uses.
+  const file = path.join(exceptions.INBOX, `${id}.md`)
   const raw = fs.readFileSync(file, "utf8")
   const FRONT = new RegExp("^---\\r?\\n([\\s\\S]*?)\\r?\\n---")
   const match = raw.match(FRONT)
@@ -151,47 +171,141 @@ export function setDeferredUntil(id, iso) {
   fs.writeFileSync(file, raw.replace(match[0], rebuilt), "utf8")
 }
 
-export function act({ id, action, note = "", until = null }) {
-  const spec = ACTIONS[action]
-  if (!spec) throw new Error(`unknown action ${JSON.stringify(action)}`)
-  if (!id) throw new Error("id is required")
-
+/**
+ * Read the authoritative exception, shaped for fingerprinting.
+ *
+ * Everything the ruling depends on comes from here. The request supplies which
+ * exception and which class; it supplies no state.
+ */
+export function readException(id) {
+  if (!id) return null
   const found = exceptions.find(id)
-  if (!found) throw new Error(`no exception ${id}`)
+  if (!found) return null
+  return {
+    id: found.meta.id,
+    status: found.meta.status,
+    updated: found.meta.updated,
+    proposed: found.meta.proposed ?? found.proposed ?? null,
+    proposal_ref: found.meta.proposal_ref ?? null,
+    proposal_revision: found.meta.proposal_revision ?? null,
+    deferred_until: found.meta.deferred_until ?? null,
+    title: found.meta.title,
+    loop: found.meta.loop || null,
+    body: found.body ?? "",
+  }
+}
+
+/**
+ * Perform an owner ruling that has ALREADY been verified.
+ *
+ * Takes a PreparedOwnerMutation, never a browser request. Nothing in the
+ * original payload is consulted here — if it were, the operation Windows
+ * described and the operation performed could differ, which is the whole thing
+ * this layer exists to prevent.
+ */
+export function applyOwnerMutation(mutation) {
+  const spec = ACTIONS[mutation.action]
+  if (!spec) throw new Error(`unknown action ${JSON.stringify(mutation.action)}`)
+
+  const found = exceptions.find(mutation.exception_id)
+  if (!found) throw new Error(`no exception ${mutation.exception_id}`)
   const realId = found.meta.id
 
   const at = sydneyIso()
-  const text = String(note || "").trim()
+  const text = mutation.payload.text ? String(mutation.payload.text).trim() : ""
 
-  if (action === "defer") {
-    if (!until) throw new Error("defer needs an absolute `until` timestamp")
-    const when = Date.parse(until)
-    if (!Number.isFinite(when)) throw new Error("`until` must be a parseable ISO-8601 instant")
+  if (mutation.action === "defer") {
     // Persist the ABSOLUTE instant only — "Tonight" is a UI convenience and
-    // must never reach the file.
-    setDeferredUntil(realId, sydneyIso(new Date(when)))
+    // must never reach the file. It was normalized at prepare time.
+    setDeferredUntil(realId, sydneyIso(new Date(Date.parse(mutation.payload.deferred_until))))
   }
 
   // Her words, verbatim, stamped as hers and appended — never overwriting an
   // earlier ruling. The lane must be able to tell an owner ruling from another
   // loop's commentary.
-  const amendment = `OWNER ${spec.verb} ${at} (via datascape/briefing)${text ? ` — ${text}` : ""}`
+  //
+  // The operation_ref rides along because it is what makes this append
+  // recoverable: if the process dies between the amendment and the journal
+  // commit, recovery finds this ref in the exception and rolls forward instead
+  // of appending her ruling a second time.
+  const amendment = `OWNER ${spec.verb} ${at} (via datascape/briefing) [${mutation.operation_ref}]`
+    + `${text ? ` — ${text}` : ""}`
   exceptions.amend(realId, { note: amendment })
-  if (spec.status) exceptions.setStatus(realId, spec.status, amendment)
+  // The status line REFERS to the ruling rather than repeating it. Passing the
+  // full amendment here wrote her words into the exception twice for every
+  // status-changing action, which makes a reader — and a recovery check —
+  // unable to tell one ruling from two.
+  if (spec.status) exceptions.setStatus(realId, spec.status, `owner ruling ${mutation.operation_ref}`)
 
   const entry = {
     at,
     id: realId,
-    action,
+    action: mutation.action,
     kind: spec.kind,
     note: text || null,
-    deferredUntil: action === "defer" ? sydneyIso(new Date(Date.parse(until))) : null,
+    operation_ref: mutation.operation_ref,
+    ruling_ref: mutation.operation_ref,
+    deferredUntil: mutation.action === "defer" ? sydneyIso(new Date(Date.parse(mutation.payload.deferred_until))) : null,
     title: found.meta.title,
     loop: found.meta.loop || null,
     resultingStatus: spec.status || found.meta.status,
   }
   recordDecision(entry)
   return entry
+}
+
+/**
+ * A lane taking its own question back.
+ *
+ * Lane authority, no owner presence, and recorded as a WITHDRAWAL so nobody
+ * reading the file later mistakes it for her ruling. It cannot resolve the
+ * item: a question the lane no longer needs answered is still not a question
+ * that was answered.
+ */
+export function withdrawOwnerQuestion({ id, status, note = "", record_as = "LANE WITHDREW — no owner ruling" }) {
+  const found = exceptions.find(id)
+  if (!found) throw new Error(`no exception ${id}`)
+  const realId = found.meta.id
+  const at = sydneyIso()
+  const text = String(note || "").trim()
+  const amendment = `${record_as} ${at}${text ? ` — ${text}` : ""}`
+  exceptions.amend(realId, { note: amendment })
+  exceptions.setStatus(realId, status, amendment)
+  return { at, id: realId, action: "withdraw", kind: "lane-withdrawal", note: text || null, resultingStatus: status }
+}
+
+/**
+ * The host's owner-ruling dependencies.
+ *
+ * Injectable so the acceptance suite can drive the REAL transport with a fake
+ * verifier and an isolated store — and so nothing here can reach a Windows
+ * dialog unless a broker that can show one was deliberately supplied.
+ */
+export function createOwnerRulingDeps({
+  verifier = null,
+  journalFile = process.env.OWNER_RULING_JOURNAL
+    || path.join(process.env.LOCALAPPDATA || HERE, "datascape", "live-host", "owner-rulings.json"),
+  allowInteractive = process.env.OWNER_PRESENCE_INTERACTIVE === "1",
+  now = () => Date.now(),
+} = {}) {
+  const journal = createRulingJournal({ storage: createRulingJournalStorage(journalFile), now })
+  // Forward recovery on startup: any ruling that was mid-flight when a previous
+  // process died is resolved by looking for its ref in the exception itself.
+  const recovered = journal.recover(readException)
+
+  return {
+    now,
+    readException,
+    applyMutation: applyOwnerMutation,
+    journal,
+    budget: createPromptBudget({ now }),
+    verifier: verifier ?? createOwnerPresenceVerifier({
+      broker: createWindowsOwnerPresenceBroker({ allowInteractive }),
+      now,
+      randomChallenge: () => crypto.randomUUID(),
+    }),
+    recovered,
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -211,7 +325,43 @@ function send(res, code, body, origin) {
   res.end(json)
 }
 
-export function createServer() {
+/** Read a JSON body with a hard size cap. A body is never a reason to prompt. */
+function readJsonBody(req, limit = 64 * 1024) {
+  return new Promise((resolve, reject) => {
+    let size = 0
+    const chunks = []
+    req.on("data", (chunk) => {
+      size += chunk.length
+      if (size > limit) { reject(new Error("request body is too large")); req.destroy(); return }
+      chunks.push(chunk)
+    })
+    req.on("end", () => {
+      try { resolve(JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}")) }
+      catch { reject(new Error("body must be JSON")) }
+    })
+    req.on("error", reject)
+  })
+}
+
+/** Non-verified outcomes and refusals all mean the same thing: nothing happened. */
+const REFUSAL_STATUS = {
+  unknown_exception: 404,
+  invalid_action: 400,
+  idempotency_collision: 409,
+  stale_owner_operation: 409,
+  cancelled: 403,
+  failed: 403,
+  unavailable: 503,
+  presence_not_valid: 403,
+  prompt_cooldown: 429,
+  prompt_lockout: 429,
+}
+
+export function createServer(deps = null) {
+  // Built once per server, not per request: the prompt budget and the
+  // one-outstanding-prompt rule are only meaningful if they are shared.
+  const owner = deps ?? createOwnerRulingDeps()
+
   return http.createServer(async (req, res) => {
     const origin = req.headers.origin
     if (!isLoopbackHost(req.headers.host) || !originAllowed(origin)) {
@@ -240,35 +390,39 @@ export function createServer() {
           return send(res, 415, { error: "application/json required" }, origin)
         }
 
-        // FAIL CLOSED — an owner ruling requires owner presence.
+        // An owner ruling requires OWNER PRESENCE.
         //
         // The loopback and Origin checks above answer "where did this request
         // arrive from?". They do not answer "did the logged-on human approve
-        // this?". This endpoint authenticates NO principal, so any local
-        // process — including an agent driving the already-open browser — could
-        // resolve, defer or dismiss her exceptions AS her.
+        // this?". Windows does, immediately before the mutation, for the exact
+        // operation the host has already prepared.
         //
-        // The wrapper that asks Windows to verify her is specified and its
-        // substrate is built (`owner-presence.js`), but it is not wired yet.
-        // Until it is, refusing is the correct behaviour: the alternative is
-        // leaving an owner-impersonation path open because closing it is
-        // inconvenient.
-        //
-        // Refused BEFORE the body is read, so a malformed or hostile payload
-        // never reaches `act`, and no Windows prompt is involved — this path
-        // instantiates no interactive broker at all.
-        //
-        // Reads are untouched: /api/briefing and /api/decisions still serve.
+        // Everything cheap is rejected first — bad method, bad content type,
+        // unknown exception, invalid class, a replayed operation — so none of
+        // them can cost her a dialog. There is no browser round trip after
+        // verification, and no verification result crosses back into browser
+        // state: the response says what happened, not what was proved.
         //
         // Deliberately NOT behind an environment variable. An escape hatch that
         // restores unauthenticated owner writes is the same hole with a longer
         // name.
-        return send(res, 403, {
-          error: "owner_presence_required",
-          mutation_performed: false,
-          detail: "Owner rulings now require verification this host cannot yet perform. "
-            + "Rule from the CLI meanwhile: "
-            + "node D:/Projects/_ship_inbox/ops/exception.mjs set <id> resolved --note \"...\"",
+        const body = await readJsonBody(req)
+        // Any claimed verification in the payload is removed rather than
+        // rejected, so no code written later can read it by accident.
+        const { request } = stripClaimedVerification(body)
+
+        const outcome = await performOwnerRuling({ request, ...owner })
+        if (!outcome.ok) {
+          return send(res, REFUSAL_STATUS[outcome.failure] ?? 403, {
+            error: outcome.failure,
+            mutation_performed: false,
+            detail: outcome.reason,
+            ...(outcome.retry_after_ms ? { retry_after_ms: outcome.retry_after_ms } : {}),
+          }, origin)
+        }
+        return send(res, 200, {
+          ...outcome.result,
+          replayed: Boolean(outcome.replayed),
         }, origin)
       }
 
