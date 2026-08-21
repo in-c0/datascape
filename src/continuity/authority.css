@@ -169,3 +169,11 @@
   .au-caps { gap: 20px; }
   .au__acts .au-btn { flex: 1 1 auto; }
 }
+
+/* A failed authorization must never leave ambiguity about whether authority
+ * exists (spec V6.1.5 PR B §5). */
+.au__failure {
+  font-size: 13px; color: var(--au-rose); margin-top: 14px;
+  border: 1px solid rgba(251, 154, 168, 0.35); border-radius: 9px; padding: 10px 13px;
+}
+.au__failure b { color: var(--au-text); font-weight: 620; }

@@ -120,6 +120,34 @@ export function composeEnvelope(selected) {
 }
 
 /**
+ * A deterministic identity over everything the owner is agreeing to (§3).
+ *
+ * Lives HERE, in the pure authoring module, so the presentational shell can
+ * compute it without importing the authority store — putting the store in the
+ * review route's import graph would defeat the whole separation.
+ */
+export function policyIdentityOf(draft) {
+  const canonical = JSON.stringify({
+    statement: draft.statement,
+    scope_refs: [...draft.scope_refs].sort(),
+    allowed: [...draft.allowed_capabilities].sort(),
+    max_cost: draft.max_cost,
+    max_wall_time_ms: draft.max_wall_time_ms,
+    stop_conditions: [...draft.stop_conditions].sort(),
+    kind: draft.kind,
+    credential_policy: draft.credential_policy,
+  });
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193;
+  for (let i = 0; i < canonical.length; i++) {
+    const c = canonical.charCodeAt(i);
+    h1 = Math.imul(h1 ^ c, 0x01000193) >>> 0;
+    h2 = Math.imul(h2 + c, 0x85ebca6b) >>> 0;
+  }
+  return `pol_${h1.toString(16).padStart(8, "0")}${h2.toString(16).padStart(8, "0")}`;
+}
+
+/**
  * A candidate suggestion drawn from owner-authored evidence (§3).
  *
  * Copy-into-draft, never pre-authorized. And never derived from behaviour:

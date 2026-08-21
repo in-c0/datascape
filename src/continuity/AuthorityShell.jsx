@@ -1,11 +1,17 @@
 // The authority declaration surface — spec V6.1.4 PR B, re-composed for
 // V6.1.5 PR B §1.
 //
-// PRESENTATIONAL ONLY. This module imports no authority store, no client and
-// no owner boundary; the ability to write authority arrives as `adapter`, which
-// the two route modules supply. So the review composition is not this component
-// with a flag turned off — it is this component handed an adapter that has no
-// mutation method at all.
+// PRESENTATIONAL ONLY, and now genuinely data-injected as well as
+// capability-injected. It imports no authority store, no client, no owner
+// boundary AND no fixtures; every piece of state — the seed draft, the scope
+// catalogue, the owner-authored suggestions, the current authority — arrives
+// through `adapter`.
+//
+// The earlier version still read `fixtureStates()` and interpreted a `?state=`
+// query control, so a future write-capable adapter would have removed the
+// review warning while the screen kept rendering fixture-derived "authorized"
+// state — and Authorize advanced a React step instead of calling the adapter.
+// That is not a live binding; it is a mock wearing one.
 //
 // The visual question it answers: does autonomous authority become
 // comprehensible enough that a person can deliberately grant it, without having
@@ -14,53 +20,44 @@
 import { useMemo, useState } from "react";
 import {
   CAPABILITIES, NEVER_AUTONOMOUS, authorize, composeEnvelope,
-  createAuthorityDraft, renderPreview, resolveScopeSelection, suggestFromEvidence,
+  createAuthorityDraft, policyIdentityOf, renderPreview, resolveScopeSelection,
 } from "./control/authority-draft.js";
-import { SCOPE_CATALOGUE, fixtureStates } from "./control/authority-fixture.js";
 import "./authority.css";
 
 const GRANTABLE = Object.keys(CAPABILITIES).filter((k) => !NEVER_AUTONOMOUS.includes(k));
 
-// Owner-authored evidence, from the fixture. A suggestion may only be seeded by
-// something the owner actually wrote.
-const EVIDENCE = [{
-  authored_by: "owner", ref: "brief 2026-08-09",
-  text: "Keep the portfolio's surfaces working while I am not looking at them.",
-}];
-
-const STEPS = ["choose", "goal", "capabilities", "limits", "review", "authorized"];
-
 export default function AuthorityShell({ adapter }) {
-  const params = new URLSearchParams(window.location.search);
-  const fixtures = fixtureStates();
-  const initial = params.get("state") || "F1";
   // The only capability distinction between the two routes. A review adapter
-  // reports false because it has no writer, not because it was told to behave.
+  // reports false because it HAS no writer, not because it was told to behave.
   const canWrite = Boolean(adapter?.canWriteAuthority);
-  const forcedStep = params.get("step");
 
-  const [path, setPath] = useState(initial === "F4" || initial === "F5" ? "canary" : initial === "F1" ? null : "goal");
-  const [step, setStep] = useState(() => {
-    if (forcedStep && STEPS.includes(forcedStep)) return forcedStep;
-    if (initial === "F3" || initial === "F5" || initial === "F6" || initial === "F7") return "authorized";
-    if (initial === "F2" || initial === "F4") return "goal";
-    return "choose";
-  });
+  // Everything below comes from the adapter. No fixture import, and no
+  // interpretation of `?state=` — those URL controls belong exclusively to the
+  // review route, which resolves them before constructing its adapter.
+  const seed = adapter?.seedDraft?.() ?? null;
+  const existing = adapter?.readCurrentAuthority?.() ?? null;
+  const catalogue = adapter?.scopeCatalogue?.() ?? [];
+  const suggestions = adapter?.suggestions?.() ?? [];
+  const startStep = adapter?.initialStep?.() ?? (existing ? "authorized" : "choose");
 
-  const seed = fixtures[Object.keys(fixtures).find((k) => k.startsWith(initial))] || fixtures.F1_no_authority;
-  const [draft, setDraft] = useState(() => seed.draft || createAuthorityDraft({
-    draft_id: "review", kind: "persistent_goal", statement: "", scope_refs: [],
+  const [path, setPath] = useState(adapter?.initialPath?.() ?? null);
+  const [step, setStep] = useState(startStep);
+  const [draft, setDraft] = useState(() => seed || createAuthorityDraft({
+    draft_id: "new", kind: "persistent_goal", statement: "", scope_refs: [],
   }));
-  const [scopeText, setScopeText] = useState(seed.draft ? "DataScape / Continuity" : "");
-  const [successCondition, setSuccessCondition] = useState(seed.draft?.success_condition || "");
-  const [revoked, setRevoked] = useState(Boolean(seed.revoked));
-  const [narrowed, setNarrowed] = useState(Boolean(seed.narrowed_to));
+  const [scopeText, setScopeText] = useState(seed?.scope_label || "");
+  const [successCondition, setSuccessCondition] = useState(seed?.success_condition || "");
+  const [authority, setAuthority] = useState(existing);
+  const [pending, setPending] = useState(false);
+  const [failure, setFailure] = useState(null);
   const [paused, setPaused] = useState(false);
+
+  const revoked = authority?.state === "revoked";
+  const narrowed = authority?.state === "narrowed";
 
   const envelope = useMemo(() => composeEnvelope(draft.allowed_capabilities), [draft.allowed_capabilities]);
   const preview = useMemo(() => renderPreview(draft, envelope), [draft, envelope]);
-  const scope = useMemo(() => resolveScopeSelection(scopeText, SCOPE_CATALOGUE), [scopeText]);
-  const suggestions = useMemo(() => suggestFromEvidence(EVIDENCE), []);
+  const scope = useMemo(() => resolveScopeSelection(scopeText, catalogue), [scopeText, catalogue]);
 
   // Called only to display whether the draft WOULD be accepted. The actor is
   // deliberately "review", so this can never produce a ruling.
@@ -76,6 +73,48 @@ export default function AuthorityShell({ adapter }) {
       ? draft.allowed_capabilities.filter((c) => c !== name)
       : [...draft.allowed_capabilities, name],
   });
+
+  /**
+   * The ONE authority-creating control.
+   *
+   * It sends the EXACT policy identity the owner just read, waits for a
+   * committed result, then re-reads the persisted authority. It never
+   * optimistically shows "Active", and it never advances a React step in place
+   * of a transaction — that was the defect that made the previous build a mock
+   * wearing a live binding.
+   */
+  async function onAuthorize() {
+    setFailure(null);
+    if (!canWrite) {
+      // The review route simulates, and says so on screen. It has no
+      // `authorize` to call.
+      setAuthority(adapter?.simulate?.("authorize") ?? { state: "authorized", revision: 1 });
+      setStep("authorized");
+      return;
+    }
+    setPending(true);
+    try {
+      const result = await adapter.authorize({
+        operation_id: draft.operation_id || `auth-${draft.draft_id}-${policyIdentityOf(draft)}`,
+        authorization_action: path === "canary" ? "authorize_bounded_task" : "authorize_goal",
+        draft: { ...draft, scope_refs: scope.resolved ? scope.scope_refs : [], success_condition: successCondition || undefined },
+        policy_identity: policyIdentityOf({ ...draft, scope_refs: scope.resolved ? scope.scope_refs : [] }),
+        source_exception_id: adapter.readBlocker?.()?.id ?? null,
+      });
+      if (!result?.ok) {
+        setFailure(result?.failure === "stale_preview"
+          ? "This changed since you reviewed it. Review the updated authority before authorizing."
+          : result?.reason || "the transaction did not complete");
+        if (result?.failure === "stale_preview") setStep("review");
+        return;
+      }
+      // Read the PERSISTED state back rather than assuming the draft succeeded.
+      setAuthority(await adapter.readCurrentAuthority(result.goal_id));
+      setStep("authorized");
+    } finally {
+      setPending(false);
+    }
+  }
 
   const ready = Boolean(draft.statement.trim().length >= 8)
     && scope.resolved
@@ -146,7 +185,7 @@ export default function AuthorityShell({ adapter }) {
                   setScopeText(e.target.value);
                   // The preview must reflect what she actually typed, not the
                   // scope the fixture happened to start with.
-                  const next = resolveScopeSelection(e.target.value, SCOPE_CATALOGUE);
+                  const next = resolveScopeSelection(e.target.value, catalogue);
                   set({
                     scope_refs: next.resolved ? next.scope_refs : [],
                     scope_label: next.resolved ? next.scope_label : null,
@@ -261,11 +300,20 @@ export default function AuthorityShell({ adapter }) {
             <Ask title="This is what you would be granting." hint="Read it once. Nothing has been granted yet." />
             <Preview preview={preview} />
             <div className="au__acts">
-              <button className="au-btn au-btn--go" type="button" disabled={!ready} onClick={() => setStep("authorized")}>
-                {path === "canary" ? "Authorize this one task" : "Authorize"}
+              <button
+                className="au-btn au-btn--go" type="button" disabled={!ready || pending}
+                onClick={onAuthorize}
+              >
+                {pending ? "Authorizing…" : path === "canary" ? "Authorize this one task" : "Authorize"}
               </button>
-              <button className="au-btn au-btn--ghost" type="button" onClick={() => setStep("limits")}>Back</button>
+              <button className="au-btn au-btn--ghost" type="button" onClick={() => setStep("limits")} disabled={pending}>Back</button>
             </div>
+            {failure && (
+              <p className="au__failure">
+                <b>Nothing was authorized.</b> {failure}
+                {failure.includes("changed since you reviewed") ? "" : " Try again."}
+              </p>
+            )}
             {!canWrite && (
               <p className="au__reviewnote">
                 Review mode. This screen is bound to fixture state and cannot grant real authority —

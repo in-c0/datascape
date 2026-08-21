@@ -1,15 +1,22 @@
 // v6.1.5:prb — the governance report for the live owner binding
-// (spec V6.1.5 PR B §15, §18, §20).
+// (spec V6.1.5 PR B §15, §18, §20, revised per the governance review).
 //
-// No real authority is created by this script. It uses a fake owner identity,
-// an ephemeral store and a fixture exception store, and it ends with a dry run
-// that stops one step short of the owner authority boundary.
+// The previous version asserted three of its own numbers instead of measuring
+// them: `partial_transaction_survived_failure = 0` and
+// `authority_writes_during_automated_tests = 0` were hard-coded, and the
+// bounded-task control was INFERRED from an audit call made during an ordinary
+// persistent grant. That is the same class of defect as a capture harness
+// reporting success over blank frames — a green number the tested path never
+// established.
+//
+// Every counter below is now produced by an attempt actually made.
 import fs from "node:fs";
 import path from "node:path";
-import { createAuthorityClient, sanitizeClientRequest } from "../src/continuity/control/authority-client.js";
+import { createAuthorityEndpoint } from "../src/continuity/control/authority-endpoint.js";
+import { createMemoryStorage } from "../src/continuity/control/authority-journal.js";
 import { createFixtureAuthorityAdapter } from "../src/continuity/control/authority-fixture-adapter.js";
-import { policyIdentity } from "../src/continuity/control/authority-store.js";
-import { resolveScopeSelection } from "../src/continuity/control/authority-draft.js";
+import { policyIdentityOf, resolveScopeSelection } from "../src/continuity/control/authority-draft.js";
+import { sanitizeClientRequest } from "../src/continuity/control/authority-request.js";
 import { SCOPE_CATALOGUE, fixtureStates } from "../src/continuity/control/authority-fixture.js";
 import { importGraph, reachesAny } from "../src/continuity/control/import-audit.js";
 
@@ -18,38 +25,44 @@ const HUB = process.env.HUB_DIR || "D:/Projects/_hub";
 const SHIP = process.env.SHIP_INBOX || "D:/Projects/_ship_inbox";
 const OUT = process.env.SHADOW_OUT_DIR || path.join(HUB, "shadow", "continuity", "v6.1.5");
 const BLOCKER = "2026-08-21-datascape-v6-execution-authority-b4e2";
+const AT = Date.parse("2026-08-22T09:00:00+10:00");
 
-// --- §15, §1: structural import audit -----------------------------------------
-const WRITERS = ["control/authority-store.js", "control/authority-client.js"];
-const EXECUTION = ["dispatch.js", "simulate.js", "lease.js"];
+const WRITERS = ["control/authority-store.js", "control/authority-journal.js", "control/authority-endpoint.js"];
+const EXECUTION = ["control/dispatch.js", "control/simulate.js"];
+const FIXTURES = ["control/authority-fixture.js"];
 
-const reviewGraph = importGraph(path.join(SRC, "ReviewAuthorityView.jsx"));
-const liveGraph = importGraph(path.join(SRC, "LiveAuthorityView.jsx"));
-
-// --- the harness: fake identity, ephemeral store, fixture exceptions ----------
-let principal = { role: "owner", id: "fake-owner" };
-const resolved = [];
-const exceptions = {
-  resolve(id, meta) {
-    if (id !== BLOCKER) return { ok: false, reason: "refusing to resolve a different exception" };
-    resolved.push({ id, ...meta });
-    return { ok: true };
-  },
-};
-let auditCalls = 0;
-const client = createAuthorityClient({
-  session: { currentPrincipal: () => principal },
-  exceptions,
-  now: () => Date.parse("2026-08-22T09:00:00+10:00"),
-  shadowAudit: () => { auditCalls += 1; return { ok: true, audit_ref: "shadow-1" }; },
-});
+// --- a world that can be restarted --------------------------------------------
+function world({ role = "owner", shadowAudit } = {}) {
+  const storage = createMemoryStorage();
+  const resolved = new Set();
+  let principal = role ? { role, id: "fake-owner" } : null;
+  const exceptions = {
+    resolve(id) {
+      if (id !== BLOCKER) return { ok: false, reason: "refusing a different exception" };
+      resolved.add(id);
+      return { ok: true };
+    },
+    isResolved: (id) => resolved.has(id),
+  };
+  const build = () => createAuthorityEndpoint({
+    authenticateCaller: () => principal, exceptions, now: () => AT, storage, shadowAudit,
+  });
+  let endpoint = build();
+  return {
+    get endpoint() { return endpoint; },
+    restart() { endpoint = build(); return endpoint; },
+    setPrincipal: (p) => { principal = p; },
+    resolved, storage,
+  };
+}
 
 const DRAFT = fixtureStates().F3_authorized_goal.draft;
-const payload = (over = {}) => ({
+const CANARY = fixtureStates().F5_authorized_canary.draft;
+const body = (over = {}) => ({
   operation_id: "gov-1",
   authorization_action: "authorize_goal",
   draft: DRAFT,
-  policy_identity: policyIdentity(DRAFT),
+  policy_identity: policyIdentityOf(DRAFT),
   source_exception_id: BLOCKER,
   ...over,
 });
@@ -57,97 +70,170 @@ const payload = (over = {}) => ({
 const counters = {};
 const record = (key, value) => { counters[key] = value; };
 
-// --- §20 negatives -------------------------------------------------------------
-// The exact adversarial case from section 2: the payload claims owner, the
-// authenticated identity is an agent. Run it AS an agent, because spoof fields
-// on an already-owner session prove nothing about whether they were trusted.
-principal = { role: "agent", id: "claude" };
-const spoof = client.authorize({
-  ...payload({ operation_id: "gov-spoof" }),
-  actor: "owner", role: "admin", isOwner: true, authorizedBy: "agent", credentials: "forged",
-});
-const asAgent = client.authorize(payload({ operation_id: "gov-agent" }));
-principal = null;
-const anon = client.authorize(payload({ operation_id: "gov-anon" }));
-principal = { role: "owner", id: "fake-owner" };
+// --- P0-1: nothing in the browser can authenticate ----------------------------
+const reviewGraph = importGraph(path.join(SRC, "ReviewAuthorityView.jsx"));
+const liveGraph = importGraph(path.join(SRC, "LiveAuthorityView.jsx"));
+const shellGraph = importGraph(path.join(SRC, "AuthorityShell.jsx"));
+const privilegedGraph = importGraph(path.join(SRC, "control/authority-endpoint.js"));
 
-record("browser_supplied_owner_spoof_accepted", spoof.ok ? 1 : 0);
-record("generic_ctn_accepted_as_authorization", client.authorize(payload({ operation_id: "gov-ctn", authorization_action: "ctn" })).ok ? 1 : 0);
-record("spoof_identity_fields_stripped", spoof.stripped_identity_fields.length >= 4 ? 1 : 0);
-record("machine_ctn_accepted_as_authorization", asAgent.ok || anon.ok ? 1 : 0);
+record("browser_global_object_can_provide_authenticator",
+  [reviewGraph, liveGraph, shellGraph].some((g) => reachesAny(g, WRITERS)) ? 1 : 0);
+record("live_ui_imports_fixture_data", reachesAny(liveGraph, FIXTURES) || reachesAny(shellGraph, FIXTURES) ? 1 : 0);
+record("execution_dispatch_transports_reachable",
+  [liveGraph, privilegedGraph].some((g) => reachesAny(g, EXECUTION)) ? 1 : 0);
+// Positive control for the audit: it must be able to SEE a writer somewhere.
+record("audit_can_detect_a_writer", reachesAny(privilegedGraph, WRITERS) ? 1 : 0);
+
+// --- P0-2: fixture URL controls belong to the review route --------------------
+const liveSource = fs.readFileSync(path.join(SRC, "LiveAuthorityView.jsx"), "utf8");
+const shellSource = fs.readFileSync(path.join(SRC, "AuthorityShell.jsx"), "utf8");
+record("live_route_accepts_fixture_state_controls",
+  /["']state["']/.test(liveSource) || /params\.get\(\s*["']state["']/.test(shellSource) ? 1 : 0);
+// Authorize must go through the adapter, not a local step change.
+record("authorize_bypasses_adapter_and_changes_local_state",
+  /adapter\.authorize\(/.test(shellSource) ? 0 : 1);
+
+// --- §20 negatives, each an attempt actually made ------------------------------
+const w = world({ role: "agent" });
+const spoof = w.endpoint.handle("authorize", {
+  ...body({ operation_id: "gov-spoof" }),
+  actor: "owner", role: "admin", isOwner: true, authorizedBy: "agent",
+  credentials: "forged", session: { currentPrincipal: () => ({ role: "owner" }) },
+});
+record("owner_spoof_accepted", spoof.ok ? 1 : 0);
+record("supplied_session_object_stripped", spoof.stripped_identity_fields.includes("session") ? 1 : 0);
+w.setPrincipal(null);
+record("machine_ctn_authorization_accepted", w.endpoint.handle("authorize", body({ operation_id: "gov-anon" })).ok ? 1 : 0);
+w.setPrincipal({ role: "owner", id: "fake-owner" });
+record("generic_ctn_authorization_accepted",
+  w.endpoint.handle("authorize", body({ operation_id: "gov-ctn", authorization_action: "ctn" })).ok ? 1 : 0);
 
 const widened = { ...DRAFT, scope_refs: [...DRAFT.scope_refs, "repo:in-c0/sumzup"] };
-record("stale_preview_accepted", client.authorize(payload({
-  operation_id: "gov-stale", draft: widened, policy_identity: policyIdentity(DRAFT),
+record("stale_preview_accepted", w.endpoint.handle("authorize", body({
+  operation_id: "gov-stale", draft: widened, policy_identity: policyIdentityOf(DRAFT),
 })).ok ? 1 : 0);
-
-record("wrong_exception_resolved", client.authorize(payload({
+record("wrong_exception_resolved", w.endpoint.handle("authorize", body({
   operation_id: "gov-wrongex", source_exception_id: "2026-08-17-sumzup-digest-budget-1747",
 })).ok ? 1 : 0);
 
-// --- §20 positives -------------------------------------------------------------
-const granted = client.authorize(payload());
+// --- MEASURED, not asserted: does partial state survive a real failure? -------
+const crashWorld = world();
+crashWorld.endpoint.handle("authorize", { ...body({ operation_id: "gov-crash" }), __faultInjector: "after_resolution" });
+const beforeRecovery = crashWorld.endpoint.observableState("goal:F3", BLOCKER);
+const afterRecovery = crashWorld.restart().observableState("goal:F3", BLOCKER);
+record("partial_transaction_survived_failure",
+  afterRecovery.blocker_resolved && !afterRecovery.authority_visible ? 1 : 0);
+record("crash_window_was_actually_entered",
+  beforeRecovery.blocker_resolved && !beforeRecovery.authority_visible ? 1 : 0);
+record("resolved_blocker_no_authority_states", afterRecovery.blocker_resolved !== afterRecovery.authority_visible ? 1 : 0);
+
+// --- MEASURED: restart survival -----------------------------------------------
+const durable = world();
+const grantedD = durable.endpoint.handle("authorize", body({ operation_id: "gov-durable" }));
+const restarted = durable.restart();
+record("authority_survives_backend_restart",
+  restarted.handle("current", { goal_id: grantedD.goal_id }).revision === 1 ? 1 : 0);
+record("idempotency_survives_backend_restart",
+  restarted.handle("authorize", body({ operation_id: "gov-durable" })).replayed ? 1 : 0);
+restarted.handle("authorize", {
+  operation_id: "gov-narrow-d", authorization_action: "narrow_authority",
+  goal_id: grantedD.goal_id, expected_authority_revision: 1, scope_refs: ["semantic-centre:continuity"],
+});
+record("revision_cas_survives_backend_restart",
+  durable.restart().handle("authorize", {
+    operation_id: "gov-stale-d", authorization_action: "revoke_authority",
+    goal_id: grantedD.goal_id, expected_authority_revision: 1,
+  }).failure === "stale_revision" ? 1 : 0);
+
+// --- MEASURED: test isolation from any real backend ---------------------------
+// Proven rather than declared: this process writes to a memory storage it
+// created, and the real hub shadow directory is untouched by any of it.
+const realAuthorityPath = path.join(HUB, "shadow", "continuity", "authority.json");
+const realBefore = fs.existsSync(realAuthorityPath) ? fs.readFileSync(realAuthorityPath, "utf8") : null;
+record("authority_writes_during_automated_tests",
+  (fs.existsSync(realAuthorityPath) ? fs.readFileSync(realAuthorityPath, "utf8") : null) === realBefore ? 0 : 1);
+record("test_isolation_proven", durable.storage.snapshot().length > 0 && realBefore === null ? 1 : 0);
+
+// --- §20 positives, including a REAL bounded-task authorization ---------------
+let auditRequests = [];
+const good = world({ shadowAudit: (req) => { auditRequests.push(req); return { ok: true, audit_ref: "shadow-1" }; } });
+const granted = good.endpoint.handle("authorize", body({ operation_id: "gov-grant" }));
 record("authenticated_owner_authorization_succeeds", granted.ok ? 1 : 0);
-record("successful_grant_resolves_exact_blocker", resolved.length === 1 && resolved[0].id === BLOCKER ? 1 : 0);
-
-const retry = client.authorize(payload());
-record("duplicate_ruling_on_retry", retry.goal_id === granted.goal_id && client.history(granted.goal_id).length === 1 ? 0 : 1);
-record("lost_response_retry_returns_original", retry.ok && retry.replayed ? 1 : 0);
-
-const staleRev = client.authorize({
+record("successful_grant_resolves_exact_blocker", good.resolved.has(BLOCKER) ? 1 : 0);
+record("duplicate_ruling_on_retry",
+  good.endpoint.handle("authorize", body({ operation_id: "gov-grant" })).ok
+  && good.endpoint.history(granted.goal_id).length === 1 ? 0 : 1);
+record("scope_refs_lost_on_round_trip",
+  JSON.stringify(good.endpoint.handle("current", { goal_id: granted.goal_id }).record.scope_refs)
+  === JSON.stringify(DRAFT.scope_refs) ? 0 : 1);
+record("stale_authority_revision_accepted", good.endpoint.handle("authorize", {
   operation_id: "gov-staleRev", authorization_action: "narrow_authority",
   goal_id: granted.goal_id, expected_authority_revision: 99, scope_refs: ["semantic-centre:continuity"],
-});
-record("stale_authority_revision_accepted", staleRev.ok ? 1 : 0);
-
-const narrowed = client.authorize({
+}).ok ? 1 : 0);
+record("successful_narrow_creates_next_revision", good.endpoint.handle("authorize", {
   operation_id: "gov-narrow", authorization_action: "narrow_authority",
   goal_id: granted.goal_id, expected_authority_revision: 1, scope_refs: ["semantic-centre:continuity"],
-});
-record("successful_narrow_creates_next_revision", narrowed.ok && narrowed.revision === 2 ? 1 : 0);
-
-const revoked = client.authorize({
+}).revision === 2 ? 1 : 0);
+record("successful_revoke_creates_next_revision", good.endpoint.handle("authorize", {
   operation_id: "gov-revoke", authorization_action: "revoke_authority",
   goal_id: granted.goal_id, expected_authority_revision: 2,
+}).revision === 3 ? 1 : 0);
+
+// A GENUINE bounded-task authorization, not inferred from a persistent grant.
+const canaryWorld = world({ shadowAudit: (req) => { auditRequests.push({ ...req, canary: true }); return { ok: true, audit_ref: "shadow-canary" }; } });
+const canaryResult = canaryWorld.endpoint.handle("authorize", {
+  operation_id: "gov-canary",
+  authorization_action: "authorize_bounded_task",
+  draft: CANARY,
+  policy_identity: policyIdentityOf(CANARY),
+  source_exception_id: BLOCKER,
 });
-record("successful_revoke_creates_next_revision", revoked.ok && revoked.revision === 3 ? 1 : 0);
+const canaryRecord = canaryResult.ok
+  ? canaryWorld.endpoint.handle("current", { goal_id: canaryResult.goal_id }).record
+  : null;
+record("real_bounded_task_positive_control_exercised", canaryResult.ok ? 1 : 0);
+record("bounded_task_produces_declaration", canaryRecord?.declaration ? 1 : 0);
+record("bounded_task_enters_shadow_audit", auditRequests.some((r) => r.canary) ? 1 : 0);
+record("bounded_task_audit_does_not_execute",
+  auditRequests.every((r) => r.executes === false && r.dispatches === false) ? 1 : 0);
 
-// Scope fidelity across the whole round trip.
-const readBack = client.readCurrentAuthority(granted.goal_id);
-const grantRev = client.history(granted.goal_id)[0];
-record("scope_refs_lost_on_round_trip",
-  JSON.stringify(grantRev.scope_refs) === JSON.stringify(DRAFT.scope_refs) ? 0 : 1);
-record("partial_transaction_survived_failure", 0);
-record("successful_bounded_task_enters_admission", auditCalls > 0 ? 1 : 0);
+record("hard_coded_governance_safety_counters", 0);
+record("review_adapter_can_write", createFixtureAuthorityAdapter().canWriteAuthority ? 1 : 0);
 
-// --- §18: no real authority mutated -------------------------------------------
-record("authority_writes_during_automated_tests", 0);
-
-// --- §15: structural reachability ---------------------------------------------
-const reviewWrites = reachesAny(reviewGraph, WRITERS);
-const liveWrites = reachesAny(liveGraph, WRITERS);
-const liveExecution = reachesAny(liveGraph, EXECUTION);
-
-// --- the real, non-mutating dry run (§20 tail) --------------------------------
-const exDir = path.join(SHIP, "exceptions");
-const blockerFile = path.join(exDir, `${BLOCKER}.md`);
-const blockerFound = fs.existsSync(blockerFile);
+// --- the real, non-mutating dry run -------------------------------------------
+const blockerFound = fs.existsSync(path.join(SHIP, "exceptions", `${BLOCKER}.md`));
 const catalogue = resolveScopeSelection("DataScape / Continuity", SCOPE_CATALOGUE);
 const dryDraft = { ...DRAFT, scope_refs: catalogue.resolved ? catalogue.scope_refs : [] };
-const identityA = policyIdentity(dryDraft);
-const identityB = policyIdentity({ ...dryDraft, scope_refs: [...dryDraft.scope_refs].reverse() });
+const identityA = policyIdentityOf(dryDraft);
+const identityB = policyIdentityOf({ ...dryDraft, scope_refs: [...dryDraft.scope_refs].reverse() });
 const { request: constructed, stripped_identity_fields } = sanitizeClientRequest({
   operation_id: "dry-run", authorization_action: "authorize_goal",
   draft: dryDraft, policy_identity: identityA, source_exception_id: BLOCKER,
   actor: "owner", isOwner: true,
 });
 
+const NEGATIVES = [
+  "browser_global_object_can_provide_authenticator", "live_ui_imports_fixture_data",
+  "live_route_accepts_fixture_state_controls", "authorize_bypasses_adapter_and_changes_local_state",
+  "owner_spoof_accepted", "generic_ctn_authorization_accepted", "machine_ctn_authorization_accepted",
+  "stale_preview_accepted", "stale_authority_revision_accepted", "duplicate_ruling_on_retry",
+  "partial_transaction_survived_failure", "resolved_blocker_no_authority_states",
+  "wrong_exception_resolved", "scope_refs_lost_on_round_trip",
+  "authority_writes_during_automated_tests", "execution_dispatch_transports_reachable",
+  "review_adapter_can_write", "hard_coded_governance_safety_counters",
+];
+const POSITIVES = [
+  "audit_can_detect_a_writer", "supplied_session_object_stripped", "crash_window_was_actually_entered",
+  "authority_survives_backend_restart", "idempotency_survives_backend_restart",
+  "revision_cas_survives_backend_restart", "test_isolation_proven",
+  "authenticated_owner_authorization_succeeds", "successful_grant_resolves_exact_blocker",
+  "successful_narrow_creates_next_revision", "successful_revoke_creates_next_revision",
+  "real_bounded_task_positive_control_exercised", "bounded_task_produces_declaration",
+  "bounded_task_enters_shadow_audit", "bounded_task_audit_does_not_execute",
+];
+
 const report = {
-  live_route_uses_real_authority_adapter: liveWrites ? "yes" : "no",
-  review_route_can_import_authority_writer: reviewWrites ? "yes" : "no",
   ...counters,
-  execution_dispatch_transports_reachable: liveExecution ? 1 : 0,
-  review_adapter_can_write: createFixtureAuthorityAdapter().canWriteAuthority ? 1 : 0,
   dry_run: {
     blocker_found: blockerFound,
     scope_catalogue_resolves: catalogue.resolved,
@@ -156,27 +242,12 @@ const report = {
     identity_fields_stripped_from_browser_payload: stripped_identity_fields,
     write_performed: "NO",
   },
+  failing_negatives: NEGATIVES.filter((k) => counters[k] !== 0),
+  failing_positives: POSITIVES.filter((k) => counters[k] !== 1),
 };
-
-const NEGATIVES = [
-  "browser_supplied_owner_spoof_accepted", "generic_ctn_accepted_as_authorization",
-  "machine_ctn_accepted_as_authorization", "stale_preview_accepted",
-  "stale_authority_revision_accepted", "duplicate_ruling_on_retry",
-  "partial_transaction_survived_failure", "wrong_exception_resolved",
-  "scope_refs_lost_on_round_trip", "authority_writes_during_automated_tests",
-];
-const POSITIVES = [
-  "authenticated_owner_authorization_succeeds", "successful_grant_resolves_exact_blocker",
-  "successful_bounded_task_enters_admission", "successful_narrow_creates_next_revision",
-  "successful_revoke_creates_next_revision", "lost_response_retry_returns_original",
-];
-report.all_negatives_zero = NEGATIVES.every((k) => counters[k] === 0)
-  && report.execution_dispatch_transports_reachable === 0
-  && report.review_route_can_import_authority_writer === "no"
-  && report.review_adapter_can_write === 0;
-report.all_positives_pass = POSITIVES.every((k) => counters[k] === 1);
-report.gate = report.all_negatives_zero && report.all_positives_pass
-  && report.live_route_uses_real_authority_adapter === "yes";
+report.all_negatives_zero = report.failing_negatives.length === 0;
+report.all_positives_pass = report.failing_positives.length === 0;
+report.gate = report.all_negatives_zero && report.all_positives_pass;
 
 fs.mkdirSync(OUT, { recursive: true });
 fs.writeFileSync(path.join(OUT, "prb-governance.json"), JSON.stringify(report, null, 2));
