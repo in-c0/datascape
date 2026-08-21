@@ -167,29 +167,33 @@ test("V6.1.6: an amendment receipt is bound to the revision it was prepared agai
   const prepared = h.endpoint.handle("prepare", { draft: DRAFT, authorization_action: "authorize_goal" });
   const granted = h.endpoint.handle("authorize", {
     operation_id: "op-grant", authorization_action: "authorize_goal",
-    preview_receipt: prepared.preview_receipt, source_exception_id: BLOCKER,
+    preview_receipt: prepared.preview_receipt,
   });
 
-  // Prepare a narrow against rev 1, then let rev 1 become rev 2 elsewhere.
-  const narrowReceipt = h.endpoint.handle("prepare", {
-    draft: DRAFT, authorization_action: "narrow_authority", goal_id: granted.goal_id,
+  // Two reviews of the same narrow, both prepared against rev 1.
+  const first = h.endpoint.handle("prepare", {
+    authorization_action: "narrow_authority", scope_refs: ["semantic-centre:continuity"],
   });
-  const other = h.endpoint.handle("prepare", {
-    draft: DRAFT, authorization_action: "narrow_authority", goal_id: granted.goal_id,
+  const second = h.endpoint.handle("prepare", {
+    authorization_action: "narrow_authority", scope_refs: ["semantic-centre:continuity"],
   });
+  assert.equal(first.base_authority_revision, 1);
+
+  // One of them lands, taking the authority to rev 2.
   assert.equal(h.endpoint.handle("authorize", {
     operation_id: "op-n1", authorization_action: "narrow_authority",
-    preview_receipt: other.preview_receipt, goal_id: granted.goal_id,
-    expected_authority_revision: 1, scope_refs: ["semantic-centre:continuity"],
-  }).ok, true);
+    preview_receipt: second.preview_receipt, scope_refs: ["semantic-centre:continuity"],
+  }).revision, 2);
 
+  // The other was reviewed against rev 1 and must not apply to rev 2.
   const stale = h.endpoint.handle("authorize", {
     operation_id: "op-n2", authorization_action: "narrow_authority",
-    preview_receipt: narrowReceipt.preview_receipt, goal_id: granted.goal_id,
-    expected_authority_revision: 2, scope_refs: ["semantic-centre:continuity"],
+    preview_receipt: first.preview_receipt, scope_refs: ["semantic-centre:continuity"],
   });
-  assert.equal(stale.failure, "stale_receipt_revision",
+  assert.equal(stale.ok, false);
+  assert.equal(stale.failure, "stale_revision",
     "a review prepared against rev 1 may not authorize a change to rev 2");
+  assert.equal(h.endpoint.handle("current", { goal_id: granted.goal_id }).revision, 2);
 });
 
 // ---- §4: the owner session boundary --------------------------------------------
