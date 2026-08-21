@@ -19,7 +19,6 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { describePurpose, requiresOwnerPresence } from "./owner-presence.js";
-import { registerVerifiedRuling } from "./owner-gate.js";
 
 /** The status an owner ruling is a ruling ON. */
 export const OWNER_GATED_STATUS = "blocked-on-owner";
@@ -524,10 +523,6 @@ export async function performOwnerRuling({
     return { ok: false, failure: "presence_not_valid", reason: consumed.reason, prompt_shown: true, mutation_performed: false };
   }
 
-  // The store's owner gate accepts a ruling ref only if THIS process produced
-  // it through verified presence. Registered before the mutation, so a store
-  // path that consults the gate sees it.
-  registerVerifiedRuling(mutation.operation_ref);
   const result = applyMutation(mutation);
   journal.complete(mutation, result);
   return {

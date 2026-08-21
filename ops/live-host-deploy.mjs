@@ -33,7 +33,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 
-import { GUARD_MARKER, isPatched, patchExceptionSource } from "./exception-guard-patch.mjs";
+import { GUARD_MARKER, isPatched } from "./exception-guard-patch.mjs";
 
 // Read at CALL time, not at import time. Capturing these when the module first
 // loaded meant whichever caller imported it first fixed the paths for everyone
@@ -60,7 +60,9 @@ const BACKUPS = () => path.join(stateDir(), "backups");
  * on, with the repo path it comes from and where it lands in the live host.
  */
 export const ARTIFACT = [
+  // The entry point catchup already spawns. It gates, then imports the core.
   { dest: "briefing-server.mjs", source: "ops/live-host/briefing-server.mjs" },
+  { dest: "_continuity/briefing-server-core.mjs", source: "ops/live-host/briefing-server-core.mjs" },
   { dest: "_continuity/owner-ruling.js", source: "src/continuity/control/owner-ruling.js" },
   { dest: "_continuity/owner-presence.js", source: "src/continuity/control/owner-presence.js" },
   { dest: "_continuity/owner-ruling-policy.js", source: "src/continuity/control/owner-ruling-policy.js" },
@@ -84,6 +86,9 @@ export const HOST_DEPENDENCIES = ["exception.mjs", "briefing.mjs", "mustread.mjs
  * path, because deployment never touched it. It does now.
  */
 export const GUARDED_STORE = "exception.mjs";
+
+/** Where the reviewed guard transformation lives in the repository. */
+export const GUARD_SOURCE = "ops/exception-guard-patch.mjs";
 
 export const sha = (text) =>
   crypto.createHash("sha256").update(String(text).replace(/\r\n/g, "\n")).digest("hex");
@@ -217,6 +222,42 @@ export function verifyDeployment({ liveDir = liveDir_() } = {}) {
   };
 }
 
+/**
+ * Load the guard transformation AS OF a commit.
+ *
+ * The artifact bytes already came from `git cat-file`, but the transformation
+ * that produces the guarded store did not — it was the working tree's copy,
+ * imported at the top of this file, and the manifest recorded the working
+ * tree's hash as if it were provenance. An edited checkout could therefore
+ * change what a "reviewed" deployment actually installed.
+ *
+ * So the reviewed bytes are materialized to a temp file and imported from
+ * there. Nothing in the working tree participates in the transformation.
+ */
+async function reviewedGuard(commit) {
+  const bytes = gitBlob(commit, GUARD_SOURCE);
+  if (bytes === null) return { ok: false, reason: `${GUARD_SOURCE} does not exist at ${commit.slice(0, 12)}` };
+
+  const working = read(path.join(repoDir(), GUARD_SOURCE));
+  if (working !== null && sha(working) !== sha(bytes)) {
+    // Refuse rather than quietly proceed. Materializing from the blob already
+    // makes the edit harmless, but an operator deploying from a tree whose
+    // security transformation they have modified is almost certainly not
+    // deploying what they believe they are.
+    return {
+      ok: false,
+      reason: `the working-tree ${GUARD_SOURCE} differs from ${commit.slice(0, 12)}; `
+        + "commit or restore it before deploying a security transformation",
+      dirty: true,
+    };
+  }
+
+  const file = path.join(os.tmpdir(), `continuity-guard-${sha(bytes).slice(0, 16)}.mjs`);
+  fs.writeFileSync(file, bytes);
+  const module = await import(`file:///${file.split(path.sep).join("/")}`);
+  return { ok: true, patch: module.patchExceptionSource, hash: sha(bytes) };
+}
+
 /** The live store's bytes, and whether the owner gate is installed in them. */
 export function guardedStoreState({ liveDir = liveDir_() } = {}) {
   const raw = read(path.join(liveDir, GUARDED_STORE));
@@ -304,7 +345,7 @@ export function preflight({ liveDir = liveDir_() } = {}) {
  * Backs up every file it is about to replace first, so a rollback target exists
  * even for files that arrived before this mechanism did.
  */
-export function deploy({ commit, at = null, dryRun = true, liveDir = liveDir_() } = {}) {
+export async function deploy({ commit, at = null, dryRun = true, liveDir = liveDir_() } = {}) {
   const resolved = resolveCommit(commit);
   if (!resolved) return { ok: false, reason: `not a commit in this repository: ${commit}` };
 
@@ -319,6 +360,8 @@ export function deploy({ commit, at = null, dryRun = true, liveDir = liveDir_() 
 
   const changes = staged.some((f) => f.live_hash !== f.hash);
   if (dryRun) {
+    const dryGuard = await reviewedGuard(resolved);
+    if (!dryGuard.ok) return { ok: false, dry_run: true, reason: dryGuard.reason, dirty_guard: Boolean(dryGuard.dirty) };
     return {
       ok: true, dry_run: true, commit: resolved, changes,
       files: staged.map((f) => ({ dest: f.dest, hash: f.hash, live_hash: f.live_hash, would_write: f.target })),
@@ -333,7 +376,9 @@ export function deploy({ commit, at = null, dryRun = true, liveDir = liveDir_() 
   const storePath = path.join(liveDir, GUARDED_STORE);
   const storeRaw = read(storePath);
   if (storeRaw === null) return { ok: false, reason: `the host exception store is missing at ${storePath}` };
-  const guard = patchExceptionSource(storeRaw);
+  const reviewed = await reviewedGuard(resolved);
+  if (!reviewed.ok) return { ok: false, reason: reviewed.reason, dirty_guard: Boolean(reviewed.dirty) };
+  const guard = reviewed.patch(storeRaw);
   if (!guard.ok) return { ok: false, reason: `the owner guard could not be installed: ${guard.reason}` };
 
   const priorManifest = JSON.parse(read(MANIFEST()) || "null");
@@ -382,7 +427,8 @@ export function deploy({ commit, at = null, dryRun = true, liveDir = liveDir_() 
       file: GUARDED_STORE,
       preimage_hash: preimageHash,
       patch_marker: GUARD_MARKER,
-      patch_source_hash: sha(read(path.join(repoDir(), "ops", "exception-guard-patch.mjs")) ?? ""),
+      // The Git blob hash, not the checkout's.
+      patch_source_hash: reviewed.hash,
       guarded_hash: sha(guard.source),
       already_guarded: guard.already,
     },

@@ -454,9 +454,11 @@ test("acceptance: the raw exception store cannot close an owner-gated item", asy
         (error) => error.code === "owner_ruling_required",
         `setStatus(${status}) must be refused on a blocked-on-owner item`);
     }
-    // A ref typed on a command line is a string, not evidence.
+    // There is no fourth-argument override left to try: a ref was a
+    // serializable string in a process-local Set, unbound and unconsumed, which
+    // is a reusable capability for anything running in the host.
     assert.throws(() => world.store.setStatus(id, "resolved", "", "ruling:i-made-this-up"),
-      (error) => error.code === "unverified_ruling_ref");
+      (error) => error.code === "owner_ruling_required");
 
     assert.equal(world.status(id), "blocked-on-owner", "nothing moved");
     assert.equal(world.broker.calls.length, 0, "and nothing prompted her either");

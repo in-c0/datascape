@@ -35,6 +35,7 @@ const STUB_BRIEFING = `export function build() { return { lanes: [], mustReads: 
 /** Everything deployment needs to exist in the repo it deploys FROM. */
 const REPO_SOURCES = [
   "ops/live-host/briefing-server.mjs",
+  "ops/live-host/briefing-server-core.mjs",
   "ops/exception-guard-patch.mjs",
   "src/continuity/control/owner-ruling.js",
   "src/continuity/control/owner-presence.js",
@@ -119,7 +120,7 @@ export async function deployedWorld({ damage = null } = {}) {
 
   const fresh = () => Math.random().toString(36).slice(2);
   const deployMod = await import(`./live-host-deploy.mjs?w=${fresh()}`);
-  const deployed = deployMod.deploy({ commit, at: "2026-08-22T12:00:00+10:00", dryRun: false });
+  const deployed = await deployMod.deploy({ commit, at: "2026-08-22T12:00:00+10:00", dryRun: false });
 
   // Break it, if asked, AFTER a clean deployment — the shape an interrupted
   // deploy or a hand-edit leaves behind.
@@ -127,22 +128,28 @@ export async function deployedWorld({ damage = null } = {}) {
   if (damage?.mix) fs.writeFileSync(path.join(live, damage.mix), "export const smuggled = 1\n");
   if (damage?.unguard) fs.writeFileSync(path.join(live, "exception.mjs"), storeBefore);
 
-  const launcherMod = await import(`./live-host-launcher.mjs?w=${fresh()}`);
+  // The ENTRY POINT catchup spawns, loaded from the live host itself — not an
+  // ops-side launcher that the real startup path would walk past.
+  const entry = path.join(live, "briefing-server.mjs");
+  const entryMod = fs.existsSync(entry)
+    ? await import(pathToFileURL(entry).href + `?w=${fresh()}`)
+    : null;
   const broker = controllableBroker();
   let clock = Date.parse("2026-08-22T12:00:00+10:00");
 
   const world = {
     dir, repo, live, state, inbox, commit, deployed, dependencies, broker,
-    deployMod, launcherMod, storeBefore,
+    deployMod, entryMod, entry, storeBefore,
     advance: (ms) => { clock += ms; },
-    /** Start through the REAL launcher, with a device we control. */
+    /** Start through the REAL entry point, with a device we control. */
     async launch() {
-      const started = await launcherMod.startLiveHost({
+      const started = await entryMod.startLiveHost({
         liveDir: live,
+        stateDir: state,
         port: 0,
-        makeDeps: async (hostModule) => {
+        makeDeps: async (core) => {
           const presence = await import(pathToFileURL(path.join(live, "_continuity", "owner-presence.js")).href);
-          return hostModule.createOwnerRulingDeps({
+          return core.createOwnerRulingDeps({
             now: () => clock,
             journalFile: path.join(state, "owner-rulings.json"),
             verifier: presence.createOwnerPresenceVerifier({

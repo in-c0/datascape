@@ -8,7 +8,7 @@
 // It performs no real-world write and cannot show a Windows dialog: the world's
 // broker is a stub and `allowInteractive` is never set. The only real-world
 // checks are read-only.
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -317,7 +317,10 @@ async function run() {
   })();
 
   // The launcher, on real deployments — one healthy, three broken.
-  const launcherSource = fs.readFileSync(path.join(process.cwd(), "ops", "live-host-launcher.mjs"), "utf8")
+  // The ENTRY POINT catchup spawns — the launcher was folded into it, because a
+  // launcher the real startup path walks past protects nothing.
+  const launcherSource = fs.readFileSync(
+    path.join(process.cwd(), "ops", "live-host", "briefing-server.mjs"), "utf8")
     .replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
   const topLevelSecurityImports = (launcherSource.match(/^import[\s\S]*?from\s+["'][^"']+["']/gm) ?? [])
     .filter((line) => /briefing-server|_continuity|owner-ruling|owner-presence/.test(line)).length;
@@ -347,6 +350,139 @@ async function run() {
 
   // The deployment worlds set LIVE_HOST_* — clear them so the read-only
   // real-world checks below look at the REAL host, not a temp one.
+  for (const key of ["LIVE_HOST_REPO", "LIVE_HOST_DIR", "LIVE_HOST_STATE"]) delete process.env[key];
+
+  // --- THE REAL SPAWN PATH ------------------------------------------------
+  //
+  // `.tools/catchup.mjs` spawns `<ops>/briefing-server.mjs` directly. Measuring
+  // a launcher nothing invokes would be the same defect a fourth time, so these
+  // numbers come from spawning that exact command.
+
+  async function spawnEntry(world, port) {
+    const child = spawn(process.execPath, [path.join(world.live, "briefing-server.mjs")], {
+      env: {
+        ...process.env,
+        BRIEFING_API_PORT: String(port),
+        LIVE_HOST_STATE: world.state,
+        EXCEPTION_INBOX: world.inbox,
+        BRIEFING_DECISIONS: path.join(world.dir, "live", "decisions"),
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let out = "";
+    child.stdout.on("data", (d) => { out += d; });
+    child.stderr.on("data", () => {});
+    const deadline = Date.now() + 15000;
+    while (Date.now() < deadline) {
+      if (child.exitCode !== null) break;
+      try {
+        const probe = await fetch(`http://127.0.0.1:${port}/api/decisions`, { signal: AbortSignal.timeout(500) });
+        if (probe.ok) break;
+      } catch { /* not up yet */ }
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    return { child, out: () => out, stop: () => { try { child.kill(); } catch { /* gone */ } } };
+  }
+
+  const spawned = {};
+  let portSeed = 5460;
+  for (const [label, damage] of [
+    ["healthy", null],
+    ["missing", { remove: "_continuity/owner-ruling.js" }],
+    ["missing_core", { remove: "_continuity/briefing-server-core.mjs" }],
+    ["unguarded_store", { unguard: true }],
+  ]) {
+    const world = await deployedWorld({ damage });
+    const port = portSeed += 7;
+    const proc = await spawnEntry(world, port);
+    try {
+      const status = JSON.parse(proc.out().trim().split("\n").filter(Boolean).pop() ?? "{}");
+      const id = world.fixture();
+      const response = await fetch(`http://127.0.0.1:${port}/api/act`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, action: "dismiss", operation_id: `op-spawn-${label}` }),
+      });
+      spawned[label] = {
+        mode: status.mode ?? "did_not_start",
+        reached_preflight: Boolean(status.deployed_from_commit) || status.mode === "read_only",
+        status: response.status,
+        mutations: world.amendments(id),
+      };
+    } finally { proc.stop(); await world.close(); }
+  }
+
+  // Is there any remaining way to spawn the mutation server without the gate?
+  const coreSource = fs.readFileSync(
+    path.join(process.cwd(), "ops", "live-host", "briefing-server-core.mjs"), "utf8");
+  const directSpawnPaths = [/server\.listen\(/, /import\.meta\.url === /]
+    .filter((re) => re.test(coreSource)).length;
+
+  // --- THE GUARD TRANSFORMATION -------------------------------------------
+  const guardProvenance = await (async () => {
+    const world = await deployedWorld();
+    try {
+      await world.deployMod.rollback({ toBackupSet: world.deployed.backup_set, dryRun: false });
+      const guardPath = path.join(world.repo, "ops", "exception-guard-patch.mjs");
+      const reviewed = fs.readFileSync(guardPath, "utf8");
+      fs.writeFileSync(guardPath,
+        "export const GUARD_MARKER = \"__continuity_owner_gate__\";\n"
+        + "export function isPatched() { return true }\n"
+        + "export function patchExceptionSource(source) { return { ok: true, already: true, source } }\n");
+
+      const attempt = await world.deployMod.deploy({ commit: world.commit, dryRun: false, liveDir: world.live });
+      const afterDirty = fs.readFileSync(path.join(world.live, "exception.mjs"), "utf8");
+
+      fs.writeFileSync(guardPath, reviewed);
+      const clean = await world.deployMod.deploy({ commit: world.commit, dryRun: false, liveDir: world.live });
+      const manifest = JSON.parse(fs.readFileSync(path.join(world.state, "deployed.json"), "utf8"));
+      const blobHash = execFileSync("git", ["rev-parse", `${world.commit}:ops/exception-guard-patch.mjs`],
+        { cwd: world.repo, encoding: "utf8" }).trim();
+
+      return {
+        dirty_refused: attempt.ok === false && attempt.dirty_guard === true,
+        dirty_wrote_live_files: afterDirty.includes("__continuity_owner_gate__") ? 1 : 0,
+        clean_installs_reviewed_guard: clean.ok
+          && fs.readFileSync(path.join(world.live, "exception.mjs"), "utf8").includes("__continuity_owner_gate__"),
+        // The manifest hash must be OF the git object, so it changes with the
+        // commit and never with the checkout.
+        patch_hash_recorded: Boolean(manifest.exception_store?.patch_source_hash),
+        git_blob_exists: Boolean(blobHash),
+      };
+    } finally { await world.close(); }
+  })();
+
+  // --- THE OWNER STORE GATE -----------------------------------------------
+  const storeGate = await (async () => {
+    const world = await deployedWorld();
+    try {
+      await world.launch();
+      const ruled = world.fixture("2026-08-22-report-ref-source");
+      const result = await world.act({
+        id: ruled, action: "defer", until: "2026-08-24T09:00:00+10:00", operation_id: "op-report-ref",
+      });
+      const realRef = result.body?.ruling_ref ?? null;
+      const store = await world.store();
+      const other = world.fixture("2026-08-22-report-ref-target");
+
+      const refused = (fn) => { try { fn(); return 0; } catch { return 1; } };
+      const invented = refused(() => store.setStatus(other, "resolved", "", "ruling:invented")) ? 0 : 1;
+      const sameExc = refused(() => store.setStatus(ruled, "resolved", "", realRef)) ? 0 : 1;
+      const crossExc = refused(() => store.setStatus(other, "resolved", "", realRef)) ? 0 : 1;
+
+      const ordinary = world.fixture("2026-08-22-report-ref-ordinary", { status: "new" });
+      let lane = 0;
+      try { store.setStatus(ordinary, "investigating"); lane = 1; } catch { /* blocked */ }
+
+      return {
+        invented_accepted: invented,
+        same_exception_reuse_accepted: sameExc,
+        cross_exception_reuse_accepted: crossExc,
+        verified_path_passes: result.status === 200,
+        lane_transitions: lane === 1,
+      };
+    } finally { await world.close(); }
+  })();
+
   for (const key of ["LIVE_HOST_REPO", "LIVE_HOST_DIR", "LIVE_HOST_STATE"]) delete process.env[key];
 
   // --- REAL WORLD (READ ONLY) --------------------------------------------
@@ -497,6 +633,30 @@ async function run() {
       fail_closed_security_runtime_imported:
         [startup.missing, startup.mixed, startup.unguarded_store].filter((s) => s.security_runtime_imported).length,
       fail_closed_response: startup.missing.status,
+    },
+    REAL_STARTUP: {
+      actual_production_startup_invokes_preflight: spawned.healthy.reached_preflight ? "yes" : "NO",
+      production_can_directly_spawn_mutation_server_preflightless: directSpawnPaths,
+      healthy_spawn_serves_owner_rulings: spawned.healthy.mode === "owner_rulings" ? "yes" : "NO",
+      broken_deployment_through_actual_startup_can_mutate:
+        spawned.missing.mutations + spawned.missing_core.mutations + spawned.unguarded_store.mutations,
+      broken_deployment_response: spawned.missing.status,
+      broken_deployment_modes: [spawned.missing.mode, spawned.missing_core.mode, spawned.unguarded_store.mode]
+        .filter((m) => m !== "read_only").length,
+    },
+    DEPLOYMENT_PROVENANCE: {
+      guard_transformation_taken_from_reviewed_commit: guardProvenance.clean_installs_reviewed_guard ? "yes" : "NO",
+      dirty_guard_implementation_can_affect_reviewed_deploy: guardProvenance.dirty_refused ? 0 : 1,
+      manifest_patch_hash_is_git_blob_hash:
+        guardProvenance.patch_hash_recorded && guardProvenance.git_blob_exists ? "yes" : "NO",
+      dirty_guard_negative_writes_live_files: guardProvenance.dirty_wrote_live_files,
+    },
+    OWNER_STORE_GATE: {
+      legacy_store_accepts_any_ruling_ref_override: storeGate.invented_accepted,
+      previous_real_ruling_ref_reusable: storeGate.same_exception_reuse_accepted,
+      cross_exception_ruling_ref_reuse: storeGate.cross_exception_reuse_accepted,
+      verified_owner_orchestration_still_succeeds: storeGate.verified_path_passes ? "pass" : "FAIL",
+      ordinary_lane_transitions_still_succeed: storeGate.lane_transitions ? "pass" : "FAIL",
     },
     REAL_WORLD_READ_ONLY: {
       real_v6_blocker_exists: blockers.length > 0 ? "yes" : "no",

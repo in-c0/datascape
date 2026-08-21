@@ -21,7 +21,7 @@ const GUARD_BODY = `
   // Installed by ops/exception-guard-patch.mjs — see src/continuity/control/owner-gate.js.
   {
     const __e = find(id)
-    const __v = ${GUARD_MARKER}({ from: __e?.meta?.status, to: status, ownerRuling: arguments[3] ?? null })
+    const __v = ${GUARD_MARKER}({ from: __e?.meta?.status, to: status })
     if (!__v.ok) {
       const __err = new Error(__v.reason + "\\n" + __v.remedy)
       __err.code = __v.failure

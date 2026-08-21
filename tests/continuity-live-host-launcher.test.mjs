@@ -10,6 +10,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 
+import { spawn } from "node:child_process";
+
 import { deployedWorld } from "../ops/prb-deploy-world.mjs";
 
 // ---------------------------------------------------------------------------
@@ -45,8 +47,11 @@ test("deploy: the DEPLOYED legacy CLI cannot close an owner-gated item", async (
         (error) => error.code === "owner_ruling_required",
         `the deployed store must refuse setStatus(${status}) on a blocked-on-owner item`);
     }
+    // There is no fourth-argument escape hatch any more: a ruling ref was a
+    // serializable string in a process-local Set, never bound to an exception
+    // and never consumed — a reusable capability for anything in the host.
     assert.throws(() => store.setStatus(id, "resolved", "", "ruling:invented"),
-      (error) => error.code === "unverified_ruling_ref");
+      (error) => error.code === "owner_ruling_required");
     assert.equal(world.status(id), "blocked-on-owner");
     assert.equal(world.broker.calls.length, 0);
 
@@ -77,7 +82,7 @@ test("deploy: rollback restores the exception store's original bytes", async () 
 test("deploy: re-deploying over a guarded store keeps the ORIGINAL preimage", async () => {
   const world = await deployedWorld();
   try {
-    const second = world.deployMod.deploy({ commit: world.commit, dryRun: false, liveDir: world.live });
+    const second = await world.deployMod.deploy({ commit: world.commit, dryRun: false, liveDir: world.live });
     assert.equal(second.ok, true);
     assert.equal(second.exception_store.already_guarded, true);
     assert.equal(second.exception_store.preimage_hash, world.deployed.exception_store.preimage_hash,
@@ -89,13 +94,13 @@ test("deploy: re-deploying over a guarded store keeps the ORIGINAL preimage", as
 // The launcher decides before the security runtime is imported
 // ---------------------------------------------------------------------------
 
-test("launcher: nothing security-bearing is imported at the top of the launcher", () => {
-  const source = fs.readFileSync(new URL("../ops/live-host-launcher.mjs", import.meta.url), "utf8")
+test("launcher: nothing security-bearing is imported at the top of the entry point", () => {
+  const source = fs.readFileSync(new URL("../ops/live-host/briefing-server.mjs", import.meta.url), "utf8")
     .replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
   const topLevel = source.match(/^import[\s\S]*?from\s+["'][^"']+["']/gm) ?? [];
   for (const line of topLevel) {
     assert.ok(!/briefing-server|_continuity|owner-ruling|owner-presence/.test(line),
-      `the launcher must not import ${line} before the gate that decides whether it may run`);
+      `the entry point must not import ${line} before the gate that decides whether it may run`);
   }
   // And the host is reached by dynamic import, after the gate.
   assert.match(source, /await import\(/);
@@ -120,7 +125,7 @@ test("launcher: a complete reviewed deployment serves owner rulings", async () =
 
 for (const [label, damage, expectation] of [
   ["a missing security module", { remove: "_continuity/owner-ruling.js" }, /incomplete/],
-  ["a mixed security module", { mix: "_continuity/owner-presence.js" }, /does not match its reviewed commit/],
+  ["a mixed security module", { mix: "_continuity/owner-presence.js" }, /do not match this host.s manifest/],
   ["an unguarded exception store", { unguard: true }, /not guarded/],
 ]) {
   test(`launcher: ${label} makes the owner-mutation route unreachable`, async () => {
@@ -149,3 +154,196 @@ for (const [label, damage, expectation] of [
     } finally { await world.close(); }
   });
 }
+
+// ---------------------------------------------------------------------------
+// The command catchup actually runs
+// ---------------------------------------------------------------------------
+
+/**
+ * Spawn the live host exactly as `.tools/catchup.mjs` does:
+ *
+ *   spawn(node, [<ops>/briefing-server.mjs], {env: {BRIEFING_API_PORT}})
+ *
+ * No launcher, no module import, no test-side wiring. If the gate is not in
+ * that file, this test cannot see it — which is the point.
+ */
+async function spawnLikeCatchup(world, port) {
+  const child = spawn(process.execPath, [path.join(world.live, "briefing-server.mjs")], {
+    env: {
+      ...process.env,
+      BRIEFING_API_PORT: String(port),
+      LIVE_HOST_STATE: world.state,
+      EXCEPTION_INBOX: world.inbox,
+      BRIEFING_DECISIONS: path.join(world.dir, "live", "decisions"),
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let out = "";
+  let err = "";
+  child.stdout.on("data", (d) => { out += d; });
+  child.stderr.on("data", (d) => { err += d; });
+
+  // Wait for it to answer, or to die.
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null) break;
+    try {
+      const probe = await fetch(`http://127.0.0.1:${port}/api/decisions`, { signal: AbortSignal.timeout(500) });
+      if (probe.ok) break;
+    } catch { /* not up yet */ }
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  return { child, out: () => out, err: () => err, stop: () => { try { child.kill(); } catch { /* gone */ } } };
+}
+
+test("startup: the real spawned command gates before it can rule", async () => {
+  const world = await deployedWorld();
+  const port = 5390 + Math.floor(Math.random() * 300);
+  const proc = await spawnLikeCatchup(world, port);
+  try {
+    const status = JSON.parse(proc.out().trim().split("\n").filter(Boolean).pop() ?? "{}");
+    assert.equal(status.mode, "owner_rulings", `${proc.out()}\n${proc.err()}`);
+    assert.equal(status.exception_store_guarded, true);
+    assert.equal(status.deployed_from_commit, world.commit,
+      "the spawned entry point ran the preflight, not just the server");
+
+    // The route exists and is gated by presence. The spawned process builds the
+    // REAL broker with allowInteractive unset, so it can never show a dialog —
+    // the ruling simply cannot complete without her.
+    const id = world.fixture();
+    const response = await fetch(`http://127.0.0.1:${port}/api/act`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, action: "dismiss", operation_id: "op-spawned" }),
+    });
+    assert.notEqual(response.status, 503, "a healthy host must not be fail-closed");
+    const body = await response.json();
+    assert.equal(body.mutation_performed, false, "no presence, no ruling");
+    assert.equal(world.amendments(id), 0);
+  } finally { proc.stop(); await world.close(); }
+});
+
+for (const [label, damage] of [
+  ["a missing security module", { remove: "_continuity/owner-ruling.js" }],
+  ["a missing core", { remove: "_continuity/briefing-server-core.mjs" }],
+  ["an unguarded exception store", { unguard: true }],
+]) {
+  test(`startup: ${label} cannot rule through the real spawned command`, async () => {
+    const world = await deployedWorld({ damage });
+    const port = 5390 + Math.floor(Math.random() * 300);
+    const proc = await spawnLikeCatchup(world, port);
+    try {
+      const status = JSON.parse(proc.out().trim().split("\n").filter(Boolean).pop() ?? "{}");
+      assert.equal(status.mode, "read_only", `${proc.out()}\n${proc.err()}`);
+      assert.equal(status.owner_rulings, false);
+
+      const id = world.fixture();
+      const response = await fetch(`http://127.0.0.1:${port}/api/act`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, action: "dismiss", operation_id: "op-broken-spawn" }),
+      });
+      assert.equal(response.status, 503);
+      assert.equal((await response.json()).mutation_performed, false);
+      assert.equal(world.amendments(id), 0);
+
+      // Reads still serve.
+      const reads = await fetch(`http://127.0.0.1:${port}/api/decisions`);
+      assert.equal(reads.status, 200);
+    } finally { proc.stop(); await world.close(); }
+  });
+}
+
+test("startup: the core is not independently spawnable as a server", () => {
+  // The old file both defined the server AND started one when run directly.
+  // That second entry point is the thing catchup could have been pointed at.
+  const core = fs.readFileSync(new URL("../ops/live-host/briefing-server-core.mjs", import.meta.url), "utf8");
+  assert.ok(!/server\.listen\(/.test(core), "the core must not start a server of its own");
+  assert.ok(!/import\.meta\.url === /.test(core), "the core must have no direct-run entry point");
+});
+
+// ---------------------------------------------------------------------------
+// The guard transformation comes from the reviewed commit
+// ---------------------------------------------------------------------------
+
+test("deploy: a sabotaged working-tree guard cannot affect a reviewed deploy", async () => {
+  const world = await deployedWorld();
+  try {
+    // Roll back to an unguarded store so a redeploy has real work to do.
+    await world.deployMod.rollback({ toBackupSet: world.deployed.backup_set, dryRun: false });
+    assert.ok(!fs.readFileSync(path.join(world.live, "exception.mjs"), "utf8").includes("__continuity_owner_gate__"));
+
+    // Now sabotage the guard in the WORKING TREE: it would install nothing.
+    const guardPath = path.join(world.repo, "ops", "exception-guard-patch.mjs");
+    const reviewed = fs.readFileSync(guardPath, "utf8");
+    fs.writeFileSync(guardPath,
+      "export const GUARD_MARKER = \"__continuity_owner_gate__\";\n"
+      + "export function isPatched() { return true }\n"
+      + "export function patchExceptionSource(source) { return { ok: true, already: true, source } }\n");
+
+    const attempt = await world.deployMod.deploy({ commit: world.commit, dryRun: false, liveDir: world.live });
+    assert.equal(attempt.ok, false, "an edited security transformation must stop the deploy");
+    assert.equal(attempt.dirty_guard, true);
+    assert.ok(!fs.readFileSync(path.join(world.live, "exception.mjs"), "utf8").includes("__continuity_owner_gate__"),
+      "a refused deploy must write nothing");
+
+    // Restore the tree, and the same commit deploys a genuinely guarded store.
+    fs.writeFileSync(guardPath, reviewed);
+    const clean = await world.deployMod.deploy({ commit: world.commit, dryRun: false, liveDir: world.live });
+    assert.equal(clean.ok, true, JSON.stringify(clean));
+    assert.ok(fs.readFileSync(path.join(world.live, "exception.mjs"), "utf8").includes("__continuity_owner_gate__"));
+    // And the recorded provenance is the Git blob's hash, not the checkout's.
+    assert.equal(clean.exception_store.guarded_hash, world.deployed.exception_store.guarded_hash);
+  } finally { await world.close(); }
+});
+
+// ---------------------------------------------------------------------------
+// A real ruling ref is not a capability
+// ---------------------------------------------------------------------------
+
+test("gate: a REAL ruling ref cannot be replayed through the legacy store", async () => {
+  const world = await deployedWorld();
+  try {
+    await world.launch();
+
+    // Perform a genuine verified ruling and keep its ref. `defer` is used on
+    // purpose: it leaves the item blocked-on-owner, so the ref can be tried
+    // against the very exception that produced it while that exception is still
+    // gated. A ruling that resolved the item would make the retry an ordinary
+    // lane transition and prove nothing.
+    const ruled = world.fixture("2026-08-22-ref-source");
+    const result = await world.act({
+      id: ruled, action: "defer", until: "2026-08-24T09:00:00+10:00", operation_id: "op-ref-source",
+    });
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+    const realRef = result.body.ruling_ref;
+    assert.ok(realRef, "a verified ruling produces a ref");
+
+    const store = await world.store();
+    const other = world.fixture("2026-08-22-ref-target");
+
+    // Same exception, real ref, reused. It was already spent on the ruling that
+    // produced it — and it was never a credential to begin with.
+    assert.throws(() => store.setStatus(ruled, "resolved", "", realRef),
+      (error) => error.code === "owner_ruling_required");
+    // A different exception, same real ref: the ref was never bound to one.
+    assert.throws(() => store.setStatus(other, "resolved", "", realRef),
+      (error) => error.code === "owner_ruling_required");
+    // And an invented one, for completeness.
+    assert.throws(() => store.setStatus(other, "resolved", "", "ruling:invented"),
+      (error) => error.code === "owner_ruling_required");
+
+    assert.equal(world.status(other), "blocked-on-owner", "nothing moved");
+    assert.equal(world.amendments(other), 0);
+    assert.equal(world.broker.calls.length, 1, "and none of it cost a prompt");
+  } finally { await world.close(); }
+});
+
+test("gate: nothing in the owner gate accepts a credential at all", () => {
+  const source = fs.readFileSync(new URL("../src/continuity/control/owner-gate.js", import.meta.url), "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  // The refusal must not be reachable past any argument. A Set of refs, or a
+  // parameter that could hold one, is the verification-handle bug again.
+  assert.ok(!/new Set\(/.test(source), "no registry of refs");
+  assert.ok(!/ownerRuling|ruling_ref|rulingRef/.test(source), "no ref parameter to check");
+  assert.match(source, /checkTransition\(\{\s*from,\s*to\s*\}\)/,
+    "checkTransition takes the transition and nothing else");
+});

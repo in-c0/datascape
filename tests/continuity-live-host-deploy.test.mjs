@@ -72,7 +72,7 @@ test("live-host: an arbitrary string as commit creates no provenance", async () 
   const mod = await load(w);
 
   for (const claim of ["abc1234", "reviewed", "HEAD~99", ""]) {
-    const attempt = mod.deploy({ commit: claim, dryRun: false });
+    const attempt = await mod.deploy({ commit: claim, dryRun: false });
     assert.equal(attempt.ok, false, `"${claim}" must not deploy`);
   }
   assert.equal(fs.existsSync(path.join(w.live, "briefing-server.mjs")), false,
@@ -83,12 +83,12 @@ test("live-host: deploy installs the exact bytes of a commit, and the whole file
   const w = world();
   const mod = await load(w);
 
-  const dry = mod.deploy({ commit: w.v1, dryRun: true });
+  const dry = await mod.deploy({ commit: w.v1, dryRun: true });
   assert.equal(dry.ok, true);
   assert.equal(dry.changes, true);
   assert.equal(fs.existsSync(path.join(w.live, "briefing-server.mjs")), false, "a dry run must not deploy");
 
-  const deployed = mod.deploy({ commit: w.v1, at: "2026-08-22T10:00:00+10:00", dryRun: false });
+  const deployed = await mod.deploy({ commit: w.v1, at: "2026-08-22T10:00:00+10:00", dryRun: false });
   assert.equal(deployed.ok, true);
   assert.equal(deployed.files.length, ARTIFACT.length, "the security layer ships with the server, not separately");
   // The orchestrator ships beside the server, not separately.
@@ -103,7 +103,7 @@ test("live-host: deploy installs the exact bytes of a commit, and the whole file
 test("live-host: a dirty working tree that matches the live file is NOT reviewed source", async () => {
   const w = world();
   const mod = await load(w);
-  mod.deploy({ commit: w.v1, dryRun: false });
+  await mod.deploy({ commit: w.v1, dryRun: false });
 
   // Edit the tree and hand-edit the live file to match it. Under a working-tree
   // comparison this reads as a clean match — which is exactly the false
@@ -121,7 +121,7 @@ test("live-host: a dirty working tree that matches the live file is NOT reviewed
 test("live-host: drift in ANY artifact file fails verification, not just the server", async () => {
   const w = world();
   const mod = await load(w);
-  mod.deploy({ commit: w.v1, dryRun: false });
+  await mod.deploy({ commit: w.v1, dryRun: false });
   assert.equal(mod.verifyDeployment().ok, true);
 
   // The orchestrator is where the security property lives; a mechanism that
@@ -136,14 +136,14 @@ test("live-host: drift in ANY artifact file fails verification, not just the ser
 test("live-host: rollback restores the exact previous bytes and drops the reviewed claim", async () => {
   const w = world();
   const mod = await load(w);
-  mod.deploy({ commit: w.v1, dryRun: false });
+  await mod.deploy({ commit: w.v1, dryRun: false });
 
   w.write("ops/live-host/briefing-server.mjs", "export const server = 2 // security fix\n");
   w.git("add", "-A");
   w.git("commit", "-qm", "v2");
   const v2 = w.git("rev-parse", "HEAD").trim();
 
-  const second = mod.deploy({ commit: v2, dryRun: false });
+  const second = await mod.deploy({ commit: v2, dryRun: false });
   assert.equal(second.ok, true);
   assert.match(fs.readFileSync(path.join(w.live, "briefing-server.mjs"), "utf8"), /security fix/);
 
@@ -160,7 +160,7 @@ test("live-host: rollback restores the exact previous bytes and drops the review
 test("live-host: host state never lands inside the repository", async () => {
   const w = world();
   const mod = await load(w);
-  mod.deploy({ commit: w.v1, dryRun: false });
+  await mod.deploy({ commit: w.v1, dryRun: false });
 
   assert.ok(!path.resolve(mod.stateDir()).startsWith(path.resolve(w.repo) + path.sep),
     "the manifest and backups are private host state, not repository content");
@@ -191,7 +191,7 @@ test("live-host: the real live host still matches its reviewed commit", async ()
 test("live-host: the startup gate refuses a partial or mismatched artifact set", async () => {
   const w = world();
   const mod = await load(w);
-  mod.deploy({ commit: w.v1, dryRun: false });
+  await mod.deploy({ commit: w.v1, dryRun: false });
   assert.equal(mod.preflight().ok, true);
 
   // A deploy interrupted between files: the server is new, one security module

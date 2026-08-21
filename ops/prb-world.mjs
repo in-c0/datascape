@@ -18,7 +18,9 @@ const REAL_HOST_OPS = process.env.PRB_HOST_OPS || "D:/Projects/_ship_inbox/ops";
 
 /** The reviewed security layer, staged exactly as deployment would stage it. */
 export const ARTIFACT = [
+  // The entry point catchup already spawns. It gates, then imports the core.
   { dest: "briefing-server.mjs", source: "ops/live-host/briefing-server.mjs" },
+  { dest: "_continuity/briefing-server-core.mjs", source: "ops/live-host/briefing-server-core.mjs" },
   { dest: "_continuity/owner-ruling.js", source: "src/continuity/control/owner-ruling.js" },
   { dest: "_continuity/owner-presence.js", source: "src/continuity/control/owner-presence.js" },
   { dest: "_continuity/owner-ruling-policy.js", source: "src/continuity/control/owner-ruling-policy.js" },
@@ -109,7 +111,7 @@ export async function acceptanceWorld() {
   // Belt and braces: nothing in this suite may reach an interactive broker.
   delete process.env.OWNER_PRESENCE_INTERACTIVE;
 
-  const server = await import(pathToFileURL(path.join(ops, "briefing-server.mjs")).href);
+  const server = await import(pathToFileURL(path.join(ops, "_continuity", "briefing-server-core.mjs")).href);
   const presence = await import(pathToFileURL(path.join(ops, "_continuity", "owner-presence.js")).href);
 
   const broker = controllableBroker();
