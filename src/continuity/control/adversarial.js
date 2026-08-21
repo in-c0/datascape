@@ -8,6 +8,8 @@
 
 import { transition } from "./intent.js";
 import { createContainer } from "./topic.js";
+import { auditLaneGoal, createAutonomyPolicy, createGoal, verifyGoalAuthority } from "./goal.js";
+import { admitWorkDeclaration, createProposalStore, createWorkDeclaration, proposalCapabilities } from "./declaration.js";
 import { createLeaseManager } from "./lease.js";
 import { attributeResult, checkScopeExpansion, machineGateStatement, prepareDispatch, settlementDecision } from "./dispatch.js";
 import { createScope, gateOverlap } from "./scope.js";
@@ -134,6 +136,88 @@ export function runAdversarial() {
   ]);
   record("firewall_discriminates_all_three_ways", true,
     outcomes.has("no") && outcomes.has("yes") && outcomes.has("unknown"), [...outcomes].join(","));
+
+  // ---- V6.1.3 section 13: goal authority and work declaration ----------------
+
+  const GOAL = createGoal({
+    goal_id: "G-continuity",
+    statement: "Improve DataScape Continuity reliability",
+    authority_source_refs: ["owner-objective-1"],
+    allowed_scope_refs: ["repo:in-c0/datascape", "semantic-centre:continuity"],
+    prohibited_scope_refs: ["publication"],
+    autonomy_policy: createAutonomyPolicy({
+      autonomous_operations: ["run_tests", "inspect_repository", "prepare_patch"],
+      owner_required_operations: ["spend_money", "approve_external_post", "supply_credential"],
+    }),
+  });
+  const SOURCES = [{ ref: "owner-objective-1", kind: "owner_authored_objective" }];
+  const AUTH = verifyGoalAuthority(GOAL, SOURCES);
+  const declare = (over) => createWorkDeclaration({
+    declaration_id: over.declaration_id || "D1", goal_id: "G-continuity", authored_by: "agent",
+    operation: "run_tests", success_condition: "the control-plane regression suite is green",
+    scope_refs: ["repo:in-c0/datascape"], scope_provenance_refs: ["checkpoint-9"],
+    semantic_centre_refs: ["semantic-centre:continuity"],
+    estimated_budget: { max_cost: 0, max_wall_time_ms: 600000 },
+    ...over,
+  });
+  const admit = (d, opts = {}) => admitWorkDeclaration(d, GOAL, { goalAuthority: AUTH, ...opts });
+
+  // 14. An authoritative goal plus a bounded in-scope operation is ADMITTED.
+  //     The positive control for this whole layer: without it the refusals
+  //     below would prove only that admission never succeeds.
+  record("authoritative_goal_admits_bounded_work", "admitted", admit(declare({})).outcome);
+
+  // 15. An agent inventing its own goal is rejected.
+  const invented = createGoal({
+    goal_id: "G-invented", statement: "Grow the audience",
+    authority_source_refs: ["agent-thought-1"],
+    allowed_scope_refs: ["anything"],
+    autonomy_policy: createAutonomyPolicy({ autonomous_operations: ["publish"] }),
+  });
+  const inventedAuth = verifyGoalAuthority(invented, [{ ref: "agent-thought-1", kind: "agent_believes_useful" }]);
+  record("agent_invented_goal_rejected", "absent", inventedAuth.authority, inventedAuth.rejected[0]?.reason);
+  record("declaration_under_unauthorised_goal_rejected", "blocked_authority",
+    admitWorkDeclaration(declare({ goal_id: "G-invented" }), invented, { goalAuthority: inventedAuth }).outcome);
+
+  // 16. A goal with no authority provenance at all is rejected.
+  const unprovenanced = createGoal({ goal_id: "G-none", statement: "Do useful things" });
+  record("goal_without_provenance_rejected", "absent", verifyGoalAuthority(unprovenanced, []).authority);
+
+  // 17. An operation wider than the goal is blocked on scope.
+  record("operation_wider_than_goal_blocked", "blocked_scope",
+    admit(declare({ scope_refs: ["repo:in-c0/datascape", "repo:in-c0/sumzup"] })).outcome);
+  //     And prose mentioning the project does not make it in-scope.
+  record("prose_does_not_create_scope", "blocked_scope",
+    admit(declare({ operation: "prepare_patch", scope_refs: ["publication"] })).outcome);
+
+  // 18. In scope but requiring a credential -> owner, not autonomous.
+  record("credential_requirement_blocks_on_owner", "blocked_owner",
+    admit(declare({ operation: "supply_credential" })).outcome);
+  record("authority_requirement_blocks_on_owner", "blocked_owner",
+    admit(declare({ authority_requirements: ["owner_credential"] })).outcome);
+
+  // 19. Historical repetition establishes no goal, and neither does a URL.
+  const laneAudit = auditLaneGoal({ lane: "datascape", autoRunUrl: "https://chatgpt.com/c/abc" }, SOURCES);
+  record("repetition_infers_no_goal", "absent", laneAudit.authoritative_goal, laneAudit.reason);
+
+  // 20. A concrete operation with a vague success condition is INVALID.
+  record("vague_success_condition_invalid", "invalid", admit(declare({ success_condition: "better" })).outcome);
+  record("missing_provenance_invalid", "invalid", admit(declare({ scope_provenance_refs: [] })).outcome);
+
+  // 21. Superseding a declaration before execution produces no duplicate intent.
+  const store = createProposalStore();
+  store.proposeWork(declare({ declaration_id: "D-old" }));
+  store.proposeWork(declare({ declaration_id: "D-new", supersedes_declaration_id: "D-old" }));
+  record("superseded_declaration_leaves_active_set", 1, store.active().length);
+  record("superseded_declaration_marked", "superseded", store.get("D-old").state);
+
+  // 22. Proposal grants nothing: no admit, no dispatch, no execute exists on it.
+  const caps = proposalCapabilities(store);
+  record("proposal_cannot_admit", false, caps.can_admit);
+  record("proposal_cannot_dispatch", false, caps.can_dispatch);
+  record("proposal_cannot_execute", false, caps.can_execute);
+  record("proposal_creates_no_intent", false, store.proposeWork(declare({ declaration_id: "D2" })).intent_created);
+  record("proposal_is_not_semantic_history", false, store.emitsSemanticHistory);
 
   return {
     total: cases.length,
