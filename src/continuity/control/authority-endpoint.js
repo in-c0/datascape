@@ -24,6 +24,8 @@ export const FAILURES = [
   // Receipt failures (V6.1.6 §3). Distinct cases, because each is a different
   // attack and lumping them together loses the reason.
   "no_receipt", "expired_receipt", "receipt_domain_mismatch", "stale_receipt_revision",
+  "receipt_action_mismatch", "receipt_lineage_mismatch", "receipt_scope_mismatch",
+  "receipt_kind_mismatch",
 ];
 
 /**
@@ -72,38 +74,70 @@ export function createAuthorityEndpoint({
     if (!principal) return fail("not_authenticated", "no authenticated caller", { stripped_identity_fields });
     if (principal.role !== "owner") return fail("not_owner", "the caller is not the owner", { stripped_identity_fields });
 
-    // §3: authorization refers to the object the TRUSTED boundary prepared,
-    // not to a draft the browser could have replaced after the preview. The
-    // browser supplies a receipt id and an operation id; nothing else about
-    // the policy is taken from it.
+    // DURABLE IDEMPOTENCY COMES FIRST (A.1 P0-2).
+    //
+    // A committed operation replays before any receipt is considered. The
+    // previous order consumed the receipt and then committed, so a lost
+    // response plus a retry produced `no_receipt` for work that had ALREADY
+    // succeeded — a short-lived preview receipt must never be able to undo the
+    // durable idempotency V6.1.5 established. A host restart may destroy every
+    // receipt; that is fine. A new review needs a new receipt. A retry of an
+    // already-committed operation does not.
+    const alreadyCommitted = store.completedOperation(request.operation_id);
+    if (alreadyCommitted) {
+      const replayed = store.commit({ operation_id: request.operation_id });
+      return {
+        ok: true, replayed: true, goal_id: replayed.goal_id, revision: replayed.revision,
+        outcome: replayed.outcome, exception_resolved: replayed.exception_resolved,
+        shadow_audit: null, shadow_audit_failed: false, stripped_identity_fields,
+      };
+    }
+
+    // §3 + A.1 P0-1: the receipt binds the ENTIRE authoritative mutation — the
+    // action, the lineage, the base revision, the resulting scope and the
+    // policy. The browser identifies the prepared authorization; it does not
+    // reconstruct its semantics here. Anything it also sent is checked for
+    // exact equality and REFUSED on mismatch, which exposes a stale or
+    // malicious client rather than silently tolerating disagreement.
     let policy = { draft: request.draft, policy_identity: request.policy_identity, source_exception_id: request.source_exception_id };
+    let action = request.authorization_action;
+    let goalId = request.goal_id;
+    let expectedRevision = request.expected_authority_revision;
+    let scopeRefs = request.scope_refs;
+    let receiptId = null;
+
     if (requireReceipt) {
-      const amending = request.authorization_action === "narrow_authority"
-        || request.authorization_action === "revoke_authority";
       const verified = receiptStore.verify(request.preview_receipt, {
-        sourceExceptionId: amending ? null : request.source_exception_id ?? null,
-        baseRevision: amending ? request.expected_authority_revision ?? null : null,
+        action: request.authorization_action,
+        goalId: request.goal_id,
+        sourceExceptionId: request.source_exception_id,
+        baseRevision: request.expected_authority_revision,
+        scopeRefs: request.scope_refs,
       });
       if (!verified.ok) return fail(verified.failure, verified.reason, { stripped_identity_fields });
       const bound = verified.receipt;
+      // EVERY authoritative field now comes from the receipt.
+      action = bound.action;
+      goalId = bound.goal_id;
+      expectedRevision = bound.base_authority_revision;
+      scopeRefs = bound.resulting_scope_refs ?? undefined;
       policy = {
         draft: bound.normalized_policy,
         policy_identity: bound.policy_identity,
         source_exception_id: bound.source_exception_id,
       };
-      // Single use: a receipt cannot authorize twice.
-      receiptStore.consume(request.preview_receipt);
+      receiptId = request.preview_receipt;
     }
 
     const result = store.commit({
       operation_id: request.operation_id,
-      action: request.authorization_action,
+      action,
       draft: policy.draft,
       policy_identity: policy.policy_identity,
       source_exception_id: policy.source_exception_id,
-      goal_id: request.goal_id,
-      expected_revision: request.expected_authority_revision,
-      scope_refs: request.scope_refs,
+      goal_id: goalId,
+      expected_revision: expectedRevision,
+      scope_refs: scopeRefs,
     });
 
     if (!result.ok) {
@@ -118,6 +152,10 @@ export function createAuthorityEndpoint({
       }[result.outcome] || "transaction_failed";
       return fail(failure, result.reason, { stripped_identity_fields });
     }
+
+    // Single use, consumed only once the transaction is durable. Consuming
+    // earlier is what broke idempotent replay.
+    if (receiptId) receiptStore.consume(receiptId);
 
     // §16: attempted, never load-bearing for the ruling. "Authority was
     // granted" and "readiness could not be evaluated" are different facts.
@@ -150,24 +188,45 @@ export function createAuthorityEndpoint({
    */
   function prepare(rawBody) {
     const { request } = sanitizeClientRequest(rawBody);
-    if (!request.draft) return fail("transaction_failed", "no draft supplied");
+    const preparingAmendment = request.authorization_action === "narrow_authority"
+      || request.authorization_action === "revoke_authority";
+    if (!request.draft && !preparingAmendment) return fail("transaction_failed", "no draft supplied");
 
     const domain = readContext?.domain?.() ?? readContext?.blocker?.()?.id ?? null;
-    const amending = request.authorization_action === "narrow_authority"
-      || request.authorization_action === "revoke_authority";
+    const action = request.authorization_action ?? "authorize_goal";
+    const amending = action === "narrow_authority" || action === "revoke_authority";
+
+    // The host determines WHICH authority an amendment concerns, from the
+    // authority domain it already holds. The browser may say "narrow the
+    // authority I am viewing"; it does not get to choose the lineage. Browser
+    // = intent, host = authoritative context, consistently.
+    const lineage = amending ? store.currentForDomain(domain) : null;
+    if (amending && !lineage) return fail("transaction_failed", "no current authority to amend");
+
     const receipt = receiptStore.issue({
       draft: request.draft,
-      kind: request.authorization_action ?? "authorize_goal",
+      action,
+      authorityDomain: domain,
       // Bound HOST-side. A browser cannot point a review at another domain.
       sourceExceptionId: amending ? null : domain,
-      baseRevision: amending ? (store.current(request.goal_id)?.revision ?? null) : null,
+      goalId: amending ? lineage.goal.goal_id : null,
+      baseRevision: amending ? lineage.revision : null,
+      // The resulting scope is part of what she reviewed, so it is bound too.
+      resultingScopeRefs: amending
+        ? (action === "revoke_authority" ? [] : (request.scope_refs ?? []))
+        : null,
     });
-    const envelope = composeEnvelope(receipt.normalized_policy.allowed_capabilities);
+    const envelope = composeEnvelope(receipt.normalized_policy?.allowed_capabilities ?? []);
     return {
       ok: true,
       preview_receipt: receipt.receipt_id,
       expires_at: receipt.expires_at,
-      preview: receiptPreview(receipt, envelope, renderPreview),
+      // What the owner is told the mutation IS, bound to the same receipt.
+      action: receipt.action,
+      goal_id: receipt.goal_id,
+      base_authority_revision: receipt.base_authority_revision,
+      resulting_scope_refs: receipt.resulting_scope_refs,
+      preview: receipt.normalized_policy ? receiptPreview(receipt, envelope, renderPreview) : null,
     };
   }
 

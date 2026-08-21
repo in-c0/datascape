@@ -48,18 +48,32 @@ export function createReceiptStore({ now, ttlMs = DEFAULT_RECEIPT_TTL_MS, random
      * Prepare a review. Returns the receipt AND the exact preview the browser
      * must render, so what she reads is what the host bound.
      */
-    issue({ draft, kind, sourceExceptionId, baseRevision = null }) {
+    issue({ draft = null, action, sourceExceptionId = null, authorityDomain = null, goalId = null, baseRevision = null, resultingScopeRefs = null }) {
       const at = now();
       prune(at);
-      const normalized = normalizeDraft(draft);
+      const normalized = draft ? normalizeDraft(draft) : null;
       const receipt = {
         receipt_id: randomToken(),
-        // Everything the commit must not re-derive from a browser payload.
+        // THE ENTIRE AUTHORITATIVE MUTATION. Not just the policy: the action,
+        // the lineage, the base revision and the resulting scope too.
+        //
+        // Binding only the revision was not enough. A review of "narrow
+        // authority A at rev 1" left the commit still taking WHICH goal,
+        // NARROW-OR-REVOKE, and WHAT RESULTING SCOPE from the browser — so a
+        // receipt prepared for a narrowing could authorize a revoke merely
+        // because both act on revision 1.
+        //
+        // The browser identifies the prepared authorization. It does not
+        // reconstruct its semantics at commit time.
+        action,
         normalized_policy: normalized,
-        policy_identity: policyIdentityOf(draft),
-        authority_kind: kind,
+        policy_identity: draft ? policyIdentityOf(draft) : null,
+        authority_kind: normalized?.kind ?? null,
+        authority_domain: authorityDomain ?? sourceExceptionId ?? null,
         source_exception_id: sourceExceptionId ?? null,
-        scope_refs: [...normalized.scope_refs],
+        goal_id: goalId,
+        scope_refs: normalized ? [...normalized.scope_refs] : [],
+        resulting_scope_refs: resultingScopeRefs ? [...resultingScopeRefs] : null,
         base_authority_revision: baseRevision,
         created_at: at,
         expires_at: at + ttlMs,
@@ -74,7 +88,7 @@ export function createReceiptStore({ now, ttlMs = DEFAULT_RECEIPT_TTL_MS, random
      * Every refusal is a distinct, named case, because each is a different
      * attack and lumping them together loses the reason.
      */
-    verify(receiptId, { sourceExceptionId = null, baseRevision = null } = {}) {
+    verify(receiptId, claimed = {}) {
       const at = now();
       const receipt = receipts.get(receiptId);
       if (!receipt) return { ok: false, failure: "no_receipt", reason: "no prepared review matches this authorization" };
@@ -82,13 +96,37 @@ export function createReceiptStore({ now, ttlMs = DEFAULT_RECEIPT_TTL_MS, random
         receipts.delete(receiptId);
         return { ok: false, failure: "expired_receipt", reason: "the prepared review expired; review again" };
       }
-      // A receipt prepared for one authority domain may not authorize another.
-      if (sourceExceptionId !== null && receipt.source_exception_id !== sourceExceptionId) {
+
+      // Anything the browser ALSO sent is checked for exact equality and
+      // refused on mismatch rather than ignored. Ignoring would tolerate a
+      // stale or malicious client silently; refusing exposes it.
+      const mismatch = (field, claim, bound) =>
+        claim !== undefined && claim !== null && String(claim) !== String(bound);
+
+      if (mismatch("action", claimed.action, receipt.action)) {
+        // The case that made this necessary: a narrow receipt used to revoke.
+        return { ok: false, failure: "receipt_action_mismatch", reason: `this review was prepared for ${receipt.action}` };
+      }
+      if (mismatch("goal", claimed.goalId, receipt.goal_id)) {
+        return { ok: false, failure: "receipt_lineage_mismatch", reason: "this review was prepared for a different authority" };
+      }
+      if (claimed.sourceExceptionId !== undefined && claimed.sourceExceptionId !== null
+        && receipt.source_exception_id !== claimed.sourceExceptionId) {
         return { ok: false, failure: "receipt_domain_mismatch", reason: "this review was prepared for a different authority domain" };
       }
-      // An amendment's receipt is bound to the revision it was prepared against.
-      if (baseRevision !== null && receipt.base_authority_revision !== baseRevision) {
+      if (claimed.baseRevision !== undefined && claimed.baseRevision !== null
+        && receipt.base_authority_revision !== claimed.baseRevision) {
         return { ok: false, failure: "stale_receipt_revision", reason: "the authority changed since this review was prepared" };
+      }
+      if (claimed.scopeRefs) {
+        const bound = [...(receipt.resulting_scope_refs ?? [])].sort().join("|");
+        const sent = [...claimed.scopeRefs].sort().join("|");
+        if (bound !== sent) {
+          return { ok: false, failure: "receipt_scope_mismatch", reason: "the resulting scope differs from the reviewed one" };
+        }
+      }
+      if (claimed.kind !== undefined && claimed.kind !== null && receipt.authority_kind !== claimed.kind) {
+        return { ok: false, failure: "receipt_kind_mismatch", reason: "this review was prepared for a different authority kind" };
       }
       return { ok: true, receipt };
     },

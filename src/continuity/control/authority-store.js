@@ -220,6 +220,14 @@ export function createAuthorityStore({ boundary, exceptions, now, verifier = ver
     },
 
     current: (goalId) => journal.current(goalId),
+    /**
+     * Has this operation already committed durably?
+     *
+     * Exposed so the endpoint can replay a committed operation BEFORE it
+     * verifies a receipt — a short-lived preview receipt must not be able to
+     * undo durable idempotency.
+     */
+    completedOperation: (operationId) => journal.completed(operationId),
     currentForDomain: (exceptionId) => journal.currentForDomain(exceptionId),
 
     history(goalId) {
