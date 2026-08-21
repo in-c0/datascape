@@ -34,7 +34,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.BRIEFING_API_PORT || 5319);
@@ -178,7 +178,7 @@ export async function startLiveHost({
 
   // Only now. On the failure path above these modules are never loaded, so a
   // missing or drifted one cannot crash the host before the gate has spoken.
-  const url = `file:///${path.resolve(liveDir, "_continuity", "briefing-server-core.mjs").split(path.sep).join("/")}`;
+  const url = pathToFileURL(path.resolve(liveDir, "_continuity", "briefing-server-core.mjs")).href;
   const core = await import(url);
   const deps = makeDeps ? await makeDeps(core) : core.createOwnerRulingDeps();
   const server = core.createServer(deps);
@@ -191,8 +191,12 @@ export async function startLiveHost({
   };
 }
 
+// pathToFileURL, not a hand-built `file:///` + path. On POSIX the manual form
+// produced `file:////home/...` — four slashes — so this test was false and the
+// entry point silently did nothing when spawned. It only ever worked because
+// Windows paths start with a drive letter.
 const invokedDirectly = process.argv[1]
-  && import.meta.url === `file:///${process.argv[1].split(path.sep).join("/")}`;
+  && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (invokedDirectly) {
   const started = await startLiveHost();
   console.log(JSON.stringify({

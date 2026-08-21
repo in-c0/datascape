@@ -11,6 +11,7 @@
 import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { acceptanceWorld, fixture } from "./prb-world.mjs";
 import { deployedWorld } from "./prb-deploy-world.mjs";
@@ -673,8 +674,12 @@ async function run() {
   };
 }
 
+// pathToFileURL, not a hand-built `file:///` + path. On POSIX the manual form
+// produced `file:////home/...` — four slashes — so this test was false and the
+// entry point silently did nothing when spawned. It only ever worked because
+// Windows paths start with a drive letter.
 const invokedDirectly = process.argv[1]
-  && import.meta.url === `file:///${process.argv[1].split(path.sep).join("/")}`;
+  && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (invokedDirectly) {
   console.log(JSON.stringify(await run(), null, 2));
 }

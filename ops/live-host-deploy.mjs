@@ -31,6 +31,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { execFileSync } from "node:child_process";
 
 import { GUARD_MARKER, isPatched } from "./exception-guard-patch.mjs";
@@ -254,7 +255,7 @@ async function reviewedGuard(commit) {
 
   const file = path.join(os.tmpdir(), `continuity-guard-${sha(bytes).slice(0, 16)}.mjs`);
   fs.writeFileSync(file, bytes);
-  const module = await import(`file:///${file.split(path.sep).join("/")}`);
+  const module = await import(pathToFileURL(file).href);
   return { ok: true, patch: module.patchExceptionSource, hash: sha(bytes) };
 }
 
@@ -479,8 +480,12 @@ export function rollback({ toBackupSet, at = null, dryRun = true, liveDir = live
 }
 
 // Run directly: report only. Deployment is an explicit, non-default act.
+// pathToFileURL, not a hand-built `file:///` + path. On POSIX the manual form
+// produced `file:////home/...` — four slashes — so this test was false and the
+// entry point silently did nothing when spawned. It only ever worked because
+// Windows paths start with a drive letter.
 const invokedDirectly = process.argv[1]
-  && import.meta.url === `file:///${process.argv[1].split(path.sep).join("/")}`;
+  && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (invokedDirectly) {
   const status = verifyDeployment();
   console.log(JSON.stringify({

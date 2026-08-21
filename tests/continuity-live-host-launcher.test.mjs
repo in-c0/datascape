@@ -347,3 +347,24 @@ test("gate: nothing in the owner gate accepts a credential at all", () => {
   assert.match(source, /checkTransition\(\{\s*from,\s*to\s*\}\)/,
     "checkTransition takes the transition and nothing else");
 });
+
+test("portability: no module hand-builds a file:// URL", () => {
+  // `file:///${p.split(sep).join("/")}` is right on Windows only, because a
+  // Windows path starts with a drive letter. On POSIX it yields
+  // `file:////home/...` and every comparison against import.meta.url silently
+  // fails — which is how the entry point spawned, matched nothing, and exited
+  // without starting anything on CI while passing on this machine.
+  const dir = new URL("../ops/", import.meta.url);
+  const offenders = [];
+  const walk = (base) => {
+    for (const entry of fs.readdirSync(base, { withFileTypes: true })) {
+      const child = new URL(entry.name + (entry.isDirectory() ? "/" : ""), base);
+      if (entry.isDirectory()) { walk(child); continue; }
+      if (!/\.mjs$|\.js$/.test(entry.name)) continue;
+      const source = fs.readFileSync(child, "utf8").replace(/^\s*\/\/.*$/gm, "");
+      if (/`file:\/\/\/\$\{/.test(source)) offenders.push(entry.name);
+    }
+  };
+  walk(dir);
+  assert.deepEqual(offenders, [], "use pathToFileURL() — it is correct on both platforms");
+});

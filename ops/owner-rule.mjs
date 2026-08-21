@@ -20,6 +20,7 @@
 // without a human at the machine the ruling does not complete.
 import crypto from "node:crypto";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import process from "node:process";
 
 export const DEFAULT_LIVE_DIR = "D:/Projects/_ship_inbox/ops";
@@ -118,7 +119,7 @@ export async function runOwnerRule(argv, deps) {
  * relevant is imported from this repository at run time.
  */
 export async function realDeps({ liveDir = DEFAULT_LIVE_DIR, now = () => Date.now() } = {}) {
-  const url = (file) => `file:///${path.resolve(liveDir, file).split(path.sep).join("/")}`;
+  const url = (file) => pathToFileURL(path.resolve(liveDir, file)).href;
   const host = await import(url("briefing-server.mjs"));
   const ruling = await import(url("_continuity/owner-ruling.js"));
   const presence = await import(url("_continuity/owner-presence.js"));
@@ -149,8 +150,12 @@ export async function realDeps({ liveDir = DEFAULT_LIVE_DIR, now = () => Date.no
   };
 }
 
+// pathToFileURL, not a hand-built `file:///` + path. On POSIX the manual form
+// produced `file:////home/...` — four slashes — so this test was false and the
+// entry point silently did nothing when spawned. It only ever worked because
+// Windows paths start with a drive letter.
 const invokedDirectly = process.argv[1]
-  && import.meta.url === `file:///${process.argv[1].split(path.sep).join("/")}`;
+  && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (invokedDirectly) {
   const result = await runOwnerRule(process.argv.slice(2), await realDeps());
   console.log(JSON.stringify(result, null, 2));
