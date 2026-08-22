@@ -254,7 +254,8 @@ export async function deployedWorld({ damage = null } = {}) {
         "---", `id: ${id}`, `loop: ${loop}`, "title: An owner ruling is required",
         "severity: medium", `status: ${status}`, "fingerprint: deployed",
         "opened: 2026-08-22T08:00:00+10:00", "updated: 2026-08-22T08:00:00+10:00",
-        "occurrences: 1", `proposed: ${proposed}`, "---", "", "# An owner ruling is required", "",
+        "occurrences: 1", "---", "", "# An owner ruling is required", "",
+        ...(String(proposed).trim() ? ["## Proposed action", "", proposed, ""] : []),
         // The two sections the read surface may show, plus one it must not, so
         // a test can tell "the section was absent" apart from "the surface
         // withheld it".

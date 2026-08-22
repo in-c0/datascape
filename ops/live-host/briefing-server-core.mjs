@@ -44,7 +44,7 @@ import * as exceptions from "../exception.mjs"
 // staged or installed live host, so a production process cannot silently pick
 // up whatever happens to be checked out in the repo right now.
 import {
-  createPromptBudget, createRulingJournal, createRulingJournalStorage, performOwnerRuling,
+  createPromptBudget, createRulingJournal, createRulingJournalStorage, performOwnerRuling, performOwnerRulingBatch,
 } from "./owner-ruling.js"
 import { createOwnerPresenceVerifier, stripClaimedVerification } from "./owner-presence.js"
 import { applyRulingAtomically, exceptionFile } from "./exception-atomic.js"
@@ -543,6 +543,31 @@ export function createServer(deps = null, {
         // Any claimed verification in the payload is removed rather than
         // rejected, so no code written later can read it by accident.
         const { request } = stripClaimedVerification(body)
+
+        // A BATCH is one prompt enumerating N rulings (owner request,
+        // 2026-08-22: per-act dialogs were the friction). Every item passes
+        // the same pre-prompt gates as a single ruling; the dialog lists
+        // every act it grants; per-item staleness still applies after it.
+        if (Array.isArray(request?.batch)) {
+          const outcome = await performOwnerRulingBatch({
+            requests: request.batch.map((item) => stripClaimedVerification(item).request),
+            ...owner,
+          })
+          if (!outcome.ok) {
+            return send(res, REFUSAL_STATUS[outcome.failure] ?? 403, {
+              error: outcome.failure,
+              mutation_performed: outcome.mutation_performed === true,
+              detail: outcome.reason,
+              ...(outcome.item ? { item: outcome.item } : {}),
+            }, origin)
+          }
+          return send(res, 200, {
+            batch_ref: outcome.batch_ref,
+            performed: outcome.performed,
+            skipped: outcome.skipped,
+            results: outcome.results,
+          }, origin)
+        }
 
         const outcome = await performOwnerRuling({ request, ...owner })
         if (!outcome.ok) {

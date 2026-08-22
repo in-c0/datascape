@@ -838,3 +838,35 @@ body:has(.bf-root) { overflow: auto; }
   border-bottom: 1px solid rgba(167, 139, 250, 0.35); padding-bottom: 1px;
 }
 .bf-authorityentry:hover { border-bottom-color: var(--bf-violet); }
+
+/* ---- the ruling tray (batch mode: N rulings, one Windows confirm) -------- */
+.bf-tray {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 14px;
+  z-index: 40; /* above cards (5) and panels (30): the tray is chrome, not scene */
+  max-width: min(860px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 14px;
+  border: 1px solid rgba(96, 110, 152, 0.45);
+  border-radius: 12px;
+  background: var(--bf-panel);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
+  font-size: 12.5px;
+}
+.bf-tray__mode { display: flex; align-items: center; gap: 8px; color: var(--bf-muted); cursor: pointer; user-select: none; }
+.bf-tray__mode input { accent-color: var(--bf-violet); }
+.bf-tray__items { display: flex; flex-wrap: wrap; gap: 6px; }
+.bf-tray__item {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 8px; border: 1px solid rgba(96, 110, 152, 0.4); border-radius: 999px;
+  color: var(--bf-text);
+}
+.bf-tray__item em { font-style: normal; color: var(--bf-amber); font-size: 11px; }
+.bf-tray__item button { border: 0; background: none; color: var(--bf-muted); cursor: pointer; font-size: 13px; padding: 0 2px; }
+.bf-tray__item button:hover { color: #fff; }
+.bf-tray__actions { display: flex; gap: 8px; }
+.bf-tray__note { margin: 0; color: var(--bf-muted); }

@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { store } from "../store.js";
 import { config } from "../../datascape.config.js";
-import { actionsAvailable, recordAction } from "./actions.js";
+import { ACTIONS, actionsAvailable, recordAction, recordActionBatch } from "./actions.js";
+import { rulingTray } from "./batch-queue.js";
 import Authored from "./authored.jsx";
 import TemporalStage, { MARGIN_X, STAGE_RIGHT } from "./TemporalStage.jsx";
 import SemanticStage from "./SemanticStage.jsx";
@@ -231,7 +232,7 @@ function CTA({ action, onDone, api }) {
   if (result) {
     return (
       <p className="bf-note bf-note--ok">
-        {result.resumesNextTick
+        {result.queued ? `Queued — applies with one confirm from the tray below` : result.resumesNextTick
           ? `Ruling saved · ${result.loop || "the lane"} resumes next tick`
           : `Ruling sent → ${result.loop || "the lane"}`}
       </p>
@@ -241,6 +242,14 @@ function CTA({ action, onDone, api }) {
   const hasProposed = hasProposedAction;
 
   async function run(kind, payload = {}) {
+    // Tray mode queues the act instead of prompting now; the ONE prompt at
+    // Apply-all enumerates everything queued. Nothing is sent from here.
+    if (rulingTray.get().mode) {
+      rulingTray.add({ id: action.id, action: kind, ...payload, title: action.title });
+      setResult({ queued: true, loop: action.loop });
+      onDone?.(null);
+      return;
+    }
     setError(null);
     setPending(kind);
     try {
@@ -826,7 +835,79 @@ function BriefingSurface({ data }) {
           <button type="button" onClick={() => setShowDeferred(false)}>close</button>
         </aside>
       )}
+      <RulingTray />
     </main>
+  );
+}
+
+
+// The ruling tray — the visible half of "N rulings, one confirm".
+//
+// Rendered whenever tray mode is on or acts are queued, above the stage,
+// fixed to the bottom so it survives every scene recomposition. Apply sends
+// the whole queue as ONE batch: the server enumerates every act in a single
+// Windows prompt, so she reads one dialog instead of N.
+function RulingTray() {
+  const tray = useSyncExternalStore(rulingTray.subscribe, rulingTray.get, rulingTray.get);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState(null);
+
+  if (!actionsAvailable()) return null;
+  // The toggle must exist BEFORE the first queueing act, so the tray always
+  // renders at least its mode pill; it grows when acts are queued.
+
+  async function applyAll() {
+    setBusy(true);
+    setNote(null);
+    try {
+      const outcome = await recordActionBatch(tray.items.map(({ id, action, note: n, until }) => ({
+        id, action, note: n, until,
+      })));
+      rulingTray.settle(outcome.results);
+      const stale = (outcome.results || []).filter((r) => r.failure === "stale_owner_operation");
+      setNote(
+        `${outcome.performed} ruling${outcome.performed === 1 ? "" : "s"} applied`
+        + (stale.length ? ` · ${stale.length} changed while the dialog was open — reopen ${stale.map((s) => s.exception_id).join(", ")}` : ""),
+      );
+    } catch (err) {
+      // The queue is kept: a refused batch applied NOTHING, so nothing is lost.
+      setNote(err.message || String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <aside className="bf-tray" aria-label="Queued rulings">
+      <label className="bf-tray__mode">
+        <input
+          type="checkbox"
+          checked={tray.mode}
+          onChange={(event) => rulingTray.setMode(event.target.checked)}
+        />
+        Batch mode — queue rulings, one confirm for all
+      </label>
+      {tray.items.length > 0 && (
+        <>
+          <div className="bf-tray__items">
+            {tray.items.map((item) => (
+              <span key={item.id} className="bf-tray__item">
+                <em>{(ACTIONS[item.action]?.label || item.action)}</em>
+                {(item.title || item.id).slice(0, 44)}
+                <button type="button" aria-label={`Remove ${item.id}`} onClick={() => rulingTray.remove(item.id)}>×</button>
+              </span>
+            ))}
+          </div>
+          <div className="bf-tray__actions">
+            <button type="button" className="bf-cta__btn bf-cta__btn--approve" disabled={busy} onClick={applyAll}>
+              {busy ? "…" : `Apply ${tray.items.length} — one confirm`}
+            </button>
+            <button type="button" className="bf-cta__btn" disabled={busy} onClick={() => rulingTray.clear()}>Clear</button>
+          </div>
+        </>
+      )}
+      {note && <p className="bf-tray__note">{note}</p>}
+    </aside>
   );
 }
 

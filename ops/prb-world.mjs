@@ -166,11 +166,17 @@ export function fixture(world, { id = "2026-08-22-acceptance-0001", status = "bl
     "opened: 2026-08-22T08:00:00+10:00",
     "updated: 2026-08-22T08:00:00+10:00",
     "occurrences: 1",
-    `proposed: ${proposed}`,
     "---",
     "",
     "# An owner ruling is required",
     "",
+    // The proposal lives in the BODY as a "## Proposed action" section, exactly
+    // as exception.mjs writes it. The old fixture put a `proposed:` key in the
+    // frontmatter - a shape the real store never produces - so these tests
+    // passed against a readException that read frontmatter and NEVER worked on
+    // a real exception (every production Approve refused, owner report
+    // 2026-08-22). A fixture that mirrors the bug can only certify the bug.
+    ...(String(proposed).trim() ? ["## Proposed action", "", proposed, ""] : []),
   ].join("\n"));
   return id;
 }
