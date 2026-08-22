@@ -7,7 +7,11 @@
 
 .bf-root {
   --bf-bg: #05060d;
-  --bf-panel: rgba(13, 16, 31, 0.82);
+  /* Near-opaque, not 0.82: the card floats over the focal node's own bright
+     label, and backdrop-filter is not guaranteed (ancestor filters and some
+     GPU paths disable it) - at 0.82 the label ghosts straight through the
+     card as doubled text. Blur stays as a progressive enhancement. */
+  --bf-panel: rgba(13, 16, 31, 0.97);
   --bf-line: rgba(84, 98, 140, 0.28);
   --bf-text: #e8ecf6;
   --bf-muted: #8b96b3;
