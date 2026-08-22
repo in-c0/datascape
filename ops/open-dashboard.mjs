@@ -22,6 +22,9 @@ import { fileURLToPath } from "node:url";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, "..");
 const PORT = Number(process.env.DASHBOARD_PORT || 5313);
+// --detach: leave the server running after this process exits. Use it when
+// something other than a person at a terminal is starting the dashboard.
+const DETACH = process.argv.includes("--detach");
 // 127.0.0.1, not localhost — and the server is bound to match.
 //
 // Vite defaults to binding [::1] only. curl and Node reach that happily, so
@@ -118,9 +121,23 @@ if (await reachable()) {
     say("  run `npm install` in the repo first.");
     process.exit(1);
   }
+  // DETACHED means "outlives whoever started me".
+  //
+  // Without it the server is a child of this process, and a child dies with its
+  // parent. That is correct when SHE runs this in a terminal and leaves it
+  // open — Ctrl+C should stop the dashboard. It is wrong when an agent session
+  // starts it on her behalf: the session ends, the child is reaped, and the
+  // next thing she sees is ERR_CONNECTION_REFUSED on a link she was just
+  // handed. That happened twice before this flag existed.
   server = spawn(process.execPath, [vite, "--port", String(PORT), "--strictPort", "--host", HOST],
-    { cwd: REPO, env: { ...process.env, VITE_DATA_BASE: "/data/", MSYS_NO_PATHCONV: "1" }, stdio: "ignore" });
+    {
+      cwd: REPO,
+      env: { ...process.env, VITE_DATA_BASE: "/data/", MSYS_NO_PATHCONV: "1" },
+      stdio: "ignore",
+      detached: DETACH,
+    });
   server.on("error", (error) => say(`! the server could not start: ${error.message}`));
+  if (DETACH) server.unref();
 
   const deadline = Date.now() + 40000;
   let up = false;
@@ -141,7 +158,11 @@ say("");
 say(`  ${URL_}`);
 say("");
 openBrowser(URL_);
-say("opening it in your browser. Ctrl+C here stops the server.");
+if (DETACH) {
+  say("opening it in your browser. The server keeps running after this exits.");
+} else {
+  say("opening it in your browser. Ctrl+C here stops the server.");
+}
 
 const stop = () => { try { server?.kill(); } catch { /* already gone */ } process.exit(0); };
 process.on("SIGINT", stop);
