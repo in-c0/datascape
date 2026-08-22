@@ -14,7 +14,9 @@
 
 import { createAuthorityStore, createOwnerBoundary, shadowReauditRequest } from "./authority-store.js";
 import { sanitizeClientRequest } from "./authority-request.js";
+import { promptForReceipt } from "./authority-commit.js";
 import { composeEnvelope, renderPreview } from "./authority-draft.js";
+import { materialEvents } from "./authority-events.js";
 import { createReceiptStore, receiptPreview } from "./authority-receipt.js";
 
 /** The small, explicit failure taxonomy (§17). No stack traces cross this line. */
@@ -64,7 +66,7 @@ export function createAuthorityEndpoint({
 
   const fail = (failure, reason, extra = {}) => ({ ok: false, failure, reason, ...extra });
 
-  function authorize(rawBody) {
+  function authorize(rawBody, requireReceiptHere = requireReceipt) {
     // Identity-shaped fields are REMOVED, not merely rejected: a rejected spoof
     // still reached the decision, and stripped fields cannot be read by code
     // written later that forgets why the check was there.
@@ -106,7 +108,7 @@ export function createAuthorityEndpoint({
     let scopeRefs = request.scope_refs;
     let receiptId = null;
 
-    if (requireReceipt) {
+    if (requireReceiptHere) {
       const verified = receiptStore.verify(request.preview_receipt, {
         action: request.authorization_action,
         goalId: request.goal_id,
@@ -227,12 +229,47 @@ export function createAuthorityEndpoint({
       base_authority_revision: receipt.base_authority_revision,
       resulting_scope_refs: receipt.resulting_scope_refs,
       preview: receipt.normalized_policy ? receiptPreview(receipt, envelope, renderPreview) : null,
+      // THE HOST'S OWN PROMPT TEXT, from the same function the commit path
+      // hands the verifier. The surface refuses to draw a prepared review
+      // without it, and this endpoint is a host like any other — an invariant
+      // that held on one host and not the other would be a coin toss over which
+      // one she happened to be talking to.
+      prompt_preview: promptForReceipt(receipt),
     };
   }
 
   const handlers = {
     authorize,
     prepare,
+
+    /**
+     * COMMIT — the two-string wire, on the in-process path too.
+     *
+     * The browser client speaks one protocol now: prepare, then commit with an
+     * operation id and a receipt. Leaving this endpoint reachable only through
+     * `authorize` would have meant two client protocols for two hosts, and the
+     * one the live surface used was the one that no longer worked.
+     *
+     * The receipt is REQUIRED here regardless of this endpoint's default,
+     * because a commit with no receipt has nothing binding it to a review.
+     */
+    commit(rawBody) {
+      const body = rawBody ?? {};
+      if (!body.operation_id) {
+        return fail("invalid_commit", "an authority commit needs a stable operation id");
+      }
+      // Replay of a committed operation needs no receipt: it consumed its own.
+      if (!body.preview_receipt) {
+        const done = store.completedOperation(body.operation_id);
+        if (!done) {
+          return fail("no_committed_operation",
+            "there is no completed operation with that id to replay, and an id alone cannot start one");
+        }
+        return authorize({ operation_id: body.operation_id }, false);
+      }
+      return authorize({ operation_id: body.operation_id, preview_receipt: body.preview_receipt }, true);
+    },
+
     /**
      * ONE atomic contextual read (PR B third review, P0-1).
      *
@@ -298,7 +335,9 @@ export function createAuthorityEndpoint({
     history: store.history,
     observableState: store.observableState,
     recoveredOnOpen: store.recoveredOnOpen,
-    materialEvents: store.materialEvents,
+    // The projection moved out of the store so the deployed authority set
+    // does not carry the event schema. The endpoint still offers it.
+    materialEvents: () => materialEvents(store),
   };
 }
 

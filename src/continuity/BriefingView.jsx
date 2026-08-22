@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { store } from "../store.js";
 import { config } from "../../datascape.config.js";
-import { actionsAvailable, recordAction } from "./actions.js";
+import { ACTIONS, actionsAvailable, recordAction, recordActionBatch } from "./actions.js";
+import { rulingTray } from "./batch-queue.js";
 import Authored from "./authored.jsx";
 import TemporalStage, { MARGIN_X, STAGE_RIGHT } from "./TemporalStage.jsx";
 import SemanticStage from "./SemanticStage.jsx";
@@ -231,7 +232,7 @@ function CTA({ action, onDone, api }) {
   if (result) {
     return (
       <p className="bf-note bf-note--ok">
-        {result.resumesNextTick
+        {result.queued ? `Queued — applies with one confirm from the tray below` : result.resumesNextTick
           ? `Ruling saved · ${result.loop || "the lane"} resumes next tick`
           : `Ruling sent → ${result.loop || "the lane"}`}
       </p>
@@ -241,6 +242,14 @@ function CTA({ action, onDone, api }) {
   const hasProposed = hasProposedAction;
 
   async function run(kind, payload = {}) {
+    // Tray mode queues the act instead of prompting now; the ONE prompt at
+    // Apply-all enumerates everything queued. Nothing is sent from here.
+    if (rulingTray.get().mode) {
+      rulingTray.add({ id: action.id, action: kind, ...payload, title: action.title });
+      setResult({ queued: true, loop: action.loop });
+      onDone?.(null);
+      return;
+    }
     setError(null);
     setPending(kind);
     try {
@@ -571,6 +580,11 @@ function BriefingSurface({ data }) {
       order: r.temporal ? ranked.findIndex((x) => x.key === r.key) + 1 : 0,
     }));
   }, [scene.timeline, scene.nodes, sceneNow]);
+
+  // Temporal placement is an AMBIENT composition; an open card supersedes it.
+  // (Fix for the wide-viewport ghost-text defect: placed copies of the focal
+  // record must never co-render with the record card.)
+  const temporalActive = temporalRows.length > 0 && !scene.card;
   const focalPoint = geometry.points.find((p) => p.key === focalNodes[0]?.key)
     || { x: 64, y: Math.max(70, geometry.height / 2) };
 
@@ -691,20 +705,27 @@ function BriefingSurface({ data }) {
 
       {/* The stage IS the temporal field — no strip above it, no card edge.
           x = when, y = semantic topology. */}
+      {/* The temporal (absolute, time-placed) composition disengages the moment
+          a card is open. The lane branch keeps scene.timeline set all the way
+          down to the Z2 leaf, and at >=901px the temporal modifier destroys the
+          two-column grid while the placed copies of the very record being read
+          stay mounted - so the card and the node text painted on top of each
+          other (owner report, 2026-08-22). A card means "read this one thing":
+          it gets the reviewed grid layout, not the ambient field. */}
       <section
-        className={`bf-stage${scene.card ? "" : " bf-stage--nocard"}${scene.timeline ? " bf-stage--temporal" : ""}`}
+        className={`bf-stage${scene.card ? "" : " bf-stage--nocard"}${temporalActive ? " bf-stage--temporal" : ""}`}
         ref={containerRef}
         // The field ends where the content ends. A fixed 620px stage left a
         // third of the screen as empty gradient with a hard edge under it,
         // which read as a panel again.
-        style={scene.timeline ? { minHeight: temporalRows.length ? Math.max(...temporalRows.map((r) => r.y)) + 150 : 260 } : undefined}
+        style={temporalActive ? { minHeight: temporalRows.length ? Math.max(...temporalRows.map((r) => r.y)) + 150 : 260 } : undefined}
       >
-        {scene.timeline && <TemporalStage timeline={scene.timeline} rows={temporalRows} />}
+        {temporalActive && <TemporalStage timeline={scene.timeline} rows={temporalRows} />}
         <ThreadFan geometry={geometry} origin={focalPoint} enabled={hasFocalColumn || hasPlacedOrigin} />
         {/* The focal node IS the fan origin, in its own column. Drawing it as
             the first child (with the fan starting from an invisible point) was
             the visual review's P0: the eye could not tell what it was inside. */}
-        {temporalRows.length > 0 ? (
+        {temporalActive ? (
           <div className="bf-placed">
             {temporalRows.map(({ key, node: n, x, y, temporal, order }) => (
               <div
@@ -814,7 +835,79 @@ function BriefingSurface({ data }) {
           <button type="button" onClick={() => setShowDeferred(false)}>close</button>
         </aside>
       )}
+      <RulingTray />
     </main>
+  );
+}
+
+
+// The ruling tray — the visible half of "N rulings, one confirm".
+//
+// Rendered whenever tray mode is on or acts are queued, above the stage,
+// fixed to the bottom so it survives every scene recomposition. Apply sends
+// the whole queue as ONE batch: the server enumerates every act in a single
+// Windows prompt, so she reads one dialog instead of N.
+function RulingTray() {
+  const tray = useSyncExternalStore(rulingTray.subscribe, rulingTray.get, rulingTray.get);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState(null);
+
+  if (!actionsAvailable()) return null;
+  // The toggle must exist BEFORE the first queueing act, so the tray always
+  // renders at least its mode pill; it grows when acts are queued.
+
+  async function applyAll() {
+    setBusy(true);
+    setNote(null);
+    try {
+      const outcome = await recordActionBatch(tray.items.map(({ id, action, note: n, until }) => ({
+        id, action, note: n, until,
+      })));
+      rulingTray.settle(outcome.results);
+      const stale = (outcome.results || []).filter((r) => r.failure === "stale_owner_operation");
+      setNote(
+        `${outcome.performed} ruling${outcome.performed === 1 ? "" : "s"} applied`
+        + (stale.length ? ` · ${stale.length} changed while the dialog was open — reopen ${stale.map((s) => s.exception_id).join(", ")}` : ""),
+      );
+    } catch (err) {
+      // The queue is kept: a refused batch applied NOTHING, so nothing is lost.
+      setNote(err.message || String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <aside className="bf-tray" aria-label="Queued rulings">
+      <label className="bf-tray__mode">
+        <input
+          type="checkbox"
+          checked={tray.mode}
+          onChange={(event) => rulingTray.setMode(event.target.checked)}
+        />
+        Batch mode — queue rulings, one confirm for all
+      </label>
+      {tray.items.length > 0 && (
+        <>
+          <div className="bf-tray__items">
+            {tray.items.map((item) => (
+              <span key={item.id} className="bf-tray__item">
+                <em>{(ACTIONS[item.action]?.label || item.action)}</em>
+                {(item.title || item.id).slice(0, 44)}
+                <button type="button" aria-label={`Remove ${item.id}`} onClick={() => rulingTray.remove(item.id)}>×</button>
+              </span>
+            ))}
+          </div>
+          <div className="bf-tray__actions">
+            <button type="button" className="bf-cta__btn bf-cta__btn--approve" disabled={busy} onClick={applyAll}>
+              {busy ? "…" : `Apply ${tray.items.length} — one confirm`}
+            </button>
+            <button type="button" className="bf-cta__btn" disabled={busy} onClick={() => rulingTray.clear()}>Clear</button>
+          </div>
+        </>
+      )}
+      {note && <p className="bf-tray__note">{note}</p>}
+    </aside>
   );
 }
 

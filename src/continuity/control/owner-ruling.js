@@ -531,3 +531,140 @@ export async function performOwnerRuling({
     prompt_shown: true, mutation_performed: true,
   };
 }
+
+/**
+ * N rulings, ONE dialog — the batch transaction (owner request, 2026-08-22:
+ * "windows dialogue per act is annoying").
+ *
+ * This is deliberately NOT a grace window. A time-window grant after one
+ * dialog would let an agent driving her already-open browser piggyback
+ * rulings she never saw — the exact threat the per-act prompt exists to stop,
+ * on a machine where autonomous sessions drive browsers all day. Batching
+ * keeps the invariant intact: the ONE prompt enumerates every act it grants,
+ * line by line, so nothing is performed that was not on the dialog she read.
+ *
+ * Composition, not a new mechanism:
+ *  - every item goes through the same prepare / class / idempotency /
+ *    current-state gates as a single ruling, ALL BEFORE the prompt — one
+ *    invalid item refuses the whole batch, so the dialog can never enumerate
+ *    an act the host would refuse;
+ *  - one verification, bound to a batch operation_ref derived from the ordered
+ *    item refs, consumed exactly once (the one-shot identity capability is
+ *    unchanged);
+ *  - staleness is re-checked PER ITEM after the prompt; an item that changed
+ *    while the dialog was up is skipped and reported stale — she reviewed the
+ *    old state of that item, so it alone needs a fresh review — while the
+ *    untouched items she approved still land;
+ *  - each item keeps its own journal lifecycle, so a crash mid-batch leaves
+ *    per-item recoverable records exactly like the single path.
+ */
+export async function performOwnerRulingBatch({
+  requests, readException, applyMutation, verifier, journal, budget, now,
+}) {
+  const at = now();
+  const refuse = (failure, reason, extra = {}) => ({
+    ok: false, failure, reason, prompt_shown: false, mutation_performed: false, ...extra,
+  });
+
+  if (!Array.isArray(requests) || requests.length === 0) {
+    return refuse("invalid_action", "a batch needs at least one ruling");
+  }
+  if (requests.length > 20) {
+    // A dialog she cannot read is consent she cannot give.
+    return refuse("invalid_action", "a batch is capped at 20 rulings per prompt");
+  }
+
+  // 1. Prepare EVERYTHING first. The prompt may only ever enumerate acts that
+  //    would individually pass every pre-prompt gate right now.
+  const items = [];
+  const seen = new Set();
+  for (const request of requests) {
+    const exception = readException(request?.id);
+    const prepared = prepareOwnerMutation({ request, exception, at });
+    if (!prepared.ok) {
+      return refuse(prepared.failure, `${request?.id ?? "?"}: ${prepared.reason}`, { item: request?.id ?? null });
+    }
+    const mutation = prepared.mutation;
+    if (!requiresOwnerPresence(mutation.action)) {
+      return refuse("invalid_action", `${mutation.exception_id}: not an owner ruling`, { item: mutation.exception_id });
+    }
+    if (!mutation.operation_id) {
+      return refuse("invalid_action", `${mutation.exception_id}: an owner ruling needs a stable operation id`, { item: mutation.exception_id });
+    }
+    if (seen.has(mutation.exception_id)) {
+      // Two rulings on one exception inside one prompt cannot both describe
+      // the state she reviewed.
+      return refuse("invalid_action", `${mutation.exception_id}: appears twice in one batch`, { item: mutation.exception_id });
+    }
+    seen.add(mutation.exception_id);
+
+    const idempotent = journal.check(mutation);
+    if (idempotent.outcome !== "new") {
+      // Replays and recoveries carry per-item history a batch prompt cannot
+      // honestly summarise. Rare by construction; the client retries those
+      // individually through the single path, which knows how to resolve them.
+      return refuse("batch_item_not_new", `${mutation.exception_id}: ${idempotent.outcome} — rule on it individually`, { item: mutation.exception_id });
+    }
+    const valid = validateCurrentState(mutation, exception);
+    if (!valid.ok) {
+      return refuse(valid.failure, `${mutation.exception_id}: ${valid.reason}`, { item: mutation.exception_id });
+    }
+    items.push({ mutation });
+  }
+
+  // 2. One prompt-budget slot for one prompt.
+  const allowed = budget.mayPrompt();
+  if (!allowed.ok) return refuse(allowed.failure, allowed.reason);
+
+  for (const { mutation } of items) journal.begin(mutation);
+  const abortAll = (outcome) => { for (const { mutation } of items) journal.abort(mutation, outcome); };
+
+  // 3. ONE verification whose purpose is the enumerated batch.
+  const batchRef = `batch:${sha(items.map((i) => i.mutation.operation_ref).join("|")).slice(0, 24)}`;
+  const purpose = [
+    `Apply ${items.length} owner ruling${items.length === 1 ? "" : "s"}:`,
+    ...items.map(({ mutation }, n) => `${n + 1}. ${promptFor(mutation)}`),
+  ].join("\n");
+  const verification = await verifier.verify({ purpose, operationRef: batchRef });
+  budget.recordOutcome(verification.outcome);
+  if (verification.outcome !== "verified") {
+    abortAll(verification.outcome);
+    return {
+      ok: false, failure: verification.outcome, reason: verification.reason,
+      prompt_shown: true, mutation_performed: false,
+    };
+  }
+
+  // 4. Consume the one-shot capability for the batch, exactly once.
+  const consumed = verifier.authorizes(verification, batchRef);
+  if (!consumed.ok) {
+    abortAll(consumed.reason);
+    return { ok: false, failure: "presence_not_valid", reason: consumed.reason, prompt_shown: true, mutation_performed: false };
+  }
+
+  // 5. Per-item staleness, then perform. Only items still EXACTLY as reviewed
+  //    are applied; the rest are reported for a fresh, individual review.
+  const results = [];
+  let performed = 0;
+  for (const { mutation } of items) {
+    const current = readException(mutation.exception_id);
+    if (exceptionFingerprint(current) !== mutation.exception_fingerprint) {
+      journal.abort(mutation, "stale_owner_operation");
+      results.push({
+        exception_id: mutation.exception_id, ok: false, failure: "stale_owner_operation",
+        reason: "this exception changed while the verification was open",
+      });
+      continue;
+    }
+    const result = applyMutation(mutation);
+    journal.complete(mutation, result);
+    performed += 1;
+    results.push({ exception_id: mutation.exception_id, ok: true, ...result });
+  }
+
+  return {
+    ok: true, batch_ref: batchRef, results,
+    prompt_shown: true, mutation_performed: performed > 0,
+    performed, skipped: results.length - performed,
+  };
+}

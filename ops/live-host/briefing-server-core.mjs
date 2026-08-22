@@ -44,11 +44,12 @@ import * as exceptions from "../exception.mjs"
 // staged or installed live host, so a production process cannot silently pick
 // up whatever happens to be checked out in the repo right now.
 import {
-  createPromptBudget, createRulingJournal, createRulingJournalStorage, performOwnerRuling,
+  createPromptBudget, createRulingJournal, createRulingJournalStorage, performOwnerRuling, performOwnerRulingBatch,
 } from "./owner-ruling.js"
 import { createOwnerPresenceVerifier, stripClaimedVerification } from "./owner-presence.js"
 import { applyRulingAtomically, exceptionFile } from "./exception-atomic.js"
 import { createWindowsOwnerPresenceBroker } from "./owner-presence-windows.js"
+import { createOwnerPresenceCoordinator } from "./owner-presence-coordinator.js"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 // HERE is now `<ops>/_continuity`, so the decisions mirror is two levels up.
@@ -160,6 +161,15 @@ export const ACTIONS = {
  * Everything the ruling depends on comes from here. The request supplies which
  * exception and which class; it supplies no state.
  */
+// Mirror of the briefing builder's Proposed-action extraction (briefing.mjs).
+// One regex, two consumers, one meaning.
+const PROPOSED_RE = /##\s*Proposed action\s*\r?\n([\s\S]*?)(?=\r?\n##|\r?\n---|$)/i
+function extractProposed(body) {
+  const m = String(body ?? "").match(PROPOSED_RE)
+  const text = m ? m[1].trim() : ""
+  return text && text !== "_(none proposed)_" ? text : null
+}
+
 export function readException(id) {
   if (!id) return null
   const found = exceptions.find(id)
@@ -168,7 +178,18 @@ export function readException(id) {
     id: found.meta.id,
     status: found.meta.status,
     updated: found.meta.updated,
-    proposed: found.meta.proposed ?? found.proposed ?? null,
+    // The proposal lives in the BODY as a "## Proposed action" section - the
+    // exception store has no `proposed` frontmatter key and find() derives no
+    // such field, so the old `found.meta.proposed ?? found.proposed` was null
+    // for EVERY exception and every Approve refused with "has no current
+    // proposal to approve" (owner report, 2026-08-22 - the first real ruling
+    // ever attempted through the surface). Extract it with the SAME regex the
+    // briefing builder uses, because "Approve proposed" is offered exactly
+    // when THAT parser finds one; two parsers that disagree turn a rendered
+    // button into a guaranteed refusal. The filed-empty placeholder counts as
+    // no proposal: approving "_(none proposed)_" is a prompt with nothing
+    // behind it.
+    proposed: extractProposed(found.body),
     proposal_ref: found.meta.proposal_ref ?? null,
     proposal_revision: found.meta.proposal_revision ?? null,
     deferred_until: found.meta.deferred_until ?? null,
@@ -246,8 +267,30 @@ export function applyOwnerMutation(mutation) {
  * verifier and an isolated store — and so nothing here can reach a Windows
  * dialog unless a broker that can show one was deliberately supplied.
  */
+/**
+ * The host's single owner-presence coordinator.
+ *
+ * Created once, after the base preflight passes, and shared by every route that
+ * can ask for her. Two independently-constructed verifiers could each honour
+ * "one outstanding prompt" and still put two Windows dialogs on screen; two
+ * independent prompt budgets could each be evaded by alternating routes.
+ */
+export function createHostPresence({
+  allowInteractive = process.env.OWNER_PRESENCE_INTERACTIVE !== "0",
+  now = () => Date.now(),
+  verifier = null,
+  budget = null,
+} = {}) {
+  return createOwnerPresenceCoordinator({
+    now, verifier, budget,
+    broker: verifier ? null : createWindowsOwnerPresenceBroker({ allowInteractive }),
+    randomChallenge: () => crypto.randomUUID(),
+  })
+}
+
 export function createOwnerRulingDeps({
   verifier = null,
+  presence = null,
   journalFile = process.env.OWNER_RULING_JOURNAL
     || path.join(process.env.LOCALAPPDATA || HERE, "datascape", "live-host", "owner-rulings.json"),
   // INTERACTIVE BY DEFAULT, disabled by an explicit "0".
@@ -271,6 +314,12 @@ export function createOwnerRulingDeps({
   allowInteractive = process.env.OWNER_PRESENCE_INTERACTIVE !== "0",
   now = () => Date.now(),
 } = {}) {
+  // One coordinator for the whole host. A caller may hand one in (the entry
+  // point does, so authority shares it); otherwise this route creates the
+  // host's coordinator and later subsystems take handles from it.
+  const coordinator = presence ?? createHostPresence({ allowInteractive, now, verifier })
+  const mine = coordinator.forSubsystem("owner_rulings")
+
   const journal = createRulingJournal({ storage: createRulingJournalStorage(journalFile), now })
   // Forward recovery on startup: any ruling that was mid-flight when a previous
   // process died is resolved by looking for its ref in the exception itself.
@@ -281,16 +330,15 @@ export function createOwnerRulingDeps({
     readException,
     applyMutation: applyOwnerMutation,
     journal,
-    budget: createPromptBudget({ now }),
+    presence: coordinator,
+    budget: mine.budget,
     // Stated so the host can report whether it is actually able to verify her.
     // The previous shape was silently incapable: the runtime loaded, the route
     // answered, and no ruling could ever complete.
     interactive_permitted: verifier ? null : allowInteractive,
-    verifier: verifier ?? createOwnerPresenceVerifier({
-      broker: createWindowsOwnerPresenceBroker({ allowInteractive }),
-      now,
-      randomChallenge: () => crypto.randomUUID(),
-    }),
+    verifier: mine.verifier,
+    // Startup recovery results. Dropped by an earlier edit and caught by the
+    // crash-window tests, which is exactly what they are for.
     recovered,
   }
 }
@@ -299,13 +347,24 @@ export function createOwnerRulingDeps({
 // Server
 // ---------------------------------------------------------------------------
 
-function send(res, code, body, origin) {
+function send(res, code, body, origin, credentialedOrigin = null) {
   const json = JSON.stringify(body)
   res.writeHead(code, {
     "Content-Type": "application/json",
     "Content-Length": Buffer.byteLength(json),
     "Cache-Control": "no-store",
+    // A SPECIFIC origin, echoed only after it passed the loopback check above —
+    // never `*`.
     ...(origin ? { "Access-Control-Allow-Origin": origin, "Vary": "Origin" } : {}),
+    // CREDENTIALS ONLY FOR THE EXACT OWNER-CONTROLS ORIGIN.
+    //
+    // Credentialing every loopback origin was a hole I opened by adding this
+    // header globally. Ports do not separate sites, so once she has unlocked,
+    // a page on any other loopback port could fetch with credentials:include,
+    // the browser would attach the HttpOnly cookie, and this server would
+    // gladly echo that origin back with credentials enabled.
+    ...(origin && credentialedOrigin && origin === credentialedOrigin
+      ? { "Access-Control-Allow-Credentials": "true" } : {}),
     "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
   })
@@ -344,7 +403,26 @@ const REFUSAL_STATUS = {
   prompt_lockout: 429,
 }
 
-export function createServer(deps = null, { ownerRulings = true, unverifiedReason = null } = {}) {
+/** Everything under this prefix belongs to the authority subsystem. */
+export const AUTHORITY_PREFIX = "/__continuity/authority"
+
+/**
+ * @param authority an object with `handle(req, res, url, ctx) -> boolean`, or
+ *   null. NULL IS THE DEFAULT AND THE SAFE STATE: the authority routes answer
+ *   503 and this file never learns what they would have done.
+ *
+ *   The core is the live owner-ruling runtime. It must not statically import
+ *   authority modules, because a missing or corrupt authority build would then
+ *   stop the base host from loading at all — taking her working inbox controls
+ *   down with a subsystem she was not even using. The entry point composes the
+ *   two dynamically, after each has passed its own preflight.
+ */
+export function createServer(deps = null, {
+  ownerRulings = true, unverifiedReason = null, authority = null, authorityReason = null,
+  // The ONE origin allowed to send the owner-read cookie. Everything else
+  // keeps the old non-credentialed loopback CORS.
+  ownerControlsOrigin = process.env.CONTINUITY_OWNER_CONTROLS_ORIGIN || null,
+} = {}) {
   // Built once per server, not per request: the prompt budget and the
   // one-outstanding-prompt rule are only meaningful if they are shared.
   //
@@ -358,9 +436,31 @@ export function createServer(deps = null, { ownerRulings = true, unverifiedReaso
     if (!isLoopbackHost(req.headers.host) || !originAllowed(origin)) {
       return send(res, 403, { error: "loopback only" })
     }
-    if (req.method === "OPTIONS") return send(res, 204, {}, origin)
-
     const url = new URL(req.url, "http://127.0.0.1")
+
+    // PREFLIGHT IS ROUTE-AWARE, and must be, for two separate reasons.
+    //
+    // It used to be answered here-first, before the URL was parsed and before
+    // the authority origin gate. That broke the surface in both directions at
+    // once: the legitimate cross-origin owner-controls page never received
+    // `Allow-Credentials` on its preflight, so its credentialed POST failed
+    // before reaching the code that authorises it — and a wrong loopback origin
+    // DID receive CORS headers, which falsified the claim that refused origins
+    // get none. A browser transaction is two requests, so a gate that only
+    // guards the second one is not a gate.
+    const isAuthorityPath = url.pathname === AUTHORITY_PREFIX
+      || url.pathname.startsWith(`${AUTHORITY_PREFIX}/`)
+    if (req.method === "OPTIONS") {
+      if (!isAuthorityPath) return send(res, 204, {}, origin)
+      const allowed = !origin || (Boolean(ownerControlsOrigin) && origin === ownerControlsOrigin)
+      if (!allowed) {
+        return send(res, 403, {
+          error: "authority_origin_refused",
+          detail: "owner controls are served from one origin, and this is not it.",
+        })
+      }
+      return send(res, 204, {}, origin, ownerControlsOrigin)
+    }
 
     try {
       if (req.method === "GET" && url.pathname === "/api/briefing") {
@@ -371,6 +471,37 @@ export function createServer(deps = null, { ownerRulings = true, unverifiedReaso
 
       if (req.method === "GET" && url.pathname === "/api/decisions") {
         return send(res, 200, { decisions: readDecisions({ limit: 40 }) }, origin)
+      }
+
+      if (isAuthorityPath) {
+        // SAME-ORIGIN, or the exact configured owner-controls origin. Nothing
+        // else, and nothing else gets CORS headers either — a refusal that
+        // echoed the origin would still tell a hostile page it had reached a
+        // real endpoint.
+        const sameOrigin = !origin
+        const isOwnerControls = Boolean(ownerControlsOrigin) && origin === ownerControlsOrigin
+        if (!sameOrigin && !isOwnerControls) {
+          return send(res, 403, {
+            error: "authority_origin_refused",
+            detail: "owner controls are served from one origin, and this is not it.",
+          })
+        }
+
+        if (!authority) {
+          // Independently gated: the exception route above is unaffected.
+          return send(res, 503, {
+            error: "authority_unavailable",
+            mutation_performed: false,
+            detail: authorityReason
+              || "The authority subsystem is not available on this host. Owner rulings are unaffected.",
+          }, origin)
+        }
+        const handled = await authority.handle(req, res, url, {
+          origin,
+          send: (r, code, body) => send(r, code, body, origin, ownerControlsOrigin),
+        })
+        if (handled) return undefined
+        return send(res, 404, { error: "not found" }, origin)
       }
 
       if (req.method === "POST" && url.pathname === "/api/act") {
@@ -412,6 +543,31 @@ export function createServer(deps = null, { ownerRulings = true, unverifiedReaso
         // Any claimed verification in the payload is removed rather than
         // rejected, so no code written later can read it by accident.
         const { request } = stripClaimedVerification(body)
+
+        // A BATCH is one prompt enumerating N rulings (owner request,
+        // 2026-08-22: per-act dialogs were the friction). Every item passes
+        // the same pre-prompt gates as a single ruling; the dialog lists
+        // every act it grants; per-item staleness still applies after it.
+        if (Array.isArray(request?.batch)) {
+          const outcome = await performOwnerRulingBatch({
+            requests: request.batch.map((item) => stripClaimedVerification(item).request),
+            ...owner,
+          })
+          if (!outcome.ok) {
+            return send(res, REFUSAL_STATUS[outcome.failure] ?? 403, {
+              error: outcome.failure,
+              mutation_performed: outcome.mutation_performed === true,
+              detail: outcome.reason,
+              ...(outcome.item ? { item: outcome.item } : {}),
+            }, origin)
+          }
+          return send(res, 200, {
+            batch_ref: outcome.batch_ref,
+            performed: outcome.performed,
+            skipped: outcome.skipped,
+            results: outcome.results,
+          }, origin)
+        }
 
         const outcome = await performOwnerRuling({ request, ...owner })
         if (!outcome.ok) {

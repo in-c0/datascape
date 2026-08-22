@@ -168,3 +168,42 @@ export async function fetchDecisions() {
     return [];
   }
 }
+
+/**
+ * Record MANY owner rulings under ONE Windows prompt (owner request,
+ * 2026-08-22). Same wire contract as recordAction, but the host prepares every
+ * item before any dialog exists and the single prompt enumerates every act —
+ * this is a batch of individually-bound rulings, never a session grant.
+ *
+ * Per-item operation ids keep the single path's retry guarantee: a lost
+ * response retried as the same batch replays per item instead of ruling twice.
+ */
+export async function recordActionBatch(items) {
+  if (!ACTION_API) throw new Error("no action API configured");
+  if (!Array.isArray(items) || items.length === 0) throw new Error("nothing queued");
+  const wire = items.map(({ id, action, note = "", until = null }) => {
+    const spec = ACTIONS[action];
+    if (!spec) throw new Error(`unknown action ${action}`);
+    if (spec.needsNote && !String(note).trim()) throw new Error(`${id}: this action needs a reply`);
+    if (spec.needsUntil && !until) throw new Error(`${id}: defer needs a time`);
+    const intent = { id, action, note, until };
+    return { intent, body: { ...intent, operation_id: operationIdFor(intent) } };
+  });
+  const response = await fetch(`${ACTION_API}/api/act`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ batch: wire.map((w) => w.body) }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    if (payload?.mutation_performed === false && DEFINITIVE_REFUSALS.includes(payload?.error)) {
+      for (const w of wire) retireOperationId(w.intent);
+    }
+    throw new Error(payload?.detail || payload?.error || `HTTP ${response.status}`);
+  }
+  for (const w of wire) {
+    const r = (payload.results || []).find((x) => x.exception_id === w.intent.id);
+    if (r && (r.ok || DEFINITIVE_REFUSALS.includes(r.failure))) retireOperationId(w.intent);
+  }
+  return payload;
+}
