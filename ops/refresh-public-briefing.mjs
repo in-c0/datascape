@@ -37,7 +37,12 @@ const DIST = path.join(REPO, "dist");
 const DIST_DATA = path.join(DIST, "data");
 const PROJECT = "ctn-briefing";
 
-const run = (cmd, args, opts = {}) =>
+// node.exe lives under "C:\Program Files\" — a space that shell:true splits on.
+// So only npx/wrangler (which need the shell on Windows to resolve the .cmd
+// shim) run with shell:true; the node builder is spawned directly.
+const runNode = (args, opts = {}) =>
+  execFileSync(process.execPath, args, { stdio: "inherit", cwd: REPO, ...opts });
+const runShell = (cmd, args, opts = {}) =>
   execFileSync(cmd, args, { stdio: "inherit", cwd: REPO, shell: true, ...opts });
 
 function main() {
@@ -48,7 +53,9 @@ function main() {
     console.error(`! briefing builder missing at ${BUILDER}; refusing to deploy stale data`);
     process.exit(1);
   }
-  run(process.execPath, [BUILDER]);
+  // The builder PRINTS to stdout unless given `build --out <path>`; without
+  // --out it is a no-op for the file and the phone view silently stays stale.
+  runNode([BUILDER, "build", "--out", DATA_SRC]);
   if (!fs.existsSync(DATA_SRC)) {
     console.error(`! builder did not produce ${DATA_SRC}`);
     process.exit(1);
@@ -56,13 +63,13 @@ function main() {
 
   // 2. (optional) rebuild the SPA, then stage the fresh data into dist
   if (doBuild || !fs.existsSync(path.join(DIST, "index.html"))) {
-    run("npx", ["vite", "build"], { env: { ...process.env, VITE_DATA_BASE: "/data/" } });
+    runShell("npx", ["vite", "build"], { env: { ...process.env, VITE_DATA_BASE: "/data/" } });
   }
   fs.mkdirSync(DIST_DATA, { recursive: true });
   fs.copyFileSync(DATA_SRC, path.join(DIST_DATA, "continuity-briefing.json"));
 
   // 3. redeploy
-  run("npx", ["wrangler", "pages", "deploy", "dist",
+  runShell("npx", ["wrangler", "pages", "deploy", "dist",
     `--project-name=${PROJECT}`, "--branch=main", "--commit-dirty=true"]);
 
   const gen = JSON.parse(fs.readFileSync(DATA_SRC, "utf8")).generatedAtLocal || "?";
