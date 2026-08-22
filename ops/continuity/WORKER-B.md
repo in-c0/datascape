@@ -2,11 +2,11 @@
 
 Status: ACTIVE
 Cadence: hourly at :45 Australia/Sydney
-Allocation: Sumzup — bounded maintenance / production-verification continuation while Local AI recovery is human-blocked
-Allocation since: 2026-08-19 Australia/Sydney
+Allocation: UNALLOCATED — Local AI remains foreground but human-blocked; prior Sumzup watch-forward reconciliation is closed
+Allocation since: 2026-08-21 Australia/Sydney
 Last execution: 2026-08-21 Australia/Sydney
-Last durable artifact: Re-inspected source-of-truth before acting. LifeOS Local AI remains human-blocked at 92d52095. Sumzup PR #75 remains open but has drifted materially: head is now 5 commits behind current master / master 8 commits ahead from the common base, and GitHub reports it non-mergeable + draft. Do not merge/retry the stale preview; reconcile the measured watch-forward patch onto current master again before fresh behavior/performance validation.
-Secondary bounded artifact: Recorded the refreshed #75 drift/reconciliation gate in Continuity state; no production behavior changed.
+Last durable artifact: Re-inspected source-of-truth before acting. LifeOS Local AI remains human-blocked at 92d52095. Sumzup PR #75 is now CLOSED/UNMERGED, so the prior reconciliation gate is no longer runnable and must not be recreated merely to preserve allocation. Current Sumzup master continues receiving successful continuous-digest corpus commits; treat that lane as maintenance/measurement unless a fresh production-critical failure appears.
+Secondary bounded artifact: Retired the stale #75 allocation in Continuity state after verifying actual PR state rather than repeating the previous reconciliation plan.
 Human blocker: LifeOS Local AI Phase 0 implementation still appears local-only. Owner must expose/push the existing worktree before Phase 0 verification can continue; do not recreate blindly.
 Congestion state: CLEAN — no new correlated congestion or explicit resource limit observed.
 Forbes deadline last check: 2026-08-18 Australia/Sydney
@@ -19,8 +19,8 @@ Foreground predecessor remains LifeOS Local AI, but its existing Phase 0 impleme
 Sticky continuation rule:
 1. First inspect whether another machine lane or newly pushed commit has recovered the existing LifeOS Local AI Phase 0 implementation.
 2. If recovered, immediately return allocation to Local AI and verify from a fresh checkout against the eight README exit criteria.
-3. If still blocked, continue one bounded existing Sumzup maintenance/measurement/production-verification gate only when evidence and checks support it; do not start speculative feature work.
-4. Prefer closing validated regressions/tests or production-critical gates over broad architecture/product expansion.
+3. If still blocked, select one bounded existing runnable gate with current evidence. Do not resurrect closed/deferred work merely to fill capacity.
+4. Prefer closing validated regressions/tests, production-critical gates, or demonstrable prototype gates over broad architecture/product expansion.
 5. Do not advance Local AI to Guardian/reliability, Wrist Cam, NutriCam, or custom hardware until Phase 0 is actually verifiable.
 
 Do not select:
@@ -57,3 +57,4 @@ Keep this file compact. Update only material fields above plus, when useful, app
 - 2026-08-21 — CLEANUP — Local AI still unrecovered and Sumzup #75 still evidence-gated. Closed stale Hypothesister draft PR #9 because merged #10/#11 already implement and record the same classification-change gate; removed duplicate WIP without changing the research conclusion.
 - 2026-08-21 — CLEANUP — Re-inspected Local AI: implementation is still absent from GitHub. Sumzup #75 is now the sole fresh watch-forward reconciliation branch; closed stale PR #69 without merge and preserved #75's live behavior/performance gate.
 - 2026-08-21 — PROGRESS / RECONCILE — Re-inspected #75 before retrying: current master has advanced materially; #75 is draft/non-mergeable and diverged (branch 5 commits ahead of its merge base while master is 8 ahead). Preserved the measured optimization as a reconciliation-first gate; next machine step is to port only its still-applicable four-file patch onto current master, then obtain fresh validation rather than trusting the stale preview.
+- 2026-08-21 — GATE RETIRED — Re-inspected actual state: Sumzup PR #75 is CLOSED/UNMERGED. Did not recreate or retry it. Continuous-digest master commits continue, so Sumzup returns to maintenance/measurement until fresh evidence creates a new gate; Executor B is unallocated pending the next bounded runnable continuation.
