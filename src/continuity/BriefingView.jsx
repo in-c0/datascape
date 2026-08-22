@@ -571,6 +571,11 @@ function BriefingSurface({ data }) {
       order: r.temporal ? ranked.findIndex((x) => x.key === r.key) + 1 : 0,
     }));
   }, [scene.timeline, scene.nodes, sceneNow]);
+
+  // Temporal placement is an AMBIENT composition; an open card supersedes it.
+  // (Fix for the wide-viewport ghost-text defect: placed copies of the focal
+  // record must never co-render with the record card.)
+  const temporalActive = temporalRows.length > 0 && !scene.card;
   const focalPoint = geometry.points.find((p) => p.key === focalNodes[0]?.key)
     || { x: 64, y: Math.max(70, geometry.height / 2) };
 
@@ -691,20 +696,27 @@ function BriefingSurface({ data }) {
 
       {/* The stage IS the temporal field — no strip above it, no card edge.
           x = when, y = semantic topology. */}
+      {/* The temporal (absolute, time-placed) composition disengages the moment
+          a card is open. The lane branch keeps scene.timeline set all the way
+          down to the Z2 leaf, and at >=901px the temporal modifier destroys the
+          two-column grid while the placed copies of the very record being read
+          stay mounted - so the card and the node text painted on top of each
+          other (owner report, 2026-08-22). A card means "read this one thing":
+          it gets the reviewed grid layout, not the ambient field. */}
       <section
-        className={`bf-stage${scene.card ? "" : " bf-stage--nocard"}${scene.timeline ? " bf-stage--temporal" : ""}`}
+        className={`bf-stage${scene.card ? "" : " bf-stage--nocard"}${temporalActive ? " bf-stage--temporal" : ""}`}
         ref={containerRef}
         // The field ends where the content ends. A fixed 620px stage left a
         // third of the screen as empty gradient with a hard edge under it,
         // which read as a panel again.
-        style={scene.timeline ? { minHeight: temporalRows.length ? Math.max(...temporalRows.map((r) => r.y)) + 150 : 260 } : undefined}
+        style={temporalActive ? { minHeight: temporalRows.length ? Math.max(...temporalRows.map((r) => r.y)) + 150 : 260 } : undefined}
       >
-        {scene.timeline && <TemporalStage timeline={scene.timeline} rows={temporalRows} />}
+        {temporalActive && <TemporalStage timeline={scene.timeline} rows={temporalRows} />}
         <ThreadFan geometry={geometry} origin={focalPoint} enabled={hasFocalColumn || hasPlacedOrigin} />
         {/* The focal node IS the fan origin, in its own column. Drawing it as
             the first child (with the fan starting from an invisible point) was
             the visual review's P0: the eye could not tell what it was inside. */}
-        {temporalRows.length > 0 ? (
+        {temporalActive ? (
           <div className="bf-placed">
             {temporalRows.map(({ key, node: n, x, y, temporal, order }) => (
               <div

@@ -252,7 +252,12 @@ body:has(.bf-root) { overflow: auto; }
 
 .bf-card {
   position: relative;
-  z-index: 2;
+  /* ABOVE .bf-placed (z 3): in temporal scenes the placed copy of the focal
+     record is absolutely positioned and can land exactly under the card; at
+     z 2 it painted OVER the card as doubled text (owner report 2026-08-22,
+     wide viewports only - narrow layouts never overlap, which is how the
+     first verification pass missed it). */
+  z-index: 5;
   max-width: 620px;
   border: 1px solid rgba(96, 110, 152, 0.4);
   border-radius: 14px;
