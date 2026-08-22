@@ -2,13 +2,13 @@
 
 Status: ACTIVE
 Cadence: hourly at :45 Australia/Sydney
-Allocation: Sumzup maintenance — PR #78 merged externally; fresh multi-locale PRs #63/#64 now exist, with #64 conflict-gated against current master; Local AI remains foreground but human-blocked
+Allocation: Sumzup maintenance — PRs #63/#64 are both conflict-gated against current master; Local AI remains foreground but human-blocked
 Allocation since: 2026-08-22 Australia/Sydney
 Last execution: 2026-08-22 Australia/Sydney
-Last durable artifact: Re-inspected source-of-truth before acting. LifeOS Local AI remains human-blocked at 92d52095. Sumzup PR #78 had already merged as 0124bc4b, so did not repeat it. Fresh PRs #63/#64 exist for the multi-locale architecture. A bounded merge attempt on #64 was rejected by GitHub with merge conflicts; classified as repository divergence, not CI/service congestion. Preserve #64 for reconciliation against current master before any retry; do not force/replay stale history.
+Last durable artifact: Re-inspected Sumzup PR #63 before acting. Exact head 5490a73c remains Netlify-green, but the branch is 31 commits behind current master and GitHub rejected a bounded squash merge with conflicts. This independently confirms both #63 and #64 require reconciliation against current master before any merge retry; do not force or replay stale history.
 Secondary bounded artifact: Cat Pose ID1.2 PR #75 remains open and quantitative execution is still gated only by the already-known OPENXLAB_AK/OPENXLAB_SK owner secrets; no duplicate notification.
 Human blocker: LifeOS Local AI Phase 0 implementation still appears local-only. Owner must expose/push the existing worktree before Phase 0 verification can continue; do not recreate blindly.
-Congestion state: CLEAN — no correlated congestion or explicit resource limit observed; Sumzup #64 conflict is repository state, not service failure.
+Congestion state: CLEAN — no correlated congestion or explicit resource limit observed; Sumzup merge conflicts are repository divergence, not service failure.
 Forbes deadline last check: 2026-08-18 Australia/Sydney
 Forbes deadline result: Official 2026 nominations page is open; no nomination closing deadline is published on-page. Eligibility remains age <=29 on 2026-12-31; methodology/factors unchanged from current published page.
 
@@ -35,4 +35,4 @@ If human-blocked, record the minimum human action and reallocate to another runn
 
 Keep this file compact. Update only material fields above plus, when useful, append one line here:
 
-- 2026-08-22 — PROGRESS / RECONCILE — Re-inspected actual state: Sumzup #78 had already merged, avoiding duplicate work. Fresh #64 exists but GitHub rejected merge due conflicts; preserve it as reconciliation-before-retry against current master. Local AI remains unrecovered; Cat Pose credential blocker unchanged.
+- 2026-08-22 — PROGRESS / RECONCILE — Sumzup #63 exact head remains deploy-preview green but is 31 commits behind master; bounded squash merge was rejected for conflicts. Both #63/#64 now explicitly reconciliation-gated. Local AI remains unrecovered; Cat Pose credential blocker unchanged.
