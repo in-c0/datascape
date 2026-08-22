@@ -161,6 +161,15 @@ export const ACTIONS = {
  * Everything the ruling depends on comes from here. The request supplies which
  * exception and which class; it supplies no state.
  */
+// Mirror of the briefing builder's Proposed-action extraction (briefing.mjs).
+// One regex, two consumers, one meaning.
+const PROPOSED_RE = new RegExp("##\s*Proposed action\s*\r?\n([\s\S]*?)(?=\r?\n##|\r?\n---|$)", "i")
+function extractProposed(body) {
+  const m = String(body ?? "").match(PROPOSED_RE)
+  const text = m ? m[1].trim() : ""
+  return text && text !== "_(none proposed)_" ? text : null
+}
+
 export function readException(id) {
   if (!id) return null
   const found = exceptions.find(id)
@@ -169,7 +178,18 @@ export function readException(id) {
     id: found.meta.id,
     status: found.meta.status,
     updated: found.meta.updated,
-    proposed: found.meta.proposed ?? found.proposed ?? null,
+    // The proposal lives in the BODY as a "## Proposed action" section - the
+    // exception store has no `proposed` frontmatter key and find() derives no
+    // such field, so the old `found.meta.proposed ?? found.proposed` was null
+    // for EVERY exception and every Approve refused with "has no current
+    // proposal to approve" (owner report, 2026-08-22 - the first real ruling
+    // ever attempted through the surface). Extract it with the SAME regex the
+    // briefing builder uses, because "Approve proposed" is offered exactly
+    // when THAT parser finds one; two parsers that disagree turn a rendered
+    // button into a guaranteed refusal. The filed-empty placeholder counts as
+    // no proposal: approving "_(none proposed)_" is a prompt with nothing
+    // behind it.
+    proposed: extractProposed(found.body),
     proposal_ref: found.meta.proposal_ref ?? null,
     proposal_revision: found.meta.proposal_revision ?? null,
     deferred_until: found.meta.deferred_until ?? null,
