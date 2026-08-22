@@ -2,11 +2,11 @@
 
 Status: ACTIVE
 Cadence: hourly at :45 Australia/Sydney
-Allocation: UNALLOCATED — Local AI remains foreground but human-blocked; prior Sumzup watch-forward reconciliation is closed
-Allocation since: 2026-08-21 Australia/Sydney
-Last execution: 2026-08-21 Australia/Sydney
-Last durable artifact: Re-inspected source-of-truth before acting. LifeOS Local AI remains human-blocked at 92d52095. Sumzup PR #75 is now CLOSED/UNMERGED, so the prior reconciliation gate is no longer runnable and must not be recreated merely to preserve allocation. Current Sumzup master continues receiving successful continuous-digest corpus commits; treat that lane as maintenance/measurement unless a fresh production-critical failure appears.
-Secondary bounded artifact: Retired the stale #75 allocation in Continuity state after verifying actual PR state rather than repeating the previous reconciliation plan.
+Allocation: Sumzup maintenance — PR #79 mechanical reliability fixes advanced to ready-for-review; Local AI remains foreground but human-blocked
+Allocation since: 2026-08-22 Australia/Sydney
+Last execution: 2026-08-22 Australia/Sydney
+Last durable artifact: Re-inspected source-of-truth before acting. LifeOS Local AI remains human-blocked at 92d52095. Found fresh Sumzup PR #79 on current master: mergeable, four bounded mechanical fixes, with the explicit netlify .mts typecheck repaired from 5 errors to 0 and root TypeScript clean. Advanced #79 from draft to ready-for-review; did not merge without fresh deployment evidence.
+Secondary bounded artifact: Detected fresh Sumzup PR #78 as the minimal successor to retired #75. It is mergeable but remains draft and explicitly gated on fresh CI/deploy-preview behavior evidence; preserved that gate rather than trusting stale #75 evidence.
 Human blocker: LifeOS Local AI Phase 0 implementation still appears local-only. Owner must expose/push the existing worktree before Phase 0 verification can continue; do not recreate blindly.
 Congestion state: CLEAN — no new correlated congestion or explicit resource limit observed.
 Forbes deadline last check: 2026-08-18 Australia/Sydney
@@ -58,3 +58,4 @@ Keep this file compact. Update only material fields above plus, when useful, app
 - 2026-08-21 — CLEANUP — Re-inspected Local AI: implementation is still absent from GitHub. Sumzup #75 is now the sole fresh watch-forward reconciliation branch; closed stale PR #69 without merge and preserved #75's live behavior/performance gate.
 - 2026-08-21 — PROGRESS / RECONCILE — Re-inspected #75 before retrying: current master has advanced materially; #75 is draft/non-mergeable and diverged (branch 5 commits ahead of its merge base while master is 8 ahead). Preserved the measured optimization as a reconciliation-first gate; next machine step is to port only its still-applicable four-file patch onto current master, then obtain fresh validation rather than trusting the stale preview.
 - 2026-08-21 — GATE RETIRED — Re-inspected actual state: Sumzup PR #75 is CLOSED/UNMERGED. Did not recreate or retry it. Continuous-digest master commits continue, so Sumzup returns to maintenance/measurement until fresh evidence creates a new gate; Executor B is unallocated pending the next bounded runnable continuation.
+- 2026-08-22 — PROGRESS — Local AI still unrecovered. Found fresh Sumzup #79, verified it is mergeable and self-reports the previously permanent netlify `.mts` typecheck repaired 5→0 plus root TypeScript clean; advanced it from draft to ready-for-review. Fresh #78 exists as the minimal #75 successor but remains correctly draft-gated on fresh deploy/behavior evidence.
