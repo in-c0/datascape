@@ -22,7 +22,16 @@ import { fileURLToPath } from "node:url";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, "..");
 const PORT = Number(process.env.DASHBOARD_PORT || 5313);
-const URL_ = `http://localhost:${PORT}/?view=briefing`;
+// 127.0.0.1, not localhost — and the server is bound to match.
+//
+// Vite defaults to binding [::1] only. curl and Node reach that happily, so
+// every check here passed while Chrome got ECONNREFUSED: it asked for
+// 127.0.0.1, and nothing was listening on IPv4 at all. Binding IPv4 loopback
+// explicitly fixes the browser without putting the port on any network
+// interface — `--host` with no argument would bind 0.0.0.0 and publish this
+// to the LAN, which is not a trade worth making for a convenience URL.
+const HOST = "127.0.0.1";
+const URL_ = `http://${HOST}:${PORT}/?view=briefing`;
 
 const BRIEFING_BUILDER = path.resolve(REPO, "..", "_ship_inbox", "ops", "briefing.mjs");
 const DATA_FILE = path.join(REPO, "public", "data", "continuity-briefing.json");
@@ -54,16 +63,17 @@ function refreshData() {
 }
 
 /**
- * Is the server answering ON THE URL SHE WILL OPEN?
+ * Is the server answering ON THE EXACT URL SHE WILL OPEN?
  *
- * This checked 127.0.0.1 while handing her a localhost link, and on Windows
- * those are not the same address: vite binds [::1] only, so the probe failed
- * against a server that was serving perfectly. The launcher would have declared
- * a working dashboard broken. Probe exactly what you are about to promise.
+ * Probe the address you are about to promise, not one that merely resembles it.
+ * An earlier version probed 127.0.0.1 while handing out a localhost link; the
+ * fix then was to probe localhost, which made both agree and both wrong, because
+ * the server was only ever bound to [::1]. Host, probe and link are now one
+ * value.
  */
 async function reachable() {
   try {
-    const response = await fetch(`http://localhost:${PORT}/`, { signal: AbortSignal.timeout(1500) });
+    const response = await fetch(`http://${HOST}:${PORT}/`, { signal: AbortSignal.timeout(1500) });
     return response.status < 500;
   } catch { return false; }
 }
@@ -108,7 +118,7 @@ if (await reachable()) {
     say("  run `npm install` in the repo first.");
     process.exit(1);
   }
-  server = spawn(process.execPath, [vite, "--port", String(PORT), "--strictPort"],
+  server = spawn(process.execPath, [vite, "--port", String(PORT), "--strictPort", "--host", HOST],
     { cwd: REPO, env: { ...process.env, VITE_DATA_BASE: "/data/", MSYS_NO_PATHCONV: "1" }, stdio: "ignore" });
   server.on("error", (error) => say(`! the server could not start: ${error.message}`));
 
