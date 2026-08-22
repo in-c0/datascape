@@ -163,7 +163,7 @@ export const ACTIONS = {
  */
 // Mirror of the briefing builder's Proposed-action extraction (briefing.mjs).
 // One regex, two consumers, one meaning.
-const PROPOSED_RE = new RegExp("##\s*Proposed action\s*\r?\n([\s\S]*?)(?=\r?\n##|\r?\n---|$)", "i")
+const PROPOSED_RE = /##\s*Proposed action\s*\r?\n([\s\S]*?)(?=\r?\n##|\r?\n---|$)/i
 function extractProposed(body) {
   const m = String(body ?? "").match(PROPOSED_RE)
   const text = m ? m[1].trim() : ""
