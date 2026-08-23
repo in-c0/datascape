@@ -120,33 +120,23 @@ export async function runOwnerRule(argv, deps) {
  */
 export async function realDeps({ liveDir = DEFAULT_LIVE_DIR, now = () => Date.now() } = {}) {
   const url = (file) => pathToFileURL(path.resolve(liveDir, file)).href;
-  const host = await import(url("briefing-server.mjs"));
+  // `readException` / `applyOwnerMutation` used to live on `briefing-server.mjs`.
+  // They moved to `_continuity/briefing-server-core.mjs` and this file was left
+  // importing the old surface, so `realDeps()` returned `readException:
+  // undefined` and every invocation died with "deps.readException is not a
+  // function" — before any presence check, so the CLI could never rule at all.
+  //
+  // It now takes the deployed factory whole rather than reassembling the parts.
+  // That is the same doctrine this file already states: the security decisions
+  // come from the deployed artifact, so the dependency SHAPE should come from
+  // there too. Hand-assembly is what silently rotted when core moved.
+  const core = await import(url("_continuity/briefing-server-core.mjs"));
   const ruling = await import(url("_continuity/owner-ruling.js"));
-  const presence = await import(url("_continuity/owner-presence.js"));
-  const windows = await import(url("_continuity/owner-presence-windows.js"));
-
-  const journalFile = process.env.OWNER_RULING_JOURNAL
-    || path.join(process.env.LOCALAPPDATA || liveDir, "datascape", "live-host", "owner-rulings.json");
-  // The same journal file the host uses, so a CLI retry of a ruling the browser
-  // already completed replays instead of prompting her twice.
-  const journal = ruling.createRulingJournal({ storage: ruling.createRulingJournalStorage(journalFile), now });
-  journal.recover(host.readException);
 
   return {
-    now,
+    ...core.createOwnerRulingDeps({ now }),
     OWNER_ACTIONS: ruling.OWNER_ACTIONS,
     performOwnerRuling: ruling.performOwnerRuling,
-    readException: host.readException,
-    applyMutation: host.applyOwnerMutation,
-    journal,
-    budget: ruling.createPromptBudget({ now }),
-    verifier: presence.createOwnerPresenceVerifier({
-      // Interactive, because a human is expected to be standing here. This is
-      // the ONLY place in the system that asks Windows to show a dialog.
-      broker: windows.createWindowsOwnerPresenceBroker({ allowInteractive: true }),
-      now,
-      randomChallenge: () => crypto.randomUUID(),
-    }),
   };
 }
 
