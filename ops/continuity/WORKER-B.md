@@ -5,7 +5,7 @@ Cadence: hourly at :45 Australia/Sydney
 Allocation: TEMPORARY TIER-1 — private Gyeol invention sprint on `in-c0/personalos` branch `research/gyeol-invention-sprint`; then bounded existing runnable work. Local AI remains foreground platform predecessor but human-blocked.
 Allocation since: 2026-08-23 Australia/Sydney
 Last execution: 2026-08-23 Australia/Sydney
-Last durable artifact: Gyeol private invention ledger commit `bef81e5daca17d0fff3c661488eef54763789194` generated six mechanically distinct T1 strain-isolation mechanisms, killed two obvious crowded variants, and retained four survivors for targeted mechanism-level prior-art screening. No patentability or FTO conclusion made.
+Last durable artifact: Gyeol private invention ledger commit `33aaf9c60799329ba388d8c1c596db396b09a786` completed the first targeted prior-art screen: T1-B was killed as too crowded; T1-A, T1-C and T1-E remain as engineering candidates with explicit deltas and cheap falsification directions. No patentability or FTO conclusion made.
 Secondary state: Re-inspected `in-c0/lifeos-local-ai`; `main` still contains README + `docs/PHASE-0-STATE.md` only, with the actual Phase-0 source/tests/scripts still absent. Hypothesister PR #11 has already merged, so do not repeat that action.
 Human blocker: LifeOS Local AI Phase 0 implementation still appears local-only. Owner must expose/push the existing worktree before Phase 0 verification can continue; do not recreate blindly.
 Congestion state: CLEAN — no correlated congestion or explicit resource limit observed.
@@ -29,7 +29,7 @@ Machine-side exit gate:
 4. retain >=2 candidates with an explicit technical delta and cheap physical falsification test, **or** record that none survive;
 5. if physical testing becomes the only remaining gate, surface the exact minimum materials/procedure required from the owner while continuing any remaining machine-side prior-art/experimental-design work.
 
-Current Gyeol sub-state: steps 1–2 complete in commit `bef81e5daca17d0fff3c661488eef54763789194`; four survivors (`T1-A`, `T1-B`, `T1-C`, `T1-E`) are queued for targeted prior-art screening. Next machine-side step: screen the highest-risk overlap classes (orthotics/exosuits, stretchable electronics, shear-decoupling mounts, biomedical skin interfaces) and update the private ledger with closest references/deltas/status.
+Current Gyeol sub-state: steps 1–3 complete. Pass 2 retained three candidates (`T1-A`, `T1-C`, `T1-E`) and killed `T1-B` after targeted mechanism-level screening. Next machine-side step: turn the three survivors into one matched physical falsification protocol with a common elastic-sleeve baseline, measurable pass/fail thresholds and minimum bill of materials; only then determine whether physical testing is the sole remaining gate.
 
 ## Allocation rule after Gyeol step
 
@@ -57,3 +57,4 @@ Keep this file compact. Update only material fields above plus, when useful, app
 
 - 2026-08-22 — PROGRESS / RESEARCH — RQ-003 surface envelope gained primary quantitative alginate fracture/work anchors; direct wash-relevant surface load + wet interface failure proxy remained the frozen next evidence gate. Sumzup #63/#64 conflict state independently reconfirmed; Local AI blocker unchanged.
 - 2026-08-23 — PROGRESS / PRIVATE INVENTION — Gyeol T1 pass-1 generated six distinct mechanisms, killed two crowded variants, retained four for targeted prior-art screening; Local AI source recovery remains unchanged and human-blocked.
+- 2026-08-23 — PROGRESS / PRIVATE INVENTION — targeted screen completed: T1-B killed as crowded island-bridge/serpentine territory; T1-A/T1-C/T1-E retained with explicit technical deltas. Next gate is a matched cheap physical falsification protocol.
