@@ -46,3 +46,4 @@ Keep this public record compact and non-confidential. Project-specific private/I
 
 - 2026-08-22 — PROGRESS / RESEARCH — RQ-003 surface envelope gained primary quantitative alginate fracture/work anchors; direct wash-relevant surface load + wet interface failure proxy remained the next evidence gate. Sumzup conflict state independently reconfirmed; Local AI blocker unchanged.
 - 2026-08-23 — POLICY — removed confidential invention-status mirroring from the public Continuity ledger. Private work now persists only in its private source of truth.
+- 2026-08-23 — CTN — foreground browser acceptance remains owner-machine-bound and an existing foreground branch makes duplicate UI editing unsafe; Local AI source recovery is unchanged; one public maintenance lane was verified exact-head CI-green but still requires its existing provider-side deployment proof before merge. confidential lane omitted.
