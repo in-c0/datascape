@@ -5,8 +5,8 @@ Cadence: hourly at :45 Australia/Sydney
 Allocation: TEMPORARY TIER-1 — private Gyeol invention sprint on `in-c0/personalos` branch `research/gyeol-invention-sprint`; then bounded existing runnable work. Local AI remains foreground platform predecessor but human-blocked.
 Allocation since: 2026-08-23 Australia/Sydney
 Last execution: 2026-08-23 Australia/Sydney
-Last durable artifact: private Gyeol invention ledger commit `fc3148973e317cc1aff5c8ce8ba5f6e65da680ad` completed the matched cheap physical-falsification protocol and closed the current machine-side invention screen without making patentability/FTO conclusions. Physical testing is now the next discriminating gate.
-Secondary state: Re-inspected `in-c0/lifeos-local-ai`; `main` still contains README + `docs/PHASE-0-STATE.md` only, with the actual Phase-0 source/tests/scripts still absent. Hypothesister PR #11 has already merged, so do not repeat that action.
+Last durable artifact: private Gyeol results-capture/scoring sheet commit `a1ba5788ed74f5778712597eff619d5f4f83853e` operationalized the frozen physical falsification protocol without changing its thresholds or exposing candidate details publicly. Physical testing remains the next discriminating gate.
+Secondary state: Re-inspected `in-c0/lifeos-local-ai`; `main` still contains README + `docs/` only, with the actual Phase-0 source/tests/scripts still absent. Hypothesister PR #11 is merged; its next unresolved gate remains physically constraining the work/interface-strength regime before rerunning the frozen classification screen.
 Human blocker: (1) Gyeol private invention sprint now needs the bounded physical falsification run defined on the private branch; (2) LifeOS Local AI Phase 0 implementation still appears local-only and must be exposed/pushed before Phase 0 verification can continue.
 Congestion state: CLEAN — no correlated congestion or explicit resource limit observed.
 Forbes deadline last check: 2026-08-18 Australia/Sydney
@@ -29,7 +29,7 @@ Machine-side exit gate:
 4. retain >=2 candidates with an explicit technical delta and cheap physical falsification test, **or** record that none survive;
 5. if physical testing becomes the only remaining gate, surface the exact minimum materials/procedure required from the owner while continuing any remaining machine-side prior-art/experimental-design work.
 
-Current Gyeol sub-state: machine-side steps 1–4 are complete and the common physical falsification protocol is now defined privately. Physical testing is the next discriminating gate; do not disclose candidate-specific mechanics outside the private branch. After owner test data exists, analyse it against the frozen thresholds and prepare the next evidence packet only for surviving candidates.
+Current Gyeol sub-state: machine-side steps 1–4 are complete; the common physical falsification protocol and a frozen results/scoring sheet are now defined privately. Physical testing is the next discriminating gate; do not disclose candidate-specific mechanics outside the private branch. After owner test data exists, analyse it against the frozen thresholds and prepare the next evidence packet only for surviving candidates.
 
 ## Allocation rule after Gyeol step
 
@@ -59,3 +59,4 @@ Keep this file compact. Update only material fields above plus, when useful, app
 - 2026-08-23 — PROGRESS / PRIVATE INVENTION — Gyeol T1 pass-1 generated six distinct mechanisms, killed two crowded variants, retained four for targeted prior-art screening; Local AI source recovery remains unchanged and human-blocked.
 - 2026-08-23 — PROGRESS / PRIVATE INVENTION — targeted screen completed; three candidates retained privately with explicit technical deltas. Next gate was a matched cheap physical falsification protocol.
 - 2026-08-23 — MILESTONE / PRIVATE INVENTION — matched physical falsification protocol completed privately; machine-side invention screen is complete and physical testing is now the next discriminating gate. Local AI source recovery remains unchanged and human-blocked.
+- 2026-08-23 — PROGRESS / PRIVATE INVENTION — added a confidential results/scoring sheet that freezes baseline calibration, 5-trial capture, and pass/fail recording for the owner-run physical gate; Local AI source remains unrecovered.
