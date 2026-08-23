@@ -2,11 +2,11 @@
 
 Status: ACTIVE
 Cadence: hourly at :45 Australia/Sydney
-Allocation: Sumzup maintenance — PRs #63/#64 are both conflict-gated against current master; Local AI remains foreground but human-blocked
+Allocation: Hypothesister RQ-003 bounded evidence constraint; Sumzup PRs #63/#64 remain conflict-gated; Local AI remains foreground but human-blocked
 Allocation since: 2026-08-22 Australia/Sydney
 Last execution: 2026-08-22 Australia/Sydney
-Last durable artifact: Re-inspected Sumzup PR #63 before acting. Exact head 5490a73c remains Netlify-green, but the branch is 31 commits behind current master and GitHub rejected a bounded squash merge with conflicts. This independently confirms both #63 and #64 require reconciliation against current master before any merge retry; do not force or replay stale history.
-Secondary bounded artifact: Cat Pose ID1.2 PR #75 remains open and quantitative execution is still gated only by the already-known OPENXLAB_AK/OPENXLAB_SK owner secrets; no duplicate notification.
+Last durable artifact: Added `projects/HYP-001-cleancoin/research/RQ-003-surface-strength-anchors.md` at hypothesister commit e1e11768. Primary-data anchors now bound calcium-alginate bulk fracture/work scales and explicitly preserve the existing classification rule; the remaining gate is a direct wash-relevant surface tangential-load/work proxy plus comparable wet surface/interfacial failure strength before rerunning the frozen screen.
+Secondary bounded artifact: Re-inspected Sumzup #63/#64: both remain 31 commits behind current master and non-mergeable. Created a fresh reconciliation branch from current master for #63, but did not copy stale branch files wholesale because that would risk overwriting intervening master changes; reconciliation remains a code-level port, not a force/replay.
 Human blocker: LifeOS Local AI Phase 0 implementation still appears local-only. Owner must expose/push the existing worktree before Phase 0 verification can continue; do not recreate blindly.
 Congestion state: CLEAN — no correlated congestion or explicit resource limit observed; Sumzup merge conflicts are repository divergence, not service failure.
 Forbes deadline last check: 2026-08-18 Australia/Sydney
@@ -35,4 +35,4 @@ If human-blocked, record the minimum human action and reallocate to another runn
 
 Keep this file compact. Update only material fields above plus, when useful, append one line here:
 
-- 2026-08-22 — PROGRESS / RECONCILE — Sumzup #63 exact head remains deploy-preview green but is 31 commits behind master; bounded squash merge was rejected for conflicts. Both #63/#64 now explicitly reconciliation-gated. Local AI remains unrecovered; Cat Pose credential blocker unchanged.
+- 2026-08-22 — PROGRESS / RESEARCH — RQ-003 surface envelope now has primary quantitative alginate fracture/work anchors; direct wash-relevant surface load + wet interface failure proxy remains the frozen next evidence gate. Sumzup #63/#64 conflict state independently reconfirmed; Local AI blocker unchanged.
