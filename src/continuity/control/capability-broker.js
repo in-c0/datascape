@@ -62,12 +62,12 @@ export function createMemoryCapabilityStore() {
   return {
     putRequest(record) { requests.set(record.request.request_id, structuredClone(record)); },
     getRequest(id) { const r = requests.get(id); return r ? structuredClone(r) : null; },
-    listRequests() { return [...requests.values()].map(structuredClone); },
+    listRequests() { return [...requests.values()].map((value) => structuredClone(value)); },
     putAttention(item) { attention.set(item.key, structuredClone(item)); },
     getAttention(key) { const i = attention.get(key); return i ? structuredClone(i) : null; },
-    listAttention() { return [...attention.values()].map(structuredClone); },
+    listAttention() { return [...attention.values()].map((value) => structuredClone(value)); },
     appendAudit(event) { audit.push(structuredClone(event)); },
-    listAudit() { return audit.map(structuredClone); },
+    listAudit() { return audit.map((value) => structuredClone(value)); },
   };
 }
 
