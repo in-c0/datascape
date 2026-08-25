@@ -4,7 +4,7 @@ Status: ACTIVE
 Cadence: hourly at :45 Australia/Sydney
 Allocation: bounded existing runnable work. Confidential/IP-sensitive workstreams are intentionally not represented in this public ledger.
 Allocation since: 2026-08-23 Australia/Sydney
-Last execution: 2026-08-25 Australia/Sydney
+Last execution: 2026-08-26 Australia/Sydney
 Last durable artifact: public CTN allocation checkpoint only; project-specific progress belongs in the relevant source-of-truth repository.
 Secondary state: `in-c0/lifeos-local-ai` canonical Phase 0 implementation is present and its current machine-side TV / Mac-display composition is merged.
 Human blocker: current Local AI visual-path gate requires physical acceptance on the actual Mac-to-HDMI-to-LG chain; machine implementation must not be replaced with speculative code.
@@ -47,3 +47,4 @@ Keep this public record compact and non-confidential. Project-specific private/I
 - 2026-08-23 — POLICY — confidential work is omitted from the public Continuity ledger and remains only in its private source of truth.
 - 2026-08-24 — CTN — Local AI source recovery is complete; current machine-side visual-path adapters are merged and the predecessor gate is physical acceptance.
 - 2026-08-25 — CTN — Continuity #44 remains owner-machine/browser-bound, Local AI remains physical-acceptance-bound, and the current public maintenance candidate inspected this run is machine-CI-green but still requires its already-declared provider-side deployment proof before merge. `confidential lane omitted`.
+- 2026-08-26 — CTN — Continuity #44 remains open and real-browser-bound; Local AI remains physical-acceptance-bound; no safe machine-side foreground implementation step is justified without duplicating active work or fabricating evidence. `confidential lane omitted`.
