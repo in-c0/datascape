@@ -4,7 +4,7 @@ Status: ACTIVE
 Cadence: hourly at :45 Australia/Sydney
 Allocation: bounded existing runnable work. Confidential/IP-sensitive workstreams are intentionally not represented in this public ledger.
 Allocation since: 2026-08-23 Australia/Sydney
-Last execution: 2026-08-26 Australia/Sydney
+Last execution: 2026-08-27 Australia/Sydney
 Last durable artifact: public CTN allocation checkpoint only; project-specific progress belongs in the relevant source-of-truth repository.
 Secondary state: `in-c0/lifeos-local-ai` canonical Phase 0 implementation is present and its current machine-side TV / Mac-display composition is merged.
 Human blocker: current Local AI visual-path gate requires physical acceptance on the actual Mac-to-HDMI-to-LG chain; machine implementation must not be replaced with speculative code.
@@ -51,3 +51,4 @@ Keep this public record compact and non-confidential. Project-specific private/I
 - 2026-08-26 — CTN checkpoint — inspected current foreground and maintenance gates; no priority-aligned machine mutation was justified from connected evidence, so no product branch or external action was created. `confidential lane omitted`.
 - 2026-08-26 — CTN checkpoint — foreground browser evidence remains unavailable in this execution environment; existing public maintenance gates were inspected and left unchanged rather than retried without fresh evidence. `confidential lane omitted`.
 - 2026-08-26 — CTN checkpoint — GitHub-hosted CI remains capacity-constrained; runner-dependent PRs were inspected but not retried, and machine allocation is restricted to work that can be verified without consuming unavailable hosted-runner capacity. `confidential lane omitted`.
+- 2026-08-27 — CTN checkpoint — foreground #44 remains real-browser-bound; no competing Continuity implementation was created, no exhausted-runner workflow was retried, and no non-growth Vibo feature lane was opened. `confidential lane omitted`.
