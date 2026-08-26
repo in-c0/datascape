@@ -8,7 +8,7 @@ Last execution: 2026-08-26 Australia/Sydney
 Last durable artifact: public CTN allocation checkpoint only; project-specific progress belongs in the relevant source-of-truth repository.
 Secondary state: `in-c0/lifeos-local-ai` canonical Phase 0 implementation is present and its current machine-side TV / Mac-display composition is merged.
 Human blocker: current Local AI visual-path gate requires physical acceptance on the actual Mac-to-HDMI-to-LG chain; machine implementation must not be replaced with speculative code.
-Congestion state: CLEAN — no correlated congestion or explicit resource limit observed.
+Congestion state: RESOURCE-LIMITED — GitHub-hosted Actions jobs are currently unable to provide useful CI execution under the account-level Actions capacity constraint; do not retry workflows merely to consume another failed allocation attempt. Prefer verification that does not require GitHub-hosted runners until capacity returns.
 
 ## Public-ledger confidentiality rule
 
@@ -50,3 +50,4 @@ Keep this public record compact and non-confidential. Project-specific private/I
 - 2026-08-26 — CTN — Continuity #44 remains open and real-browser-bound; Local AI remains physical-acceptance-bound; no safe machine-side foreground implementation step is justified without duplicating active work or fabricating evidence. `confidential lane omitted`.
 - 2026-08-26 — CTN checkpoint — inspected current foreground and maintenance gates; no priority-aligned machine mutation was justified from connected evidence, so no product branch or external action was created. `confidential lane omitted`.
 - 2026-08-26 — CTN checkpoint — foreground browser evidence remains unavailable in this execution environment; existing public maintenance gates were inspected and left unchanged rather than retried without fresh evidence. `confidential lane omitted`.
+- 2026-08-26 — CTN checkpoint — GitHub-hosted CI remains capacity-constrained; runner-dependent PRs were inspected but not retried, and machine allocation is restricted to work that can be verified without consuming unavailable hosted-runner capacity. `confidential lane omitted`.
