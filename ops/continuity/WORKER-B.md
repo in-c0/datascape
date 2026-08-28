@@ -4,7 +4,7 @@ Status: ACTIVE
 Cadence: hourly at :45 Australia/Sydney
 Allocation: bounded existing runnable work. Confidential/IP-sensitive workstreams are intentionally not represented in this public ledger.
 Allocation since: 2026-08-23 Australia/Sydney
-Last execution: 2026-08-28 Australia/Sydney
+Last execution: 2026-08-29 Australia/Sydney
 Last durable artifact: public CTN allocation checkpoint only; project-specific progress belongs in the relevant source-of-truth repository.
 Secondary state: `in-c0/lifeos-local-ai` canonical Phase 0 implementation is present and its current machine-side TV / Mac-display composition is merged.
 Human blocker: current Local AI visual-path gate requires physical acceptance on the actual Mac-to-HDMI-to-LG chain; machine implementation must not be replaced with speculative code.
@@ -54,3 +54,4 @@ Keep this public record compact and non-confidential. Project-specific private/I
 - 2026-08-27 — CTN checkpoint — foreground #44 remains real-browser-bound; no competing Continuity implementation was created, no exhausted-runner workflow was retried, and no non-growth Vibo feature lane was opened. `confidential lane omitted`.
 - 2026-08-27 — CTN checkpoint — newest Local AI `main` CI still terminates before runner assignment (`runner_id=0`, no steps), so no retry was triggered; Vibo has no open PR and the latest Actions-budget dedupe is merged; Sumzup production is serving and its existing owner-only migration gate is unchanged. `confidential lane omitted`.
 - 2026-08-28 — CTN checkpoint — Continuity #44 is still blocked on real-browser evidence and its held architecture PRs remain untouched; Local AI has an active operator-surface lane plus existing owner-bound live/physical gates, so no duplicate implementation lane or hosted-runner retry was created. `confidential lane omitted`.
+- 2026-08-29 — CTN checkpoint — foreground #44 remains real-browser-bound; runner-dependent Local AI checks were inspected without retry; Vibo and Sumzup have no open PR to continue, so no speculative workstream was created. `confidential lane omitted`.
