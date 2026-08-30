@@ -4,7 +4,7 @@ Status: ACTIVE
 Cadence: hourly at :45 Australia/Sydney
 Allocation: bounded existing runnable work. Confidential/private-source workstreams are intentionally not represented in this public ledger.
 Allocation since: 2026-08-23 Australia/Sydney
-Last execution: 2026-08-30 Australia/Sydney
+Last execution: 2026-08-31 Australia/Sydney
 Last durable artifact: public CTN allocation checkpoint only; project-specific private-source progress belongs only in the relevant private source of truth.
 Secondary state: `confidential lane omitted`
 Human blocker: `confidential lane omitted`
@@ -55,3 +55,4 @@ Keep this public record compact and non-confidential. Project-specific private-s
 - 2026-08-28 — CTN checkpoint — Continuity #44 is still blocked on real-browser evidence and its held architecture PRs remain untouched; no duplicate implementation lane was created. `confidential lane omitted`.
 - 2026-08-29 — CTN checkpoint — foreground #44 remains real-browser-bound; public maintenance lanes had no priority-aligned open PR to continue, so no speculative workstream was created. `confidential lane omitted`.
 - 2026-08-30 — CTN checkpoint — foreground #44 remains on its existing real-browser acceptance gate; private-source lanes were inspected only in their own source of truth and are omitted here; no held architecture work or hosted-runner retry was started. `confidential lane omitted`.
+- 2026-08-31 — CTN checkpoint — foreground #44 remains on its existing real-browser acceptance gate; no competing Continuity implementation, speculative architecture expansion, or hosted-runner retry was started. `confidential lane omitted`.
