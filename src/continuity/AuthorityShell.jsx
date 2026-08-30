@@ -17,13 +17,14 @@
 // comprehensible enough that a person can deliberately grant it, without having
 // read the control plane underneath?
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CAPABILITIES, NEVER_AUTONOMOUS, authorize, composeEnvelope,
   createAuthorityDraft, policyIdentityOf, renderPreview, resolveScopeSelection,
 } from "./control/authority-draft.js";
 import {
-  REVOKE_CONFIRMATION, amendAuthority, authorizeFromContext, availableControls, loadAuthorityContext,
+  REVOKE_CONFIRMATION, amendAuthority, authorizeFromContext, availableControls,
+  commitPrepared, invalidatesPreparedReview, loadAuthorityContext,
 } from "./control/authority-session.js";
 import "./authority.css";
 
@@ -55,6 +56,17 @@ export default function AuthorityShell({ adapter }) {
   // and revoking are both authority revisions, so neither happens on the
   // first click.
   const [confirming, setConfirming] = useState(null);
+  /**
+   * THE HOST'S PREPARED REVIEW, or null.
+   *
+   * Held here rather than committed straight away, because she has to see
+   * what the host normalized before anything asks her to verify. It is
+   * dropped the moment any authoritative input changes — see `reviewedDraft`
+   * below. Waiting for the host to reject a stale receipt would work, but it
+   * would mean the confirm button stayed live over a review that no longer
+   * matches the screen, which is the wrong thing to show her.
+   */
+  const [prepared, setPrepared] = useState(null);
 
   useEffect(() => {
     let live = true;
@@ -120,6 +132,27 @@ export default function AuthorityShell({ adapter }) {
   // The preview is rendered from the SAME object the identity is computed over.
   const preview = useMemo(() => renderPreview(reviewedDraft, envelope), [reviewedDraft, envelope]);
 
+  /**
+   * ANY authoritative edit drops the prepared review.
+   *
+   * The host would refuse a stale receipt anyway, and that safety net stays.
+   * But relying on it as the interaction would leave the confirm button live
+   * over a review that no longer matches what is on screen — she would press
+   * it, be asked to verify, and be refused. Dropping it here means the screen
+   * says "prepare again" before she reaches for Windows Hello.
+   *
+   * The comparison is against the host's own list of authoritative inputs, not
+   * a list this component maintains: a browser guessing at what counts as
+   * authoritative will guess wrong exactly once.
+   */
+  const preparedFor = useRef(null);
+  useEffect(() => {
+    if (!prepared) { preparedFor.current = reviewedDraft; return; }
+    if (invalidatesPreparedReview(preparedFor.current, reviewedDraft)) {
+      setPrepared(null);
+    }
+  }, [reviewedDraft, prepared]);
+
   async function onAuthorize() {
     setFailure(null);
     if (!canWrite) {
@@ -131,23 +164,62 @@ export default function AuthorityShell({ adapter }) {
     }
     setPending(true);
     try {
+      // PREPARE. Nothing is written and she is not asked to verify anything yet.
       const result = await authorizeFromContext({
         adapter, context, draft: reviewedDraft,
         policyIdentity: policyIdentityOf(reviewedDraft),
         action: path === "canary" ? "authorize_bounded_task" : "authorize_goal",
       });
       if (!result?.ok) {
-        setFailure(result?.failure === "stale_preview"
-          ? "This changed since you reviewed it. Review the updated authority before authorizing."
-          : result?.reason || "the transaction did not complete");
-        if (result?.failure === "stale_preview") setStep("review");
+        setFailure(result?.reason || "the review could not be prepared");
         return;
       }
+      preparedFor.current = reviewedDraft;
+      setPrepared(result.prepared);
+    } finally {
+      setPending(false);
+    }
+  }
+
+  /**
+   * CONFIRM. The only call in this surface that mutates anything.
+   *
+   * Two opaque strings go out; a fresh Windows verification happens on the
+   * host, immediately before the write. Everything she reviewed is already
+   * bound into the receipt, so nothing on this screen can still change it.
+   */
+  async function onConfirmPrepared() {
+    setFailure(null);
+    setPending(true);
+    try {
+      const result = await commitPrepared({ adapter, prepared });
+      if (!result?.ok) {
+        setFailure(
+          result?.failure === "stale_authority_revision"
+            ? "This authority changed while you were reviewing it. Prepare the change again."
+            : result?.failure === "read_session_lost"
+              ? "The owner-controls window closed before this was confirmed. Nothing was written."
+              : result?.reason || "the change did not complete",
+        );
+        // Whatever went wrong, the prepared review is spent.
+        setPrepared(null);
+        if (result?.failure === "stale_authority_revision") {
+          const reloaded = await loadAuthorityContext(adapter);
+          setAuthority(reloaded.currentAuthority);
+        }
+        return;
+      }
+      setPrepared(null);
       setAuthority(result.persisted);
       setStep("authorized");
     } finally {
       setPending(false);
     }
+  }
+
+  function onDiscardPrepared() {
+    setPrepared(null);
+    setFailure(null);
   }
 
   /**
@@ -173,23 +245,18 @@ export default function AuthorityShell({ adapter }) {
     }
     setPending(true);
     try {
+      // The lineage is NOT sent. The host knows which authority this domain is
+      // on, and a browser that could name a goal id could name someone else's.
       const result = await amendAuthority({
         adapter,
-        goalId: authority?.goal?.goal_id ?? authority?.record?.goal?.goal_id,
         expectedRevision: authority?.revision,
         action, scopeRefs,
       });
       if (!result?.ok) {
-        setFailure(result?.failure === "stale_revision"
-          ? "This authority changed elsewhere. Reloading the current version."
-          : result?.reason || "the change did not complete");
-        if (result?.failure === "stale_revision") {
-          const reloaded = await loadAuthorityContext(adapter);
-          setAuthority(reloaded.currentAuthority);
-        }
+        setFailure(result?.reason || "the change could not be prepared");
         return;
       }
-      setAuthority(result.persisted);
+      setPrepared(result.prepared);
     } finally {
       setPending(false);
     }
@@ -381,16 +448,43 @@ export default function AuthorityShell({ adapter }) {
         {step === "review" && (
           <>
             <Ask title="This is what you would be granting." hint="Read it once. Nothing has been granted yet." />
-            <Preview preview={preview} />
-            <div className="au__acts">
-              <button
-                className="au-btn au-btn--go" type="button" disabled={!ready || pending}
-                onClick={onAuthorize}
-              >
-                {pending ? "Authorizing…" : path === "canary" ? "Authorize this one task" : "Authorize"}
-              </button>
-              <button className="au-btn au-btn--ghost" type="button" onClick={() => setStep("limits")} disabled={pending}>Back</button>
-            </div>
+            {/* The LOCAL preview, until the host has prepared one. Once it has,
+                what she confirms against is the host's own normalized review —
+                the browser's rendering is not the thing being authorized. */}
+            <Preview preview={prepared?.preview ?? preview} />
+
+            {prepared ? (
+              <div className="au__prepared">
+                <p className="au__preparednote">
+                  Prepared by the host. Confirming shows this exact Windows prompt:
+                </p>
+                <pre className="au__prompt">{prepared.prompt_preview}</pre>
+                <div className="au__acts">
+                  <button
+                    className="au-btn au-btn--go" type="button" disabled={pending}
+                    onClick={onConfirmPrepared}
+                  >
+                    {pending ? "Waiting for Windows…" : "Confirm with Windows"}
+                  </button>
+                  <button className="au-btn au-btn--ghost" type="button" onClick={onDiscardPrepared} disabled={pending}>
+                    Discard
+                  </button>
+                </div>
+                <p className="au__reviewnote">
+                  Editing anything above discards this and prepares it again.
+                </p>
+              </div>
+            ) : (
+              <div className="au__acts">
+                <button
+                  className="au-btn au-btn--go" type="button" disabled={!ready || pending}
+                  onClick={onAuthorize}
+                >
+                  {pending ? "Preparing…" : path === "canary" ? "Review this one task" : "Prepare for review"}
+                </button>
+                <button className="au-btn au-btn--ghost" type="button" onClick={() => setStep("limits")} disabled={pending}>Back</button>
+              </div>
+            )}
             {failure && (
               <p className="au__failure">
                 <b>Nothing was authorized.</b> {failure}

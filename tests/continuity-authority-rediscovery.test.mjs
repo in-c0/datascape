@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { REVOKE_CONFIRMATION, amendAuthority, authorizeFromContext, availableControls, loadAuthorityContext } from "../src/continuity/control/authority-session.js";
+import {
+  REVOKE_CONFIRMATION, amendAuthority, authorizeFromContext, availableControls,
+  commitPrepared, loadAuthorityContext,
+} from "../src/continuity/control/authority-session.js";
 import { createAuthorityEndpointClient } from "../src/continuity/control/authority-endpoint-client.js";
 import { createAuthorityEndpoint } from "../src/continuity/control/authority-endpoint.js";
 import { createMemoryStorage } from "../src/continuity/control/authority-journal.js";
@@ -60,16 +63,28 @@ function world() {
   };
 }
 
+/** PREPARE then COMMIT. The single-shot `authorize` no longer exists. */
+async function grant(adapter, context, draft, action = "authorize_goal") {
+  const prepared = await authorizeFromContext({
+    adapter, context, draft, policyIdentity: policyIdentityOf(draft), action,
+  });
+  if (!prepared.ok) return prepared;
+  return commitPrepared({ adapter, prepared: prepared.prepared });
+}
+
+async function amend(adapter, { expectedRevision, action, scopeRefs = null }) {
+  const prepared = await amendAuthority({ adapter, expectedRevision, action, scopeRefs });
+  if (!prepared.ok) return prepared;
+  return commitPrepared({ adapter, prepared: prepared.prepared });
+}
+
 // ---- P0-1: authority must be rediscoverable after a reload --------------------
 
 test("V6.1.5B rediscovery: authority survives a browser reload", async () => {
   const w = world();
   const first = w.newBrowser();
-  const granted = await authorizeFromContext({
-    adapter: first, context: await loadAuthorityContext(first), draft: DRAFT,
-    policyIdentity: policyIdentityOf(DRAFT), action: "authorize_goal",
-  });
-  assert.equal(granted.ok, true);
+  const granted = await grant(first, await loadAuthorityContext(first), DRAFT);
+  assert.equal(granted.ok, true, granted.reason);
 
   // A refresh: brand-new client, no goal id anywhere, and the blocker it came
   // from is now resolved and gone from the open list.
@@ -83,14 +98,11 @@ test("V6.1.5B rediscovery: authority survives a browser reload", async () => {
 test("V6.1.5B rediscovery: narrowed and revoked revisions survive reload and restart", async () => {
   const w = world();
   const browser = w.newBrowser();
-  const granted = await authorizeFromContext({
-    adapter: browser, context: await loadAuthorityContext(browser), draft: DRAFT,
-    policyIdentity: policyIdentityOf(DRAFT), action: "authorize_goal",
-  });
+  const granted = await grant(browser, await loadAuthorityContext(browser), DRAFT);
+  assert.equal(granted.ok, true, granted.reason);
 
-  await amendAuthority({
-    adapter: browser, goalId: granted.goal_id, expectedRevision: 1,
-    action: "narrow_authority", scopeRefs: ["semantic-centre:continuity"],
+  await amend(browser, {
+    expectedRevision: 1, action: "narrow_authority", scopeRefs: ["semantic-centre:continuity"],
   });
   w.restartBackend();
   const afterNarrow = await loadAuthorityContext(w.newBrowser());
@@ -98,9 +110,7 @@ test("V6.1.5B rediscovery: narrowed and revoked revisions survive reload and res
   assert.equal(afterNarrow.currentAuthority.state, "narrowed");
   assert.deepEqual(afterNarrow.currentAuthority.scope_refs, ["semantic-centre:continuity"]);
 
-  await amendAuthority({
-    adapter: w.newBrowser(), goalId: granted.goal_id, expectedRevision: 2, action: "revoke_authority",
-  });
+  await amend(w.newBrowser(), { expectedRevision: 2, action: "revoke_authority" });
   w.restartBackend();
   const afterRevoke = await loadAuthorityContext(w.newBrowser());
   assert.equal(afterRevoke.currentAuthority.revision, 3);
@@ -205,20 +215,22 @@ test("V6.1.5B management: a grant on an existing lineage is not an edit", async 
   const w = world();
   const browser = w.newBrowser();
   const context = await loadAuthorityContext(browser);
-  const granted = await authorizeFromContext({
-    adapter: browser, context, draft: DRAFT,
-    policyIdentity: policyIdentityOf(DRAFT), action: "authorize_goal",
-  });
+  const granted = await grant(browser, context, DRAFT);
   assert.equal(granted.revision, 1);
 
   const widened = { ...DRAFT, allowed_capabilities: [...DRAFT.allowed_capabilities] };
-  const second = await authorizeFromContext({
-    adapter: w.newBrowser(), context, draft: widened,
-    policyIdentity: policyIdentityOf(widened), action: "authorize_goal",
-  });
-  // Replayed as the same operation rather than creating a rival revision 1 —
-  // and either way it is not an edit of revision 1, which is why the control is
-  // hidden rather than wired.
-  assert.equal(second.revision, 1);
+  const second = await grant(w.newBrowser(), context, widened);
+
+  // REFUSED, not replayed — and the difference matters.
+  //
+  // This used to pass because the operation id was derived from the draft, so a
+  // duplicate grant replayed the first one and looked idempotent. Idempotency
+  // was standing in for a compare-and-swap that did not exist: once the id
+  // stopped being derived from the draft, a second grant built a RIVAL revision
+  // 1 on the same domain. The grant path now asserts that the domain has no
+  // authority, so this is refused by name whatever the operation id happens to
+  // be.
+  assert.equal(second.ok, false);
+  assert.equal(second.failure ?? second.outcome, "stale_revision");
   assert.equal(w.endpoint.history(granted.goal_id).length, 1, "no second lineage may appear");
 });

@@ -81,6 +81,31 @@ function unwrap(key) {
  * payload, so there is no way for the exception linkage to be a pending
  * Promise at the moment the request is built.
  */
+/**
+ * A unique id for ONE attempt.
+ *
+ * It carries no authority — the host binds every authoritative field into the
+ * receipt — so its only job is to be unique per attempt and stable across a
+ * retry of that same attempt.
+ *
+ * `Date.now()` was not good enough, and the failure was live rather than
+ * theoretical: two grants prepared inside the same millisecond produced the
+ * same id, and the second REPLAYED the first instead of being evaluated. The
+ * test that caught it did so intermittently, which is exactly how a
+ * clock-derived identifier fails — it works until the machine is fast enough.
+ *
+ * Randomness, not time. `randomUUID` where the browser has it, and a
+ * random-plus-counter fallback that cannot repeat within a page either.
+ */
+let attemptCounter = 0;
+export function attemptId(prefix) {
+  attemptCounter += 1;
+  const random = globalThis.crypto?.randomUUID
+    ? globalThis.crypto.randomUUID()
+    : `${Math.random().toString(36).slice(2)}${attemptCounter}`;
+  return `${prefix}:${random}`;
+}
+
 export async function authorizeFromContext({ adapter, context, draft, policyIdentity, action }) {
   if (!context?.ready) {
     return {
@@ -89,46 +114,115 @@ export async function authorizeFromContext({ adapter, context, draft, policyIden
       reason: context?.reason ?? "the authority context was never loaded",
     };
   }
-  const request = {
-    operation_id: `auth:${draft.draft_id}:${policyIdentity}`,
-    authorization_action: action,
-    draft,
-    policy_identity: policyIdentity,
-    // The exact aggregate exception, resolved during hydration.
-    source_exception_id: context.blocker?.id ?? null,
-  };
-  if (!request.source_exception_id) {
-    // Better to refuse than to authorize without the linkage the design
-    // depends on — a grant that resolves nothing leaves her blocker open
-    // forever with authority sitting silently behind it.
-    return { ok: false, failure: "transaction_failed", reason: "no originating exception was resolved during hydration" };
-  }
-  const result = await adapter.authorize(request);
-  if (!result?.ok) return result ?? { ok: false, failure: "transaction_failed", reason: "no response" };
-
-  // Read the PERSISTED state back rather than assuming the draft succeeded.
-  const persisted = unwrap("record")(await adapter.readCurrentAuthority(result.goal_id));
-  return { ...result, persisted };
+  return prepareThenCommit({
+    adapter,
+    request: { authorization_action: action, draft },
+    operationId: attemptId("auth"),
+  });
 }
 
 /**
  * Narrow or revoke through the privileged transaction.
  *
- * The management screen previously bound these to `setNarrowed(true)` /
- * `setRevoked(true)`, which on a live route would have shown an authority
- * change that never happened. A displayed live control cannot be a simulation.
+ * Same two steps as a grant. The lineage is NOT sent: the host knows which
+ * authority the domain is on, and a browser that could name a goal id could
+ * name someone else's.
  */
 export async function amendAuthority({ adapter, goalId, expectedRevision, action, scopeRefs = null }) {
-  const result = await adapter.authorize({
-    operation_id: `amend:${goalId}:${action}:${expectedRevision}`,
-    authorization_action: action,
-    goal_id: goalId,
-    expected_authority_revision: expectedRevision,
-    ...(scopeRefs ? { scope_refs: scopeRefs } : {}),
+  return prepareThenCommit({
+    adapter,
+    request: {
+      authorization_action: action,
+      ...(scopeRefs ? { scope_refs: scopeRefs } : {}),
+    },
+    operationId: attemptId(`amend:${action}`),
+  });
+}
+
+/**
+ * PREPARE, then COMMIT. One shape for every mutation.
+ *
+ * The old orchestration sent the draft, the policy identity, the goal id, the
+ * expected revision and the resulting scope in a single `authorize` call — the
+ * exact fields the host now refuses by name. So the visible Authorize, Narrow
+ * and Revoke controls could not have used the secured transaction at all.
+ *
+ * Returning the PREPARED review rather than committing immediately is the other
+ * half: she has to see what the host normalized before anything asks her to
+ * verify. `commitPrepared` is what the confirm button calls.
+ */
+export async function prepareThenCommit({ adapter, request, operationId }) {
+  const prepared = await adapter.prepareAuthority(request);
+  if (!prepared?.ok) {
+    return prepared ?? { ok: false, failure: "transaction_failed", reason: "no response" };
+  }
+  if (!prepared.prompt_preview) {
+    // The surface refuses to draw a review without the host's own prompt text,
+    // and refusing here too means the failure is named at the boundary that
+    // produced it rather than surfacing as a blank panel.
+    return {
+      ok: false, failure: "no_prompt_preview",
+      reason: "the host prepared a review but did not say what Windows will ask",
+    };
+  }
+  return { ok: true, prepared: { ...prepared, operation_id: operationId } };
+}
+
+/** The confirm button. Two opaque strings, and a fresh verification. */
+export async function commitPrepared({ adapter, prepared }) {
+  if (!prepared?.preview_receipt || !prepared?.operation_id) {
+    return { ok: false, failure: "not_prepared", reason: "there is no prepared review to confirm" };
+  }
+  const result = await adapter.commitAuthority({
+    operationId: prepared.operation_id,
+    previewReceipt: prepared.preview_receipt,
   });
   if (!result?.ok) return result ?? { ok: false, failure: "transaction_failed", reason: "no response" };
-  const persisted = unwrap("record")(await adapter.readCurrentAuthority(goalId));
+
+  // Read the PERSISTED state back rather than assuming the commit succeeded.
+  //
+  // The goal id comes from the COMMIT RESULT, never from the browser: the
+  // domain-derived host needs no argument at all, while the in-process endpoint
+  // is indexed by goal. Passing back what the host just told us keeps one call
+  // correct for both without the page ever choosing a lineage.
+  const readback = await adapter.readCurrentAuthority(result.goal_id);
+  const persisted = unwrap("record")(unwrap("current")(readback));
   return { ...result, persisted };
+}
+
+/**
+ * Does an edit invalidate a prepared review?
+ *
+ * ANY authoritative input. Not "the ones we think matter" — the host decides
+ * what is authoritative, and a browser guessing at that list will guess wrong
+ * exactly once.
+ *
+ * This exists so the UI drops the prepared state itself rather than letting her
+ * press confirm on a review that no longer matches what is on screen and
+ * waiting for the host to reject the stale receipt. The host WILL reject it;
+ * that is a safety net, not an interaction.
+ */
+export const AUTHORITATIVE_INPUTS = [
+  "statement", "kind", "scope_refs", "scope_label", "allowed_capabilities",
+  "stop_conditions", "max_cost", "max_wall_time_ms", "success_condition",
+  // A bounded canary IS its operation. Leaving this out meant swapping
+  // run_verification for prepare_patch kept a prepared review live.
+  "operation",
+  "authorization_action",
+];
+
+export function invalidatesPreparedReview(before, after) {
+  if (!before || !after) return true;
+  for (const field of AUTHORITATIVE_INPUTS) {
+    const a = before[field];
+    const b = after[field];
+    if (Array.isArray(a) || Array.isArray(b)) {
+      if (JSON.stringify(a ?? []) !== JSON.stringify(b ?? [])) return true;
+    } else if ((a ?? null) !== (b ?? null)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**

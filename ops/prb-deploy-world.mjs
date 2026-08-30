@@ -17,6 +17,12 @@ import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
 import { stripGuard } from "./exception-guard-patch.mjs";
+// DERIVED, not restated. This list used to name the artifact's sources by hand
+// beside `live-host-deploy.mjs`'s own lists, so adding a module to the reviewed
+// set left this world deploying from a repo that did not contain it — and the
+// failure surfaced as "no deployed entry point to ask", which reads like a
+// broken gate rather than a stale fixture.
+import { ARTIFACT, AUTHORITY_ARTIFACT } from "./live-host-deploy.mjs";
 
 const REPO = process.cwd();
 const REAL_HOST_OPS = process.env.PRB_HOST_OPS || "D:/Projects/_ship_inbox/ops";
@@ -35,16 +41,23 @@ export function readLanes() { return [] }
 const STUB_BRIEFING = `export function build() { return { lanes: [], mustReads: [] } }\n`;
 
 /** Everything deployment needs to exist in the repo it deploys FROM. */
-const REPO_SOURCES = [
-  "ops/live-host/briefing-server.mjs",
-  "ops/live-host/briefing-server-core.mjs",
+/** Sources the world needs that are NOT part of either deployed artifact. */
+const EXTRA_SOURCES = [
   "ops/exception-guard-patch.mjs",
   "src/continuity/control/owner-ruling.js",
   "src/continuity/control/owner-presence.js",
   "src/continuity/control/owner-ruling-policy.js",
   "src/continuity/control/exception-atomic.js",
   "src/continuity/control/owner-presence-windows.js",
+  "src/continuity/control/owner-presence-coordinator.js",
 ];
+
+const REPO_SOURCES = [...new Set([
+  "ops/live-host/briefing-server.mjs",
+  ...ARTIFACT.map((f) => f.source),
+  ...AUTHORITY_ARTIFACT.map((f) => f.source),
+  ...EXTRA_SOURCES,
+])];
 
 function installHostDependency(liveDir, name, fallback) {
   const real = path.join(REAL_HOST_OPS, name);
@@ -135,6 +148,10 @@ export async function deployedWorld({ damage = null } = {}) {
   // production default is now interactive-capable, so deleting this variable
   // would leave a suite able to raise a real Windows dialog on this machine.
   process.env.OWNER_PRESENCE_INTERACTIVE = "0";
+  // A COMPATIBLE owner-controls origin: same host as the API, differing only by
+  // port, which is not part of a site. Without this the authority routes fail
+  // closed, which is the intended production behaviour and a separate test.
+  process.env.CONTINUITY_OWNER_CONTROLS_ORIGIN = "http://127.0.0.1:5313";
 
   const fresh = () => Math.random().toString(36).slice(2);
   const deployMod = await import(`./live-host-deploy.mjs?w=${fresh()}`);
@@ -160,7 +177,34 @@ export async function deployedWorld({ damage = null } = {}) {
     deployMod, entryMod, entry, storeBefore,
     advance: (ms) => { clock += ms; },
     /** Start through the REAL entry point, with a device we control. */
-    async launch() {
+    async launch({ ownerControlsOrigin = undefined, authorityLoop = undefined } = {}) {
+      // The origin is read from the environment by the real entry point, so a
+      // test that wants an incompatible topology has to change the environment
+      // rather than pass a flag past it — otherwise it would be exercising a
+      // path production does not have.
+      const previous = process.env.CONTINUITY_OWNER_CONTROLS_ORIGIN;
+      const previousLoop = process.env.CONTINUITY_AUTHORITY_LOOP;
+      if (ownerControlsOrigin !== undefined) {
+        process.env.CONTINUITY_OWNER_CONTROLS_ORIGIN = ownerControlsOrigin;
+      }
+      if (authorityLoop !== undefined) {
+        if (authorityLoop === null) delete process.env.CONTINUITY_AUTHORITY_LOOP;
+        else process.env.CONTINUITY_AUTHORITY_LOOP = authorityLoop;
+      }
+      try {
+        return await world.startWith();
+      } finally {
+        if (ownerControlsOrigin !== undefined) {
+          if (previous === undefined) delete process.env.CONTINUITY_OWNER_CONTROLS_ORIGIN;
+          else process.env.CONTINUITY_OWNER_CONTROLS_ORIGIN = previous;
+        }
+        if (authorityLoop !== undefined) {
+          if (previousLoop === undefined) delete process.env.CONTINUITY_AUTHORITY_LOOP;
+          else process.env.CONTINUITY_AUTHORITY_LOOP = previousLoop;
+        }
+      }
+    },
+    async startWith() {
       const started = await entryMod.startLiveHost({
         liveDir: live,
         stateDir: state,
@@ -202,12 +246,23 @@ export async function deployedWorld({ damage = null } = {}) {
     file: (id) => fs.readFileSync(path.join(inbox, `${id}.md`), "utf8"),
     amendments: (id) => (world.file(id).match(/OWNER [A-Z ]+ /g) || []).length,
     status: (id) => world.file(id).match(/^status: (.+)$/m)[1],
-    fixture(id = "2026-08-22-deployed-0001", { status = "blocked-on-owner", proposed = "do the thing" } = {}) {
+    fixture(id = "2026-08-22-deployed-0001", {
+      status = "blocked-on-owner", proposed = "do the thing",
+      loop = "datascape/deployed", evidence = null,
+    } = {}) {
       fs.writeFileSync(path.join(inbox, `${id}.md`), [
-        "---", `id: ${id}`, "loop: datascape/deployed", "title: An owner ruling is required",
+        "---", `id: ${id}`, `loop: ${loop}`, "title: An owner ruling is required",
         "severity: medium", `status: ${status}`, "fingerprint: deployed",
         "opened: 2026-08-22T08:00:00+10:00", "updated: 2026-08-22T08:00:00+10:00",
-        "occurrences: 1", `proposed: ${proposed}`, "---", "", "# An owner ruling is required", "",
+        "occurrences: 1", "---", "", "# An owner ruling is required", "",
+        ...(String(proposed).trim() ? ["## Proposed action", "", proposed, ""] : []),
+        // The two sections the read surface may show, plus one it must not, so
+        // a test can tell "the section was absent" apart from "the surface
+        // withheld it".
+        ...(evidence
+          ? ["## Evidence", "", evidence, "", "## Proposed action", "", proposed, "",
+            "## Owner steps", "", "- a step she should never receive over HTTP", ""]
+          : []),
       ].join("\n"));
       return id;
     },

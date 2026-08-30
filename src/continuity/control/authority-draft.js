@@ -60,6 +60,20 @@ export function createAuthorityDraft({
   max_wall_time_ms = 15 * 60 * 1000,
   credential_policy = "none",
   scope_label = null,
+  // BOUNDED-CANARY FIELDS, and they belong here rather than being bolted on
+  // afterwards by whoever happens to construct a draft.
+  //
+  // The host re-authors an incoming draft through this constructor to mint its
+  // durable id. Because these two were not parameters, that re-authoring
+  // silently DELETED them: a bounded canary arrived with a success condition
+  // and an operation, and left with neither — so the receipt bound null, and
+  // `authorCanary()` (which requires a success condition and puts both into the
+  // work declaration) could not commit the task she had just reviewed.
+  //
+  // Fixing it at the call site would have left the same trap for the next
+  // caller. A canonical constructor that quietly drops fields is not canonical.
+  success_condition = null,
+  operation = null,
 }) {
   if (!draft_id) throw new Error("an authority draft requires draft_id");
   if (!["persistent_goal", "bounded_canary"].includes(kind)) throw new Error(`unknown draft kind: ${kind}`);
@@ -78,6 +92,11 @@ export function createAuthorityDraft({
     max_wall_time_ms,
     credential_policy,
     state: "draft",
+    // Carried only for a bounded canary. A persistent goal has no finish line,
+    // so inventing one here would be describing a shape she did not choose.
+    ...(kind === "bounded_canary"
+      ? { success_condition, operation }
+      : {}),
     // Structural, not a promise: a draft grants nothing.
     grants_authority: false,
   };
