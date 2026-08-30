@@ -34,9 +34,8 @@ Sticky continuation rule:
 
 Do not select:
 - DataScape / Continuity implementation when another executor owns an active conflicting change; while #44 is open, do not expand owner-facing control-plane concepts;
-- Tuned when its dedicated autonomous loop is active;
-- new Vibo feature work while Vibo remains in distribution/evidence mode, unless a severe production defect requires it;
-- LifeOS Studio visual/copy/design files during a dedicated foreground design lane.
+- `confidential lane omitted`;
+- new Vibo feature work while Vibo remains in distribution/evidence mode, unless a severe production defect requires it.
 
 If human-blocked, record the minimum human action in the proper source of truth and reallocate to another runnable workstream rather than idling.
 
