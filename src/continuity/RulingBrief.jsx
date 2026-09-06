@@ -94,6 +94,9 @@ function Row({ group, index, numeral, live, queued, focused, onRule, onFocusRow 
       className={`rb-row${queued ? " rb-row--queued" : ""}${focused ? " rb-row--focus" : ""}`}
       role="group"
       aria-label={group.question || group.title}
+      // The lane's technical title lives one level down: the tooltip here and
+      // the record itself, never a line on the sheet (seven rows, one screen).
+      title={group.question && group.title !== group.question ? group.title : undefined}
       data-key={group.key}
       onClick={() => onFocusRow(index)}
     >
@@ -114,9 +117,6 @@ function Row({ group, index, numeral, live, queued, focused, onRule, onFocusRow 
                   {i > 0 && <i> · </i>}{m}
                 </span>
               ))}
-              {group.question && group.title !== group.question && (
-                <span className="rb-meta__title"><i> · </i>{group.title}</span>
-              )}
             </p>
           </div>
           {live ? (
@@ -278,14 +278,14 @@ export default function RulingBrief({ triage: initial, onRefresh }) {
   const foldSummary = (triage.foldedByKind || []).map((k) => `${k.kind.charAt(0).toUpperCase() + k.kind.slice(1)} ${k.count}`).join(" · ");
 
   return (
-    <section className="rb-sheet" ref={sheetRef} aria-label="Needs you — the queue as decisions">
+    <section className={`rb-sheet${live ? "" : " rb-sheet--readonly"}`} ref={sheetRef} aria-label="Needs you — the queue as decisions">
       <header className="rb-head">
         <h2 className="rb-head__line">{header.map((h, i) => <span key={i}>{i > 0 && <i> · </i>}{h}</span>)}</h2>
         {!live && <p className="rb-readonly">Read-only on phone · queue rulings from Continuity on your PC.</p>}
       </header>
 
       <ol className="rb-rows">
-        {visible.map((group, index) => (
+        {top.map((group, index) => (
           <Row
             key={group.key}
             group={group}
@@ -307,6 +307,30 @@ export default function RulingBrief({ triage: initial, onRefresh }) {
             {foldSummary && <span className="rb-seam__kinds"><i> · </i>{foldSummary}</span>}
             <span className="rb-seam__toggle">{foldOpen ? "Hide" : "Show"} <b aria-hidden="true">▾</b></span>
           </button>
+          {/* The folded decisions open inline, in the same grid — never nested
+              cards — with the measured-height fold the spec names. */}
+          <div className="rb-fold" aria-hidden={!foldOpen}>
+            <div className="rb-fold__inner">
+              <ol className="rb-rows rb-rows--folded">
+                {folded.map((group, i) => {
+                  const index = top.length + i;
+                  return (
+                    <Row
+                      key={group.key}
+                      group={group}
+                      index={index}
+                      numeral={numerals[index]}
+                      live={live && foldOpen}
+                      queued={queued.get(group.key) || null}
+                      focused={focusIndex === index}
+                      onRule={rule}
+                      onFocusRow={setFocusIndex}
+                    />
+                  );
+                })}
+              </ol>
+            </div>
+          </div>
         </div>
       )}
 

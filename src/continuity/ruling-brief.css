@@ -42,6 +42,7 @@
 
 /* ---- rows ---- */
 .rb-rows { list-style: none; margin: 0; padding: 0; }
+.rb-rows--folded .rb-row:first-child { border-top: 1px solid var(--bf-line); }
 .rb-row {
   position: relative;
   border-top: 1px solid var(--bf-line);
@@ -66,7 +67,7 @@
   grid-template-columns: 40px minmax(0, 1fr) 336px;
   gap: var(--rb-gap);
   align-items: start;
-  padding: 14px 0;
+  padding: 11px 0;
 }
 
 .rb-num {
@@ -78,7 +79,7 @@
 }
 .rb-row--focus .rb-num { outline: 1px solid var(--bf-violet); outline-offset: 3px; color: var(--bf-text); }
 
-.rb-ask { min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.rb-ask { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .rb-q { margin: 0; font: 600 18px/24px var(--rb-sans); color: var(--bf-text); overflow-wrap: anywhere; }
 
 /* YES and NO share one line on the PC (the concept shows them side by side);
@@ -91,7 +92,11 @@
 .rb-meta { margin: 0; font: 400 11px/16px var(--rb-mono); color: var(--bf-muted); overflow-wrap: anywhere; }
 .rb-meta__high { color: var(--rb-rose); }
 .rb-meta__medium { color: var(--bf-amber); }
-.rb-meta__title { color: rgba(139, 150, 179, 0.8); }
+/* The lane's technical title, one level down and one line only — the full
+   text is the tooltip and the record page, never the sheet's height. */
+.rb-meta__title { color: rgba(139, 150, 179, 0.8); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; overflow-wrap: normal; }
+/* Read-only (no action API): no answers, so no answer column either. */
+.rb-sheet--readonly .rb-row__inner { grid-template-columns: 40px minmax(0, 1fr); }
 
 /* ---- answers ---- */
 .rb-answers { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; align-self: center; }
