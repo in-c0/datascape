@@ -67,7 +67,7 @@
   min-height: 0;
   overflow: hidden;
   display: grid;
-  grid-template-columns: 40px minmax(0, 1fr) 336px;
+  grid-template-columns: 40px minmax(0, 1fr) 368px;
   gap: var(--rb-gap);
   align-items: start;
   padding: 11px 0;
@@ -107,7 +107,7 @@
 .rb-pill {
   min-width: 96px;
   min-height: 44px;
-  padding: 0 16px;
+  padding: 0 14px;
   border: 1px solid rgba(84, 98, 140, 0.45);
   border-radius: var(--rb-radius-pill);
   background: rgba(15, 19, 36, 0.8);
