@@ -1,0 +1,19 @@
+# Motion review 1 — The Ruling Brief (ChatGPT temporary chat, High, "worked for 5m 28s")
+
+2026-09-06 ~15:25 Sydney (+10:00). Inputs: seven strips (`design/motion/ruling-brief/review-queue-1..4.png`, `review-fold-1..3.png`), 20 ms sampling, tiles downscaled to 372 px wide, uploaded as 1568×592 JPEG screenshots through the owner's Mac Chrome. Prompt: the DESIGN.md motion spec, the storyboard intent, and the standard assessment questions.
+
+## VERDICT: ASK OWNER
+
+1. **Spec vs storyboard are mathematically incompatible.** `220ms cubic-bezier(.16,1,.3,1)` is ~46% complete at 20 ms, ~72% at 40, ~85% at 60, ~98% at 120 — not "halfway at 120 ms". Decide authority: if the curve is canonical, the storyboard's 120 ms frame should read ~98% arrived; if the halfway beat is canonical, change the thread to something like `220ms cubic-bezier(.45,.15,.65,.85)` (~51% at 120 ms, neither linear nor default ease-in-out).
+2. **The collapse is not delayed until thread arrival** — clear layout change from 0→20 ms, strongest through 40–80 ms, directionally consistent with `140ms cubic-bezier(.4,0,.2,1)` (6% at 20, 33% at 40, 67% at 60, 85% at 80, 95% at 100). A "wait until 220 ms then collapse" implementation is rejected. Cannot certify the docket glyphs appear on the same frame as the thread: below the strips' effective resolution. Capture pre-press, 0 ms, first rAF (~16.7 ms) and 20 ms at native resolution with the pressed pill, complete row, thread origin, next-row numeral and tray visible.
+3. **Queue frames insufficient to confirm the thread easing or the `scaleX(.997)` contraction** — a 1 px thread and ~2 px edge move are below this resolution. Capture at native resolution as one fixed-viewport sequence; do not resize individual tiles. From the present capture the exact `.16,1,.3,1` control points cannot be responsibly confirmed.
+4. **Fold cadence substantially right**: `180ms cubic-bezier(.2,.8,.2,1)` is intentionally front-loaded (~44% at 20, 72% at 40, 86% at 60, 93% at 80, 96% at 100); the strips show that fast opening and long settle, arguing against linear or default ease-in-out. No overshoot or bounce. Exact control points unprovable at 20 ms downscaled; 10 ms native frames if certification matters.
+5. **Collapse-plus-thread cadence only works after the owner resolves 1.** With the written curves both motions are heavily advanced by 120 ms (collapse ~99%, thread ~98%), so the interaction reads as one quick overlapping snap; it does not support the storyboard's "thread halfway at 120 ms" beat. Do not lengthen the `.16,1,.3,1` curve to compensate — it reaches 50% at ~10% of its duration.
+6. **No convincing jank or overshoot.** 3–4 px vertical discontinuities at strip-file boundaries coincide with source-strip changes, so they read as crop/alignment differences, not animation jank. Re-capture both moments as one fixed viewport sequence before treating them as defects.
+7. **Renumbering and reduced motion not verifiable here.** Numerals too small to prove they change at motion start; no reduced-motion sequence. Add a native pre-action / 0 ms pair showing old and new numerals, and a separate `prefers-reduced-motion: reduce` capture with only pre-state and post-state.
+
+## Implementer's reading
+
+- Item 1 is the only owner-authority question, and the inconsistency is the implementer's: "thread halfway at 120 ms" was written into the Stage 2 storyboard prompt, not into the converged spec. Recommendation: keep the canonical curve (`.16,1,.3,1`, the direction's "signal along a thread" feel) and correct the storyboard note; the alternative curve reads slower and more mechanical.
+- Items 2, 3, 6, 7 are capture requests (a recapture, not a decision): native-resolution crops of the pill/thread origin and the numeral column at pre-press, 0, 16.7 and 20 ms, one fixed viewport, plus a reduced-motion pre/post pair.
+- Item 4 is a pass for the fold; item 5 resolves with item 1.

@@ -6,6 +6,7 @@ import { rulingTray } from "./batch-queue.js";
 import Authored from "./authored.jsx";
 import TemporalStage, { MARGIN_X, STAGE_RIGHT } from "./TemporalStage.jsx";
 import SemanticStage from "./SemanticStage.jsx";
+import RulingBrief from "./RulingBrief.jsx";
 import { excerptAuthored, parseAuthored } from "./authored.js";
 import { temporalAnchor, timeScale } from "./briefing.js";
 import {
@@ -473,6 +474,9 @@ function BriefingSurface({ data }) {
   const [brief, setBrief] = useState(initial.brief);
   const [page, setPage] = useState(initial.page);
   const [liveActions, setLiveActions] = useState(null);
+  // The queue as decisions (The Ruling Brief) — refreshed from the host after
+  // the tray applies a batch, never edited optimistically.
+  const [liveTriage, setLiveTriage] = useState(null);
   const [showDeferred, setShowDeferred] = useState(false);
 
   useEffect(() => {
@@ -701,6 +705,23 @@ function BriefingSurface({ data }) {
             </span>
           ))}
         </nav>
+      )}
+
+      {/* The Ruling Brief: the Needs-you half as decisions, one sheet at the
+          entry level only; deeper levels keep the reviewed scene. It sits
+          ABOVE the temporal field, not below it as the concept assumed: the
+          real field at entry is ~520px of placed lane nodes (four rows of
+          92px), five times the band in the render, and putting the decisions
+          under it pushed the first question below the fold at 874px. Decisions
+          first is the whole point of the sheet; the field follows intact. */}
+      {scene.level === "entry" && (liveTriage || data.triage) && (
+        <RulingBrief
+          triage={liveTriage || data.triage}
+          onRefresh={(doc) => {
+            if (doc?.ownerActions) setLiveActions(doc.ownerActions);
+            if (doc?.triage) setLiveTriage(doc.triage);
+          }}
+        />
       )}
 
       {/* The stage IS the temporal field — no strip above it, no card edge.
