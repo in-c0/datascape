@@ -1,0 +1,181 @@
+/* The Ruling Brief — design/DESIGN.md. Every value here maps to a token there.
+   Fonts: IBM Plex Sans 400/500/600 + IBM Plex Mono 400, loaded in index.html. */
+
+.bf-root {
+  --rb-rose: #e8a0a0;
+  --rb-numeral: rgba(139, 150, 179, 0.72);
+  --rb-radius-sheet: 14px;
+  --rb-radius-pill: 999px;
+  --rb-gap: 20px;
+  --rb-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+  --rb-sans: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --rb-mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+  --rb-ease-queue: cubic-bezier(0.16, 1, 0.3, 1);
+  --rb-ease-fold: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --rb-ease-renumber: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ---- the one sheet ---- */
+.rb-sheet {
+  position: relative;
+  z-index: 4;
+  max-width: 1180px;
+  margin: 8px auto 28px;
+  padding: 18px 22px 10px;
+  border: 1px solid rgba(96, 110, 152, 0.4);
+  border-radius: var(--rb-radius-sheet);
+  background: var(--bf-panel);
+  box-shadow: var(--rb-shadow);
+  color: var(--bf-text);
+  font-family: var(--rb-sans);
+}
+
+.rb-head { display: flex; flex-direction: column; gap: 4px; padding-bottom: 12px; }
+.rb-head__line {
+  margin: 0;
+  font: 600 13px/18px var(--rb-sans);
+  letter-spacing: 0.02em;
+  color: var(--bf-text);
+}
+.rb-head__line i, .rb-seam__btn i, .rb-meta i { font-style: normal; color: var(--bf-muted); }
+.rb-readonly { margin: 0; font: 400 13px/18px var(--rb-sans); color: var(--bf-muted); }
+
+/* ---- rows ---- */
+.rb-rows { list-style: none; margin: 0; padding: 0; }
+.rb-row {
+  position: relative;
+  border-top: 1px solid var(--bf-line);
+  transform-origin: right center;
+  transition: transform 220ms var(--rb-ease-queue);
+}
+.rb-row:first-child { border-top: 0; }
+.rb-row--queued { transform: scaleX(0.997); }
+
+/* The body collapses to the docket line when queued; rows beneath slide up
+   into place (renumber, 140ms). */
+.rb-row__body {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows 140ms var(--rb-ease-renumber);
+}
+.rb-row--queued .rb-row__body { grid-template-rows: 0fr; }
+.rb-row__inner {
+  min-height: 0;
+  overflow: hidden;
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) 336px;
+  gap: var(--rb-gap);
+  align-items: start;
+  padding: 14px 0;
+}
+
+.rb-num {
+  font: 400 13px/24px var(--rb-mono);
+  color: var(--rb-numeral);
+  text-align: right;
+  padding-right: 2px;
+  border-radius: 6px;
+}
+.rb-row--focus .rb-num { outline: 1px solid var(--bf-violet); outline-offset: 3px; color: var(--bf-text); }
+
+.rb-ask { min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.rb-q { margin: 0; font: 600 18px/24px var(--rb-sans); color: var(--bf-text); overflow-wrap: anywhere; }
+
+/* YES and NO share one line on the PC (the concept shows them side by side);
+   they stack on the phone. */
+.rb-costs { margin: 0; display: flex; flex-wrap: wrap; column-gap: 22px; row-gap: 2px; }
+.rb-costs > div { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 8px; align-items: baseline; min-width: 0; flex: 1 1 260px; }
+.rb-costs dt { margin: 0; font: 400 11px/18px var(--rb-mono); text-transform: uppercase; color: var(--bf-muted); letter-spacing: 0.04em; }
+.rb-costs dd { margin: 0; font: 400 13px/18px var(--rb-sans); color: var(--bf-muted); }
+
+.rb-meta { margin: 0; font: 400 11px/16px var(--rb-mono); color: var(--bf-muted); overflow-wrap: anywhere; }
+.rb-meta__high { color: var(--rb-rose); }
+.rb-meta__medium { color: var(--bf-amber); }
+.rb-meta__title { color: rgba(139, 150, 179, 0.8); }
+
+/* ---- answers ---- */
+.rb-answers { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; align-self: center; }
+.rb-answers--seam { justify-content: flex-end; padding: 8px 0 4px; }
+.rb-pill {
+  min-width: 96px;
+  min-height: 44px;
+  padding: 0 16px;
+  border: 1px solid rgba(84, 98, 140, 0.45);
+  border-radius: var(--rb-radius-pill);
+  background: rgba(15, 19, 36, 0.8);
+  color: var(--bf-text);
+  font: 600 13px/16px var(--rb-sans);
+  cursor: pointer;
+  transition: border-color 120ms var(--rb-ease-fold), background-color 120ms var(--rb-ease-fold);
+}
+.rb-pill u { text-decoration: underline; text-underline-offset: 3px; text-decoration-color: rgba(232, 236, 246, 0.55); }
+.rb-pill:hover { border-color: rgba(94, 234, 212, 0.55); }
+.rb-pill--first { border-color: rgba(94, 234, 212, 0.55); }
+.rb-pill:focus-visible { outline: 2px solid var(--bf-violet); outline-offset: 2px; }
+.rb-pill:active { background: rgba(94, 234, 212, 0.12); border-color: var(--bf-teal); }
+
+/* ---- the docket mark left by a ruling ---- */
+.rb-docket {
+  margin: 0;
+  padding: 10px 0 10px 60px;
+  font: 400 11px/16px var(--rb-mono);
+  color: var(--bf-teal);
+}
+.rb-docket b { font-weight: 400; letter-spacing: 0.06em; }
+.rb-docket__note { color: var(--bf-amber); }
+
+/* ---- seams ---- */
+.rb-seam { border-top: 1px solid var(--bf-line); }
+.rb-seam__btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--bf-muted);
+  font: 500 13px/18px var(--rb-sans);
+  text-align: left;
+  cursor: pointer;
+}
+.rb-seam__btn:hover { color: var(--bf-text); }
+.rb-seam__btn:focus-visible { outline: 2px solid var(--bf-violet); outline-offset: -2px; border-radius: 6px; }
+.rb-seam__kinds { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rb-seam__toggle { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.rb-seam__toggle b { font-weight: 400; display: inline-block; transition: transform 180ms var(--rb-ease-fold); }
+.rb-seam--open .rb-seam__toggle b { transform: rotate(180deg); }
+.rb-seam--overtaken .rb-seam__btn { padding-left: 10px; border-left: 2px solid var(--rb-rose); }
+
+.rb-fold { display: grid; grid-template-rows: 0fr; transition: grid-template-rows 180ms var(--rb-ease-fold); }
+.rb-seam--open .rb-fold { grid-template-rows: 1fr; }
+.rb-fold__inner { min-height: 0; overflow: hidden; }
+
+.rb-overtaken { list-style: none; margin: 0; padding: 4px 0 6px 12px; display: flex; flex-direction: column; gap: 8px; }
+.rb-overtaken li { font: 400 13px/18px var(--rb-sans); color: var(--bf-muted); }
+.rb-overtaken__title { color: var(--bf-text); }
+.rb-overtaken__reason { color: var(--bf-muted); }
+
+/* ---- the queued thread (drawn into <body>, fixed) ---- */
+.rb-thread { position: fixed; inset: 0; width: 100vw; height: 100vh; pointer-events: none; z-index: 60; overflow: visible; }
+.rb-thread path { fill: none; stroke: var(--bf-teal, #5eead4); stroke-width: 1; }
+
+/* ---- phone ---- */
+@media (max-width: 900px) {
+  .rb-sheet { margin: 8px 0 24px; padding: 14px 16px 8px; border-radius: 12px; }
+  .rb-row__inner { grid-template-columns: 28px minmax(0, 1fr); gap: 12px; padding: 12px 0; }
+  .rb-q { font: 600 16px/22px var(--rb-sans); }
+  .rb-costs { flex-direction: column; }
+  .rb-costs > div { flex: none; }
+  .rb-answers { grid-column: 2; justify-content: flex-start; padding-top: 2px; }
+  .rb-pill { min-height: 44px; }
+  .rb-docket { padding-left: 40px; }
+  .rb-seam__kinds { display: none; }
+}
+
+/* ---- reduced motion: every moment becomes an instant state change ---- */
+@media (prefers-reduced-motion: reduce) {
+  .rb-row, .rb-row__body, .rb-fold, .rb-seam__toggle b, .rb-pill { transition: none; }
+  .rb-row--queued { transform: none; }
+}
