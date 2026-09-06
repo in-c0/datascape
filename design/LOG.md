@@ -6,11 +6,12 @@ Regular ChatGPT chat used for renders (temporary chats cannot generate images): 
 ## Components
 | component | build | review # | verdict | notes |
 |---|---|---|---|---|
-| TriageCard (question + yes/no costs + ≤3 answer buttons) | — | — | — | maps to existing ruling classes; queues to the tray |
-| DecisionGroup (N exceptions → one card) | — | — | — | data from `triage.top[].ids` |
-| FoldStrip (past-seven, by kind) | — | — | — | opens on demand; keyboard Esc closes |
-| OvertakenStrip ("Dismiss all N — one confirm") | — | — | — | fills the tray with `dismiss` rulings |
-| DailyCard header (counts, cap, later) | — | — | — | |
+| Sheet header + read-only line | build-4 | — | static (no motion) | `Needs you · Sunday 6 Sep · 50 decisions from 57 open · 7 shown · 43 folded · 3 overtaken` |
+| Decision row (question, YES/NO, metadata, ≤3 pills, numeral) | build-4 | — | static | grouped rows show `settles 3: 4580 90ac b822`; title in tooltip |
+| Ruling queued (thread → tray, row contraction, body collapse, renumber) | build-4 | 1 (strips review-queue-1..3) | pending | 220ms + 140ms per DESIGN.md |
+| Fold open/close ("43 folded" seam) | build-4 | 1 (strips review-fold-1..3) | pending | 180ms measured height; folded list capped to 64vh scroll |
+| Overtaken seam + "Dismiss all 3 — one confirm" | build-4 | — | same fold motion as above | queues `dismiss` ×3 into the tray |
+| Phone (375, read-only) | build-3-phone | — | static | stacked YES/NO, no buttons, one honest line |
 
 ## Open questions (ASK OWNER)
 - References: keep the three stand-ins (Linear triage inbox, Things 3 Today, Braun/Rams instrument panel) or name your own?
