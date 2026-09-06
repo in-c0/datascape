@@ -43,6 +43,9 @@
 /* ---- rows ---- */
 .rb-rows { list-style: none; margin: 0; padding: 0; }
 .rb-rows--folded .rb-row:first-child { border-top: 1px solid var(--bf-line); }
+/* 43 folded decisions are ~4.6k px; the fold opens to a scrollable screenful,
+   so the sheet stays one screen and the 180ms growth is visible, not a pop. */
+.rb-rows--folded { max-height: 64vh; overflow: auto; overscroll-behavior: contain; }
 .rb-row {
   position: relative;
   border-top: 1px solid var(--bf-line);
@@ -120,6 +123,13 @@
 .rb-pill:active { background: rgba(94, 234, 212, 0.12); border-color: var(--bf-teal); }
 
 /* ---- the docket mark left by a ruling ---- */
+.rb-docket-wrap {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 140ms var(--rb-ease-renumber);
+}
+.rb-row--queued .rb-docket-wrap { grid-template-rows: 1fr; }
+.rb-docket-wrap__inner { min-height: 0; overflow: hidden; }
 .rb-docket {
   margin: 0;
   padding: 10px 0 10px 60px;
@@ -181,6 +191,6 @@
 
 /* ---- reduced motion: every moment becomes an instant state change ---- */
 @media (prefers-reduced-motion: reduce) {
-  .rb-row, .rb-row__body, .rb-fold, .rb-seam__toggle b, .rb-pill { transition: none; }
+  .rb-row, .rb-row__body, .rb-docket-wrap, .rb-fold, .rb-seam__toggle b, .rb-pill { transition: none; }
   .rb-row--queued { transform: none; }
 }

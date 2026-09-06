@@ -143,12 +143,18 @@ function Row({ group, index, numeral, live, queued, focused, onRule, onFocusRow 
           ) : null}
         </div>
       </div>
-      {queued && (
-        <p className="rb-docket" aria-live="polite">
-          <b>QUEUED</b> · {queued.label} · {group.loops[0]}{group.ids.length > 1 ? ` ×${group.ids.length}` : ""}
-          {queued.skipped ? <span className="rb-docket__note"> · {queued.skipped} of {group.ids.length} has no proposal to approve and stays open</span> : null}
-        </p>
-      )}
+      {/* The docket grows over the same 140ms the body shrinks, so the row's
+          height only ever decreases and the rows beneath never bump down first. */}
+      <div className="rb-docket-wrap" aria-live="polite">
+        <div className="rb-docket-wrap__inner">
+          {queued && (
+            <p className="rb-docket">
+              <b>QUEUED</b> · {queued.label} · {group.loops[0]}{group.ids.length > 1 ? ` ×${group.ids.length}` : ""}
+              {queued.skipped ? <span className="rb-docket__note"> · {queued.skipped} of {group.ids.length} has no proposal to approve and stays open</span> : null}
+            </p>
+          )}
+        </div>
+      </div>
     </li>
   );
 }
