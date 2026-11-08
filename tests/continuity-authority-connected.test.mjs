@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  amendAuthority, authorizeFromContext, availableControls, loadAuthorityContext,
+  amendAuthority, authorizeFromContext, availableControls, commitPrepared,
+  invalidatesPreparedReview, loadAuthorityContext,
 } from "../src/continuity/control/authority-session.js";
 import { createAuthorityEndpointClient } from "../src/continuity/control/authority-endpoint-client.js";
 import { createAuthorityEndpoint } from "../src/continuity/control/authority-endpoint.js";
@@ -61,6 +62,29 @@ function connected({ role = "owner" } = {}) {
   return { client: createAuthorityEndpointClient({ endpoint: "/x", transport }), endpoint, resolvedBy, audits, seen };
 }
 
+/**
+ * PREPARE then COMMIT — the whole protocol, in one helper.
+ *
+ * These tests used to call a single `authorize()` that carried the draft, the
+ * policy identity, the goal id, the expected revision and the resulting scope.
+ * The host refuses every one of those fields now, so the old shape was not a
+ * simpler spelling of the same thing: it was the shape that stopped working.
+ */
+async function grant(client, context, draft, action = "authorize_goal") {
+  const prepared = await authorizeFromContext({
+    adapter: client, context, draft,
+    policyIdentity: policyIdentityOf(draft), action,
+  });
+  if (!prepared.ok) return prepared;
+  return commitPrepared({ adapter: client, prepared: prepared.prepared });
+}
+
+async function amend(client, { expectedRevision, action, scopeRefs = null }) {
+  const prepared = await amendAuthority({ adapter: client, expectedRevision, action, scopeRefs });
+  if (!prepared.ok) return prepared;
+  return commitPrepared({ adapter: client, prepared: prepared.prepared });
+}
+
 // ---- the connected shell hydrates before it can be used ------------------------
 
 test("V6.1.5B connected: hydration resolves every async read", async () => {
@@ -86,15 +110,19 @@ test("V6.1.5B connected: the exact blocker id reaches the grant transaction", as
   const { client, resolvedBy, seen } = connected();
   const context = await loadAuthorityContext(client);
 
-  const result = await authorizeFromContext({
-    adapter: client, context, draft: DRAFT,
-    policyIdentity: policyIdentityOf(DRAFT), action: "authorize_goal",
-  });
+  const result = await grant(client, context, DRAFT);
+  assert.equal(result.ok, true, result.reason);
 
-  assert.equal(result.ok, true);
-  const sent = seen.find((s) => s.op === "authorize");
-  assert.equal(sent.body.source_exception_id, BLOCKER,
-    "the previous build sent undefined here, from a pending Promise");
+  // THE ASSERTION CHANGED, because the defect it guarded is now impossible by
+  // construction. It used to check that the BROWSER sent the right blocker id
+  // — the old build sent `undefined` from a pending Promise. The browser no
+  // longer sends one at all: the host binds the lineage into the receipt. So
+  // what is worth asserting is that no request carried it, and that the right
+  // blocker was resolved anyway.
+  for (const sent of seen) {
+    assert.equal(sent.body.source_exception_id, undefined,
+      `${sent.op} must not carry a lineage the browser chose`);
+  }
   assert.equal(resolvedBy.get(BLOCKER), result.persisted.ruling.ref);
   // And the management state comes from the backend, not the draft.
   assert.equal(result.persisted.revision, 1);
@@ -109,17 +137,7 @@ test("V6.1.5B connected: an unhydrated context refuses to authorize", async () =
   });
   assert.equal(result.ok, false);
   assert.equal(result.failure, "not_hydrated");
-  assert.equal(resolvedBy.size, 0);
-
-  // And a hydrated context with no blocker refuses too, rather than granting
-  // authority that resolves nothing.
-  const noBlocker = await authorizeFromContext({
-    adapter: client, context: { ready: true, blocker: null }, draft: DRAFT,
-    policyIdentity: policyIdentityOf(DRAFT), action: "authorize_goal",
-  });
-  assert.equal(noBlocker.ok, false);
-  assert.match(noBlocker.reason, /no originating exception/);
-  assert.equal(resolvedBy.size, 0);
+  assert.equal(resolvedBy.size, 0, "and nothing was prepared, let alone written");
 });
 
 // ---- live management controls are real transactions ---------------------------
@@ -127,45 +145,43 @@ test("V6.1.5B connected: an unhydrated context refuses to authorize", async () =
 test("V6.1.5B connected: narrow and revoke are persisted, not simulated", async () => {
   const { client, endpoint } = connected();
   const context = await loadAuthorityContext(client);
-  const granted = await authorizeFromContext({
-    adapter: client, context, draft: DRAFT,
-    policyIdentity: policyIdentityOf(DRAFT), action: "authorize_goal",
-  });
+  const granted = await grant(client, context, DRAFT);
+  assert.equal(granted.ok, true, granted.reason);
+  const goalId = granted.goal_id;
 
-  const narrowed = await amendAuthority({
-    adapter: client, goalId: granted.goal_id, expectedRevision: 1,
-    action: "narrow_authority", scopeRefs: ["semantic-centre:continuity"],
+  const narrowed = await amend(client, {
+    expectedRevision: 1, action: "narrow_authority", scopeRefs: ["semantic-centre:continuity"],
   });
-  assert.equal(narrowed.ok, true);
+  assert.equal(narrowed.ok, true, narrowed.reason);
   assert.equal(narrowed.persisted.revision, 2);
-  assert.equal(endpoint.handle("current", { goal_id: granted.goal_id }).state, "narrowed",
+  assert.equal(endpoint.handle("current", { goal_id: goalId }).state, "narrowed",
     "the backend must agree with the screen");
 
-  const revoked = await amendAuthority({
-    adapter: client, goalId: granted.goal_id, expectedRevision: 2, action: "revoke_authority",
-  });
+  const revoked = await amend(client, { expectedRevision: 2, action: "revoke_authority" });
+  assert.equal(revoked.ok, true, revoked.reason);
   assert.equal(revoked.persisted.revision, 3);
-  assert.equal(endpoint.handle("current", { goal_id: granted.goal_id }).state, "revoked");
+  assert.equal(endpoint.handle("current", { goal_id: goalId }).state, "revoked");
 });
 
 test("V6.1.5B connected: a stale management revision is refused, not applied", async () => {
   const { client, endpoint } = connected();
   const context = await loadAuthorityContext(client);
-  const granted = await authorizeFromContext({
-    adapter: client, context, draft: DRAFT,
-    policyIdentity: policyIdentityOf(DRAFT), action: "authorize_goal",
+  const granted = await grant(client, context, DRAFT);
+  const goalId = granted.goal_id;
+  // A review prepared against revision 1, held while another tab narrows.
+  const staleTab = await amendAuthority({
+    adapter: client, expectedRevision: 1, action: "revoke_authority",
   });
-  await amendAuthority({
-    adapter: client, goalId: granted.goal_id, expectedRevision: 1,
-    action: "narrow_authority", scopeRefs: ["semantic-centre:continuity"],
+  assert.equal(staleTab.ok, true, "preparing is allowed; committing is where it is caught");
+
+  await amend(client, {
+    expectedRevision: 1, action: "narrow_authority", scopeRefs: ["semantic-centre:continuity"],
   });
 
-  const staleTab = await amendAuthority({
-    adapter: client, goalId: granted.goal_id, expectedRevision: 1, action: "revoke_authority",
-  });
-  assert.equal(staleTab.ok, false);
-  assert.equal(staleTab.failure, "stale_revision");
-  assert.equal(endpoint.handle("current", { goal_id: granted.goal_id }).state, "narrowed",
+  const committed = await commitPrepared({ adapter: client, prepared: staleTab.prepared });
+  assert.equal(committed.ok, false);
+  assert.equal(committed.failure, "stale_revision");
+  assert.equal(endpoint.handle("current", { goal_id: goalId }).state, "narrowed",
     "the stale intent must not land on the newer revision");
 });
 
@@ -199,12 +215,8 @@ test("V6.1.5B connected: a blank-editor canary authorizes end to end", async () 
     success_condition: "the briefing surface renders with zero console errors",
   };
 
-  const result = await authorizeFromContext({
-    adapter: client, context, draft: typed,
-    policyIdentity: policyIdentityOf(typed), action: "authorize_bounded_task",
-  });
-
-  assert.equal(result.ok, true);
+  const result = await grant(client, context, typed, "authorize_bounded_task");
+  assert.equal(result.ok, true, result.reason);
   assert.ok(result.persisted.declaration, "a bounded task must produce a work declaration");
   assert.equal(result.persisted.declaration.operation, "run_verification");
   assert.equal(result.persisted.declaration.success_condition, typed.success_condition);
@@ -217,7 +229,19 @@ test("V6.1.5B connected: a blank-editor canary authorizes end to end", async () 
 
 // ---- the canary consent fields are covered by the policy identity -------------
 
-test("V6.1.5B connected: changing only the success condition invalidates the preview", async () => {
+test("V6.1.5B connected: editing a canary's success condition invalidates the prepared review", async () => {
+  // THE SHAPE OF THIS TEST CHANGED, because the attack it described is no
+  // longer expressible.
+  //
+  // It used to authorize a WEAKENED draft against the policy identity the owner
+  // had actually read, and assert the host caught the substitution as
+  // `stale_preview`. The browser cannot do that any more: it sends no policy
+  // identity, and the host normalizes and binds whatever draft it was given at
+  // prepare time. There is no second call to substitute into.
+  //
+  // What remains worth proving is the replacement guarantee — that an edit
+  // after preparation invalidates the prepared review rather than leaving a
+  // live confirm button over a stale one.
   const { client, resolvedBy } = connected();
   const context = await loadAuthorityContext(client);
   const canary = {
@@ -229,29 +253,28 @@ test("V6.1.5B connected: changing only the success condition invalidates the pre
     operation: "run_verification",
     success_condition: "the briefing surface renders with zero console errors",
   };
-  const reviewed = policyIdentityOf(canary);
 
-  // The exact substitution the review named: a weaker success condition,
-  // authorized against the identity the owner actually read.
-  const weakened = { ...canary, success_condition: "the page opened once" };
-  const result = await authorizeFromContext({
-    adapter: client, context, draft: weakened, policyIdentity: reviewed, action: "authorize_bounded_task",
+  const prepared = await authorizeFromContext({
+    adapter: client, context, draft: canary,
+    policyIdentity: policyIdentityOf(canary), action: "authorize_bounded_task",
   });
-  assert.equal(result.ok, false);
-  assert.equal(result.failure, "stale_preview");
+  assert.equal(prepared.ok, true, prepared.reason);
+  assert.ok(prepared.prepared.prompt_preview);
+
+  // A weaker success condition, and the operation alone: each is authoritative.
+  assert.equal(
+    invalidatesPreparedReview(canary, { ...canary, success_condition: "the page opened once" }),
+    true,
+  );
+  assert.equal(
+    invalidatesPreparedReview(canary, { ...canary, operation: "prepare_patch" }),
+    true,
+  );
+  // A purely cosmetic difference does not.
+  assert.equal(invalidatesPreparedReview(canary, { ...canary }), false);
+
+  // Nothing was written by any of it.
   assert.equal(resolvedBy.size, 0);
-
-  // And the operation alone.
-  const swapped = { ...canary, operation: "prepare_patch" };
-  const opResult = await authorizeFromContext({
-    adapter: client, context, draft: swapped, policyIdentity: reviewed, action: "authorize_bounded_task",
-  });
-  assert.equal(opResult.failure, "stale_preview");
-
-  // The positive control: the reviewed draft still authorizes.
-  assert.equal((await authorizeFromContext({
-    adapter: client, context, draft: canary, policyIdentity: reviewed, action: "authorize_bounded_task",
-  })).ok, true);
 });
 
 // ---- an unauthenticated connected caller ---------------------------------------

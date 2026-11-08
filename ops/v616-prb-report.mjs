@@ -119,7 +119,7 @@ async function run() {
   const stale = await probe(async (world, id) => {
     world.broker.duringPrompt = async () => {
       fs.writeFileSync(path.join(world.inbox, `${id}.md`),
-        world.file(id).replace("proposed: do the thing", "proposed: spend $400"));
+        world.file(id).replace("do the thing", "spend $400"));
     };
     await world.act({ id, action: "approve", operation_id: "op-stale" });
   });

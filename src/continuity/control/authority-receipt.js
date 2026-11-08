@@ -48,7 +48,7 @@ export function createReceiptStore({ now, ttlMs = DEFAULT_RECEIPT_TTL_MS, random
      * Prepare a review. Returns the receipt AND the exact preview the browser
      * must render, so what she reads is what the host bound.
      */
-    issue({ draft = null, action, sourceExceptionId = null, authorityDomain = null, goalId = null, baseRevision = null, resultingScopeRefs = null }) {
+    issue({ draft = null, action, sourceExceptionId = null, authorityDomain = null, goalId = null, baseRevision = null, resultingScopeRefs = null, readSessionId = null }) {
       const at = now();
       prune(at);
       const normalized = draft ? normalizeDraft(draft) : null;
@@ -66,6 +66,21 @@ export function createReceiptStore({ now, ttlMs = DEFAULT_RECEIPT_TTL_MS, random
         // The browser identifies the prepared authorization. It does not
         // reconstruct its semantics at commit time.
         action,
+        // THE CANONICAL PREPARED DRAFT, retained verbatim.
+        //
+        // `normalized_policy` is not sufficient to rebuild the record:
+        // `normalizeDraft()` deliberately drops `draft_id`, and the durable goal
+        // and ruling identities are constructed from it (`goal:<draft_id>`,
+        // `owner-ruling:<draft_id>:rev<n>`). Binding only the normalized policy
+        // left the commit path passing `draft: null` to the record builder,
+        // which refuses a missing draft — so an initial grant could not succeed
+        // at all through the wired host.
+        //
+        // The draft stored here is the one the HOST authored at prepare time,
+        // including a host-minted `draft_id`. The browser's own `draft_id` — the
+        // React form sends the literal string "new" — must never become the
+        // durable identity of an authorization.
+        prepared_draft: draft ? JSON.parse(JSON.stringify(draft)) : null,
         normalized_policy: normalized,
         policy_identity: draft ? policyIdentityOf(draft) : null,
         authority_kind: normalized?.kind ?? null,
@@ -75,6 +90,15 @@ export function createReceiptStore({ now, ttlMs = DEFAULT_RECEIPT_TTL_MS, random
         scope_refs: normalized ? [...normalized.scope_refs] : [],
         resulting_scope_refs: resultingScopeRefs ? [...resultingScopeRefs] : null,
         base_authority_revision: baseRevision,
+        // WHICH BROWSER prepared this. Host-private: added from the
+        // authenticated request context, never sent by the browser and never
+        // returned to it.
+        //
+        // Without it a receipt is portable between owner-read sessions — she
+        // reviews in one browser, the window rotates or expires, and the
+        // prepared authorization is still presentable from whatever holds it
+        // next. Re-review is cheap; a migrating receipt is not.
+        read_session_id: readSessionId,
         created_at: at,
         expires_at: at + ttlMs,
       };
@@ -88,13 +112,27 @@ export function createReceiptStore({ now, ttlMs = DEFAULT_RECEIPT_TTL_MS, random
      * Every refusal is a distinct, named case, because each is a different
      * attack and lumping them together loses the reason.
      */
-    verify(receiptId, claimed = {}) {
+    verify(receiptId, claimed = {}, context = {}) {
       const at = now();
       const receipt = receipts.get(receiptId);
       if (!receipt) return { ok: false, failure: "no_receipt", reason: "no prepared review matches this authorization" };
       if (receipt.expires_at <= at) {
         receipts.delete(receiptId);
         return { ok: false, failure: "expired_receipt", reason: "the prepared review expired; review again" };
+      }
+
+      // The receipt belongs to the browser session that prepared it. Checked
+      // before anything else the browser claims, because a receipt presented
+      // from a different session is not a mismatched field — it is a different
+      // review, and the same human unlocking twice does not make it the same
+      // one.
+      if (receipt.read_session_id !== null) {
+        if (!context.readSessionId) {
+          return { ok: false, failure: "receipt_session_missing", reason: "this review must be committed from the session that prepared it" };
+        }
+        if (context.readSessionId !== receipt.read_session_id) {
+          return { ok: false, failure: "receipt_session_mismatch", reason: "this review was prepared in a different owner-read session" };
+        }
       }
 
       // Anything the browser ALSO sent is checked for exact equality and
@@ -159,6 +197,18 @@ function defaultToken() {
  * are the same object by construction — the browser has nothing else to draw
  * from.
  */
+/**
+ * Everything about a receipt the browser may see.
+ *
+ * `read_session_id` is deliberately absent: it is how the host recognises the
+ * session, and a value the browser holds is a value the browser can be made to
+ * replay from somewhere else.
+ */
+export function browserSafeReceipt(receipt) {
+  const { read_session_id: _hidden, ...safe } = receipt;
+  return safe;
+}
+
 export function receiptPreview(receipt, envelope, renderPreview) {
   return {
     ...renderPreview(receipt.normalized_policy, envelope),

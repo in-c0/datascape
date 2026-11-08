@@ -54,10 +54,32 @@ export function createAuthorityEndpointClient({ endpoint = AUTHORITY_ENDPOINT, t
     // storage, so it cannot decide who the caller is.
     holdsAuthenticator: false,
 
-    authorize: (request) => call("authorize", request),
-    // §3: ask the host to prepare a review and return the exact preview to
-    // render plus an opaque receipt.
+    // TWO STEPS, and `authorize` is gone.
+    //
+    // The old single-shot `authorize(request)` sent the draft, the policy
+    // identity, the goal id, the expected revision and the resulting scope —
+    // every authoritative field — and the host has stopped accepting them. A
+    // client that still offered it would be offering a route to a transaction
+    // that refuses it, so it is removed rather than deprecated.
+
+    /** Intent goes here, and only here. The host normalizes and decides. */
     prepareAuthority: (request) => call("prepare", request),
+
+    /**
+     * The commit wire: two opaque strings.
+     *
+     * Nothing else is accepted here, and nothing else is offered. The host
+     * refuses an authoritative field by name rather than ignoring it, so a
+     * client that quietly added one would fail loudly — but the better
+     * guarantee is that there is no parameter to add one through.
+     */
+    commitAuthority: ({ operationId, previewReceipt }) => call("commit", {
+      operation_id: operationId,
+      preview_receipt: previewReceipt,
+    }),
+
+    /** A committed operation, replayed after a restart. No receipt needed. */
+    replayAuthority: (operationId) => call("commit", { operation_id: operationId }),
     // ONE contextual read. The page never learns or sends a goal id.
     authorityContext: () => call("context", {}),
     readCurrentAuthority: (goalId) => call("current", { goal_id: goalId }),

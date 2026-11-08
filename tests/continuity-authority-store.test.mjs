@@ -4,6 +4,7 @@ import {
   createAuthorityStore, createOwnerBoundary, draftActivityIsEphemeral,
   policyIdentity, shadowReauditRequest,
 } from "../src/continuity/control/authority-store.js";
+import { materialEvents } from "../src/continuity/control/authority-events.js";
 import { createAuthorityDraft } from "../src/continuity/control/authority-draft.js";
 import { fixtureStates } from "../src/continuity/control/authority-fixture.js";
 
@@ -246,7 +247,7 @@ test("V6.1.5: granting and revoking are history; draft edits are not", () => {
     goal_id, expected_revision: 1,
   });
 
-  const { events } = store.materialEvents();
+  const { events } = materialEvents(store);
   assert.equal(events.length, 2, "one grant, one revocation");
   assert.ok(events.every((e) => e.trigger === "owner"));
   assert.ok(events.some((e) => /authorized/i.test(e.text)));

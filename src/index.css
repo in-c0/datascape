@@ -12,8 +12,13 @@ html, body, #root { height: 100%; overflow: hidden; }
 body {
   font-family: var(--mono);
   background: #07080a;
-  cursor: none;
 }
+
+/* The hidden OS cursor is a 3D-scene affordance: App.jsx draws its own
+   .cursor ring there. Continuity/briefing views never mount that ring, so
+   hiding the OS cursor there means NO cursor at all (owner report,
+   2026-08-22). Scope the hide to documents that actually have the app. */
+body:has(.app) { cursor: none; }
 
 .app { position: fixed; inset: 0; }
 .app canvas { cursor: none !important; }

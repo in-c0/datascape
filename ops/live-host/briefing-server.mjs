@@ -102,6 +102,86 @@ export function preflightFromManifest({ liveDir = HERE, stateDir = STATE_DIR() }
   };
 }
 
+/**
+ * The authority subsystem's gate, read from the same manifest.
+ *
+ * Kept here rather than imported from the deploy tool for the same reason the
+ * base preflight is: this file must load on a host where the security layer
+ * does not.
+ */
+export function manifestAuthorityGate({ liveDir = HERE, stateDir = STATE_DIR() } = {}) {
+  const manifest = JSON.parse(read(path.join(stateDir, "deployed.json")) || "null");
+  const recorded = manifest?.authority_files ?? null;
+  if (!recorded || !Array.isArray(recorded) || recorded.length === 0) {
+    return { ok: false, reason: "this host has no reviewed authority subsystem deployed" };
+  }
+
+  // EXACT CLOSURE, not "every file the manifest happened to list".
+  //
+  // Checking only the recorded entries passes a manifest that forgot a
+  // dependency: authority-host.mjs imports a sibling, the manifest records only
+  // the host, every recorded file hash-matches, and the gate opens on a module
+  // whose import falls through to an unrecorded — possibly stale — file.
+  //
+  // So the live set must EQUAL the recorded set, and every authority-relative
+  // import must resolve inside it. Imports into the already-reviewed
+  // `_continuity` base artifact are fine; anything else is not.
+  const expected = new Set(recorded.map((entry) => entry.dest));
+  const actual = new Set(listLiveAuthorityFiles(liveDir));
+
+  const missing = [...expected].filter((dest) => !actual.has(dest));
+  if (missing.length) {
+    return { ok: false, reason: `the authority artifact is incomplete: missing ${missing.join(", ")}` };
+  }
+  const stale = [...actual].filter((dest) => !expected.has(dest));
+  if (stale.length) {
+    return { ok: false, reason: `unrecorded authority code is present: ${stale.join(", ")}` };
+  }
+  const drifted = recorded.filter((entry) => {
+    const live = read(path.join(liveDir, entry.dest));
+    return live === null || sha(live) !== entry.hash;
+  }).map((entry) => entry.dest);
+  if (drifted.length) {
+    return { ok: false, reason: `the authority artifact does not match this deployment: ${drifted.join(", ")}` };
+  }
+
+  const entry = manifest.authority_entry ?? "_authority/authority-host.mjs";
+  if (!expected.has(entry)) {
+    return { ok: false, reason: `the recorded authority entry ${entry} is not part of the recorded set` };
+  }
+
+  // Every authority-relative import must land inside the closed set.
+  for (const dest of expected) {
+    const source = read(path.join(liveDir, dest)) ?? "";
+    for (const match of source.matchAll(/(?:from|import)\s*\(?\s*["'](\.[^"']+)["']/g)) {
+      const target = path.posix.normalize(path.posix.join(path.posix.dirname(dest), match[1]));
+      if (target.startsWith("_continuity/")) continue;
+      if (!expected.has(target)) {
+        return { ok: false, reason: `${dest} imports ${match[1]}, which is not part of the reviewed authority set` };
+      }
+    }
+  }
+
+  return { ok: true, entry, files: [...expected].sort() };
+}
+
+/** The authority code files actually present, as opposed to those recorded. */
+function listLiveAuthorityFiles(liveDir) {
+  const root = path.join(liveDir, "_authority");
+  const out = [];
+  const walk = (dir, prefix) => {
+    let entries = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const item of entries) {
+      const rel = `${prefix}${item.name}`;
+      if (item.isDirectory()) { walk(path.join(dir, item.name), `${rel}/`); continue; }
+      if (/\.(mjs|js|cjs)$/.test(item.name)) out.push(rel);
+    }
+  };
+  walk(root, "_authority/");
+  return out.sort();
+}
+
 function isLoopbackHost(hostHeader) {
   if (!hostHeader) return false;
   const host = String(hostHeader).trim().toLowerCase();
@@ -178,6 +258,10 @@ export async function startLiveHost({
     return {
       mode: "read_only", gate, server, port: server.address().port,
       owner_rulings: false, security_runtime_imported: false,
+      // Stated on this path too: a fail-closed host has no authority route
+      // either, and a caller should not have to infer that from an absence.
+      authority_available: false,
+      authority_reason: "the base security layer is not verified, so no subsystem is served",
       close: () => new Promise((resolve) => server.close(resolve)),
     };
   }
@@ -187,12 +271,116 @@ export async function startLiveHost({
   const url = pathToFileURL(path.resolve(liveDir, "_continuity", "briefing-server-core.mjs")).href;
   const core = await import(url);
   const deps = makeDeps ? await makeDeps(core) : core.createOwnerRulingDeps();
-  const server = core.createServer(deps);
+
+  // The AUTHORITY subsystem is gated separately and composed dynamically. A
+  // broken or absent authority build must not be able to take her working
+  // owner-ruling host down with it, so nothing here is imported unless its own
+  // gate passes — and the core never references it at all.
+  let authority = null;
+  let authorityReason = null;
+  let transaction = null;
+  const authorityGate = manifestAuthorityGate({ liveDir, stateDir });
+  if (authorityGate.ok) {
+    try {
+      const mod = await import(pathToFileURL(path.resolve(liveDir, authorityGate.entry)).href);
+
+      // THE TRANSACTION, composed here rather than inside the authority
+      // subsystem, because the pieces it needs cross the artifact boundary:
+      // `atomic` is the writer that touches her real exception files and lives
+      // in `_continuity/`, while the journal and the record construction live
+      // in `_authority/`. Importing across those directories from either side
+      // is how a module ends up resolvable in the repo and absent in the
+      // release, so the composition happens at the one point that can see both.
+      try {
+        const txMod = await import(pathToFileURL(
+          path.resolve(liveDir, "_authority", "authority-transaction.mjs")).href);
+        const atomicMod = await import(pathToFileURL(
+          path.resolve(liveDir, "_continuity", "exception-atomic.js")).href);
+        // The inbox comes from the DEPLOYED exception store, not from a
+        // constant here. Two places naming her exception directory is two
+        // places that can disagree about which one the host is ruling on.
+        const storeMod = await import(pathToFileURL(
+          path.resolve(liveDir, "exception.mjs")).href);
+        transaction = txMod.createAuthorityTransaction({
+          fs,
+          journalFile: path.join(stateDir, "authority-journal.json"),
+          inbox: storeMod.INBOX,
+          // The whole module: the adapter needs the writer, the path resolver
+          // and the parser, and checks for all three rather than trusting one.
+          atomic: atomicMod,
+          now: deps.now,
+          // The loop whose exception IS the authority domain. Configured, not
+          // guessed: with no loop set, the read surface and `prepare` both
+          // refuse by name rather than picking a blocker out of directory order.
+          authorityLoop: process.env.CONTINUITY_AUTHORITY_LOOP || null,
+        });
+      } catch (error) {
+        // NAMED, and surfaced in the startup state below. A host whose
+        // unlock/status routes work while prepare and commit answer 501 is
+        // partially available, and reporting it as simply "available" is the
+        // same defect the topology gate was just corrected for.
+        authorityReason = `the authority transaction could not be composed: ${error.message}`;
+      }
+
+      authority = mod.createAuthorityHost({
+        presence: deps.presence,
+        now: deps.now,
+        ownerControlsOrigin: process.env.CONTINUITY_OWNER_CONTROLS_ORIGIN || null,
+        apiOrigin: `http://${host}:${port || PORT}`,
+        transaction,
+      });
+      if (!authority.topology.ok) authorityReason = authority.topology.reason;
+      // AVAILABILITY MUST FOLLOW THE TOPOLOGY GATE.
+      //
+      // Keeping the object and reporting `authority_available: true` while
+      // every authority request answers 503 made the startup state disagree
+      // with the running surface. The route failing closed is what protects
+      // her; a status line that says the subsystem is up is what makes a
+      // misconfigured host look healthy to whoever reads it next. The object is
+      // still kept so the route can answer 503 with a reason rather than 404.
+    } catch (error) {
+      authority = null;
+      authorityReason = `the authority subsystem failed to load: ${error.message}`;
+    }
+  } else {
+    authorityReason = authorityGate.reason;
+  }
+
+  // Resolved once at startup, from the same code the routes use.
+  const domainState = (() => {
+    try {
+      const found = transaction?.domain?.();
+      if (!found) return { ok: false, reason: authorityReason || "no authority transaction is composed" };
+      return { ok: Boolean(found.ok), reason: found.reason ?? null };
+    } catch (error) {
+      return { ok: false, reason: `the authority domain could not be resolved: ${error.message}` };
+    }
+  })();
+
+  const server = core.createServer(deps, {
+    authority, authorityReason,
+    ownerControlsOrigin: process.env.CONTINUITY_OWNER_CONTROLS_ORIGIN || null,
+  });
   await new Promise((resolve) => server.listen(port, host, resolve));
 
   return {
     mode: "owner_rulings", gate, server, core, deps, port: server.address().port,
     owner_rulings: true, security_runtime_imported: true,
+    authority_available: Boolean(authority) && authority.topology.ok === true,
+    // Distinct from availability: the read/unlock surface can be live while the
+    // mutation transaction is not composed. Stating both beats a single flag
+    // that has to mean two things.
+    authority_transaction: Boolean(authority?.operations?.includes("commit")),
+    // Stated as data so it can be asserted against rather than described.
+    authority_operations: authority?.operations ?? [],
+    // A THIRD fact, distinct from the other two. The subsystem can be served
+    // and the transaction composed while the host is acting for no authority
+    // domain at all — with no loop configured, every read and every prepare
+    // refuses. Collapsing that into "available" made an unusable surface look
+    // ready.
+    authority_domain_ready: domainState.ok,
+    authority_domain_reason: domainState.ok ? null : domainState.reason,
+    authority_reason: authorityReason,
     close: () => new Promise((resolve) => server.close(resolve)),
   };
 }

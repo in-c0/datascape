@@ -19,6 +19,8 @@
 
 import { useEffect, useState } from "react";
 import AuthorityShell from "./AuthorityShell.jsx";
+import OwnerReadGate from "./OwnerReadGate.jsx";
+import { createOwnerReadClient } from "./control/owner-read-client.js";
 import { AUTHORITY_ENDPOINT, createAuthorityEndpointClient } from "./control/authority-endpoint-client.js";
 
 export default function LiveAuthorityView() {
@@ -69,6 +71,16 @@ export default function LiveAuthorityView() {
     );
   }
 
-  // No endpoint argument: the client uses the fixed same-origin path.
-  return <AuthorityShell adapter={createAuthorityEndpointClient()} />;
+  // The GATE, not a lookalike: the live route mounts the same component the
+  // review route screenshots, differing only in which client it is handed.
+  //
+  // It wraps the shell rather than sitting beside it, so the authority surface
+  // is not reachable at all without a live owner-read session. That is a
+  // presentation guarantee only — the host authenticates every request on its
+  // own, and would refuse an unlocked caller even if this markup were removed.
+  return (
+    <OwnerReadGate client={createOwnerReadClient()}>
+      <AuthorityShell adapter={createAuthorityEndpointClient()} />
+    </OwnerReadGate>
+  );
 }

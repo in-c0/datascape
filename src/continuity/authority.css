@@ -182,3 +182,19 @@
  * is written (spec V6.1.5 PR B third review). */
 .au-confirm { border-color: rgba(232, 192, 120, 0.45); }
 .au-prev__line { font-size: 13.5px; margin: 0 0 9px; }
+
+/* The host's prepared review. The prompt is shown verbatim and in monospace
+ * because it is a quotation, not our own prose: these are the exact words
+ * Windows will use, and styling them as body copy would invite paraphrase. */
+.au__prepared { margin-top: 18px; }
+.au__preparednote { color: var(--au-muted); font-size: 13.5px; margin: 0 0 8px; }
+.au__prompt {
+  margin: 0 0 14px;
+  padding: 15px 17px;
+  border-radius: 10px;
+  border: 1px solid rgba(167, 139, 250, 0.38);
+  background: rgba(5, 7, 15, 0.6);
+  color: var(--au-text);
+  font: 400 13.5px/1.6 ui-monospace, "Cascadia Mono", "SF Mono", Menlo, monospace;
+  white-space: pre-wrap;
+}

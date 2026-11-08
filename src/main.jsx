@@ -31,7 +31,10 @@ const requestedView = new URLSearchParams(window.location.search).get("view");
 // its import graph contains no authority writer at all. A query-string change
 // cannot turn a fixture caller into an authenticated owner caller, because the
 // two routes load different modules with different capabilities.
-const VIEWS = new Set(["continuity", "briefing", "authority", "authority-review"]);
+// `owner-gate-review` is the fixture-only view of the owner-read gate, added
+// for visual review of the lock states. Same separation as above: it loads a
+// fixture client with no transport, so it cannot open a session.
+const VIEWS = new Set(["continuity", "briefing", "authority", "authority-review", "owner-gate-review"]);
 const view = VIEWS.has(requestedView) ? requestedView : "landscape";
 
 function screen(html) {
@@ -44,7 +47,7 @@ screen(`<div class="boot__brand">${config.siteName.toUpperCase()}</div>
 
 // The authority surface reads no portfolio data at all — another reason it
 // cannot touch owner state.
-(view === "authority" || view === "authority-review"
+(view === "authority" || view === "authority-review" || view === "owner-gate-review"
   ? Promise.resolve()
   : view === "briefing" ? loadBriefing(config.dataBase) : loadData(config.dataBase))
   .then(async () => {
@@ -61,7 +64,9 @@ screen(`<div class="boot__brand">${config.siteName.toUpperCase()}</div>
           ? import("./continuity/LiveAuthorityView.jsx")
           : view === "authority-review"
             ? import("./continuity/ReviewAuthorityView.jsx")
-            : import("./App.jsx");
+            : view === "owner-gate-review"
+              ? import("./continuity/GateReviewView.jsx")
+              : import("./App.jsx");
     const [{ StrictMode }, { createRoot }, { default: App }] = await Promise.all([
       import("react"),
       import("react-dom/client"),

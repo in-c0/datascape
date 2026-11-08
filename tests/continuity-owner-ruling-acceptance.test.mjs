@@ -131,7 +131,7 @@ test("acceptance: a proposal that changes while Hello is open is NOT approved", 
     world.broker.duringPrompt = async () => {
       const file = world.file(id);
       fs.writeFileSync(path.join(world.inbox, `${id}.md`),
-        file.replace("proposed: rev2 — spend $40", "proposed: rev3 — spend $400"));
+        file.replace("rev2 — spend $40", "rev3 — spend $400"));
     };
 
     const result = await world.act({ id, action: "approve", operation_id: op("stale") });

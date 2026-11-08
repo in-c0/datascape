@@ -69,7 +69,50 @@ export const ARTIFACT = [
   { dest: "_continuity/owner-ruling-policy.js", source: "src/continuity/control/owner-ruling-policy.js" },
   { dest: "_continuity/exception-atomic.js", source: "src/continuity/control/exception-atomic.js" },
   { dest: "_continuity/owner-presence-windows.js", source: "src/continuity/control/owner-presence-windows.js" },
+  { dest: "_continuity/owner-presence-coordinator.js", source: "src/continuity/control/owner-presence-coordinator.js" },
 ];
+
+/**
+ * The AUTHORITY artifact — a separate reviewed group, deployed to `_authority/`.
+ *
+ * Separate because a broken authority build must not be able to stop the base
+ * owner-ruling host from loading. Its files are hash-recorded independently, and
+ * the entry point gates them independently, so "authority is broken" and "the
+ * host is broken" stay different sentences.
+ *
+ * The gate was built and tested while this group was empty, deliberately, so
+ * the failure path shipped before the thing it gates.
+ */
+export const AUTHORITY_ARTIFACT = [
+  { dest: "_authority/authority-host.mjs", source: "ops/live-host/authority-host.mjs" },
+  { dest: "_authority/authority-read-session.js", source: "src/continuity/control/authority-read-session.js" },
+  { dest: "_authority/authority-exception-adapter.js", source: "src/continuity/control/authority-exception-adapter.js" },
+  { dest: "_authority/authority-commit.js", source: "src/continuity/control/authority-commit.js" },
+  // The receipt binding and the revision algebra the commit path depends on.
+  // Every addition here is a deliberate widening of the reviewed set — the
+  // runtime gate refuses an import that is not in it, which is how this file
+  // stays the authority on what ships rather than a description of it.
+  { dest: "_authority/authority-operation.js", source: "src/continuity/control/authority-operation.js" },
+  { dest: "_authority/authority-exception-port.js", source: "src/continuity/control/authority-exception-port.js" },
+  { dest: "_authority/authority-journal.js", source: "src/continuity/control/authority-journal.js" },
+  { dest: "_authority/authority-domain.js", source: "src/continuity/control/authority-domain.js" },
+  // The transaction composition, and the record construction it reuses. The
+  // closure below is what `createAuthorityStore` actually pulls in; the runtime
+  // gate verifies it exactly, so this list is the authority on what ships
+  // rather than a description of it.
+  { dest: "_authority/authority-transaction.mjs", source: "ops/live-host/authority-transaction.mjs" },
+  { dest: "_authority/authority-receipt.js", source: "src/continuity/control/authority-receipt.js" },
+  { dest: "_authority/authority-store.js", source: "src/continuity/control/authority-store.js" },
+  { dest: "_authority/authority-draft.js", source: "src/continuity/control/authority-draft.js" },
+  { dest: "_authority/declaration.js", source: "src/continuity/control/declaration.js" },
+  { dest: "_authority/goal.js", source: "src/continuity/control/goal.js" },
+  { dest: "_authority/intent.js", source: "src/continuity/control/intent.js" },
+  { dest: "_authority/scope.js", source: "src/continuity/control/scope.js" },
+  { dest: "_authority/topic.js", source: "src/continuity/control/topic.js" },
+];
+
+/** The one module the host imports to reach the authority subsystem. */
+export const AUTHORITY_ENTRY = "_authority/authority-host.mjs";
 
 /**
  * Host dependencies: not ours to version, but they decide whether an owner
@@ -268,6 +311,28 @@ async function reviewedGuard(commit) {
   return { ok: true, patch: module.patchExceptionSource, hash: sha(bytes) };
 }
 
+/**
+ * Every code file currently sitting in the live `_authority/` directory.
+ *
+ * The actual set, not the manifest's idea of it — the two disagreeing is the
+ * failure this exists to detect.
+ */
+export function listAuthorityFiles(liveDir = liveDir_()) {
+  const root = path.join(liveDir, "_authority");
+  const out = [];
+  const walk = (dir, prefix) => {
+    let entries = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      const rel = `${prefix}${entry.name}`;
+      if (entry.isDirectory()) { walk(path.join(dir, entry.name), `${rel}/`); continue; }
+      if (/\.(mjs|js|cjs)$/.test(entry.name)) out.push(rel);
+    }
+  };
+  walk(root, "_authority/");
+  return out.sort();
+}
+
 /** The live store's bytes, and whether the owner gate is installed in them. */
 export function guardedStoreState({ liveDir = liveDir_() } = {}) {
   const raw = read(path.join(liveDir, GUARDED_STORE));
@@ -307,6 +372,40 @@ export function verifyAgainstCommit({ commit, liveDir = liveDir_(), only = null 
     };
   });
   return { ok: files.every((f) => f.matches), commit: resolved, files };
+}
+
+/**
+ * The AUTHORITY subsystem's own gate.
+ *
+ * Deliberately separate from `preflight()`. A caller asks this question after
+ * the base gate has already passed, and a "no" here disables one route rather
+ * than the host.
+ */
+export async function authorityPreflight({ liveDir = liveDir_(), stateDir: sd = stateDir() } = {}) {
+  // ONE semantic implementation, shared with the runtime.
+  //
+  // This used to check only the declared AUTHORITY_ARTIFACT files against
+  // recorded hashes, while the runtime gate enforced exact live-vs-recorded
+  // closure, stale-file rejection and import containment. Two things called
+  // "authority preflight" that could disagree is how governance reporting
+  // outruns production reality — the operator gate says PASS, the host says
+  // FAIL, and only one of them is in the report.
+  //
+  // Ask the DEPLOYED entry point, not the checkout's copy of it.
+  //
+  // Delegating to `repoDir()/ops/live-host/briefing-server.mjs` shared source
+  // semantics only while the working tree happened to match the release: a
+  // dirty checkout could return PASS for a host that fails at startup. That is
+  // the same provenance class already fixed for the guard transformation, and
+  // an operator gate that runs unreviewed logic is exactly how a report and a
+  // host disagree.
+  const entryPath = path.join(liveDir, "briefing-server.mjs");
+  if (!fs.existsSync(entryPath)) {
+    return { ok: false, reason: "no deployed entry point to ask", expected: AUTHORITY_ARTIFACT.length };
+  }
+  const entry = await import(`${pathToFileURL(entryPath).href}?deployed=${sha(read(entryPath) ?? "")}`);
+  const verdict = entry.manifestAuthorityGate({ liveDir, stateDir: sd });
+  return { ...verdict, expected: AUTHORITY_ARTIFACT.length, gate_source: "deployed" };
 }
 
 /**
@@ -372,7 +471,7 @@ export async function deploy({ commit, at = null, dryRun = true, liveDir = liveD
   if (!resolved) return { ok: false, reason: `not a commit in this repository: ${commit}` };
 
   const staged = [];
-  for (const entry of ARTIFACT) {
+  for (const entry of [...ARTIFACT, ...AUTHORITY_ARTIFACT]) {
     const bytes = gitBlob(resolved, entry.source);
     if (bytes === null) return { ok: false, reason: `${entry.source} does not exist at ${resolved.slice(0, 12)}` };
     const target = path.join(liveDir, entry.dest);
@@ -386,7 +485,10 @@ export async function deploy({ commit, at = null, dryRun = true, liveDir = liveD
     if (!dryGuard.ok) return { ok: false, dry_run: true, reason: dryGuard.reason, dirty_guard: Boolean(dryGuard.dirty) };
     return {
       ok: true, dry_run: true, commit: resolved, changes,
-      files: staged.map((f) => ({ dest: f.dest, hash: f.hash, live_hash: f.live_hash, would_write: f.target })),
+      files: staged.filter((f) => !f.dest.startsWith("_authority/"))
+        .map((f) => ({ dest: f.dest, hash: f.hash, live_hash: f.live_hash, would_write: f.target })),
+      authority_files: staged.filter((f) => f.dest.startsWith("_authority/"))
+        .map((f) => ({ dest: f.dest, hash: f.hash, live_hash: f.live_hash, would_write: f.target })),
       would_guard_exception_store: !guardedStoreState({ liveDir }).patched,
       working_tree_drift: workingTreeDrift(resolved),
     };
@@ -461,6 +563,21 @@ export async function deploy({ commit, at = null, dryRun = true, liveDir = liveD
     if (!fs.existsSync(target)) fs.writeFileSync(target, bytes);
   }
 
+  // The WHOLE previous authority world, whatever was in it. Recorded by name so
+  // a rollback can tell "this file existed before" from "this file is ours and
+  // had no predecessor" — the second must be DELETED on rollback, or a
+  // rolled-back host ends up with candidate authority code sitting beside old
+  // base code.
+  const previousAuthority = listAuthorityFiles(liveDir);
+  for (const dest of previousAuthority) {
+    const bytes = read(path.join(liveDir, dest));
+    if (bytes === null) continue;
+    const target = path.join(backupDir, dest);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    if (!fs.existsSync(target)) fs.writeFileSync(target, bytes);
+  }
+  fs.writeFileSync(path.join(backupDir, "authority-world.json"), JSON.stringify(previousAuthority, null, 2));
+
   for (const file of staged) {
     if (file.live !== null) {
       const backup = path.join(backupDir, file.dest);
@@ -484,7 +601,12 @@ export async function deploy({ commit, at = null, dryRun = true, liveDir = liveD
   fs.writeFileSync(MANIFEST(), JSON.stringify({
     commit: resolved,
     deployed_at: at,
-    files: staged.map((f) => ({ dest: f.dest, source: f.source, hash: f.hash })),
+    files: staged.filter((f) => !f.dest.startsWith("_authority/"))
+      .map((f) => ({ dest: f.dest, source: f.source, hash: f.hash })),
+    // Recorded separately so the authority subsystem can be gated on its own.
+    authority_files: staged.filter((f) => f.dest.startsWith("_authority/"))
+      .map((f) => ({ dest: f.dest, source: f.source, hash: f.hash })),
+    authority_entry: AUTHORITY_ENTRY,
     previous: { backup_set: backupSet, files: staged.map((f) => ({ dest: f.dest, hash: f.live_hash })) },
     // The guard is part of the release record: what it was, what transformed
     // it, and what it must hash to for the preflight to let the host serve.
@@ -502,6 +624,16 @@ export async function deploy({ commit, at = null, dryRun = true, liveDir = liveD
     host_dependencies: hostDependencyEvidence(liveDir),
   }, null, 2));
 
+  // Stale authority code must not survive a release: an unrecorded file left
+  // beside the new set is exactly what a fall-through import would reach.
+  const installedAuthority = new Set(AUTHORITY_ARTIFACT.map((e) => e.dest));
+  const removedAuthority = [];
+  for (const dest of listAuthorityFiles(liveDir)) {
+    if (installedAuthority.has(dest)) continue;
+    fs.rmSync(path.join(liveDir, dest));
+    removedAuthority.push(dest);
+  }
+
   // Only now that the store no longer imports it.
   const retired = [];
   for (const dest of RETIRED_ARTIFACT) {
@@ -511,7 +643,12 @@ export async function deploy({ commit, at = null, dryRun = true, liveDir = liveD
 
   return {
     ok: true, dry_run: false, commit: resolved, backup_set: backupSet, retired,
-    files: staged.map((f) => ({ dest: f.dest, hash: f.hash })),
+    removed_authority: removedAuthority,
+    // Split the same way the manifest splits them: "authority is broken" and
+    // "the host is broken" have to stay different sentences everywhere, not
+    // only in the file we wrote.
+    files: staged.filter((f) => !f.dest.startsWith("_authority/")).map((f) => ({ dest: f.dest, hash: f.hash })),
+    authority_files: staged.filter((f) => f.dest.startsWith("_authority/")).map((f) => ({ dest: f.dest, hash: f.hash })),
     exception_store: {
       original_preimage_hash: originalPreimageHash,
       previous_release_hash: previousReleaseHash,
@@ -528,8 +665,10 @@ export function rollback({ toBackupSet, at = null, dryRun = true, liveDir = live
   if (!toBackupSet || !fs.existsSync(backupDir)) {
     return { ok: false, reason: `no backup set ${toBackupSet}` };
   }
+  const previousAuthority = JSON.parse(read(path.join(backupDir, "authority-world.json")) || "[]");
   const restore = [...ARTIFACT, { dest: GUARDED_STORE, source: null },
-    ...RETIRED_ARTIFACT.map((dest) => ({ dest, source: null }))]
+    ...RETIRED_ARTIFACT.map((dest) => ({ dest, source: null })),
+    ...previousAuthority.map((dest) => ({ dest, source: null }))]
     .map((entry) => ({ ...entry, bytes: read(path.join(backupDir, entry.dest)) }))
     .filter((entry) => entry.bytes !== null);
   if (!restore.length) return { ok: false, reason: `backup set ${toBackupSet} contains nothing to restore` };
@@ -545,6 +684,17 @@ export function rollback({ toBackupSet, at = null, dryRun = true, liveDir = live
     fs.writeFileSync(tmp, file.bytes);
     fs.renameSync(tmp, target);
   }
+
+  // Authority files THIS release introduced had no predecessor, so restoring
+  // the previous world means deleting them. Leaving them would strand candidate
+  // authority code beside rolled-back base code.
+  const keep = new Set(previousAuthority);
+  const deleted = [];
+  for (const dest of listAuthorityFiles(liveDir)) {
+    if (keep.has(dest)) continue;
+    fs.rmSync(path.join(liveDir, dest));
+    deleted.push(dest);
+  }
   const manifest = JSON.parse(read(MANIFEST()) || "{}");
   fs.writeFileSync(MANIFEST(), JSON.stringify({
     ...manifest,
@@ -552,11 +702,18 @@ export function rollback({ toBackupSet, at = null, dryRun = true, liveDir = live
     // are known-good, not known-reviewed, and pretending otherwise would make
     // `matches_reviewed_source` mean two different things.
     commit: null,
+    // The rolled-back world's authority set, so the startup gate does not go on
+    // expecting files this rollback just deleted.
+    authority_files: [],
     rolled_back_to: toBackupSet,
     rolled_back_at: at,
     files: restore.map((f) => ({ dest: f.dest, hash: sha(f.bytes) })),
   }, null, 2));
-  return { ok: true, dry_run: false, restored: restore.map((f) => ({ dest: f.dest, hash: sha(f.bytes) })) };
+  return {
+    ok: true, dry_run: false,
+    restored: restore.map((f) => ({ dest: f.dest, hash: sha(f.bytes) })),
+    deleted_authority: deleted,
+  };
 }
 
 // Run directly: report only. Deployment is an explicit, non-default act.

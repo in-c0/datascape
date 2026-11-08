@@ -17,7 +17,6 @@
 
 import { verifyGoalAuthority } from "./goal.js";
 import { authorize, authorCanary, policyIdentityOf as policyIdentity } from "./authority-draft.js";
-import { bridge } from "./bridge.js";
 import { createAuthorityJournal, createMemoryStorage } from "./authority-journal.js";
 
 export const AUTH_ACTIONS = ["authorize_goal", "authorize_bounded_task", "narrow_authority", "revoke_authority"];
@@ -100,6 +99,27 @@ export function createAuthorityStore({ boundary, exceptions, now, verifier = ver
     const { draft } = request;
     if (!draft) return { ok: false, reason: "no draft supplied", outcome: "transaction_failed" };
 
+    // ABSENCE IS A REVISION, and an initial grant asserts it.
+    //
+    // The grant path built revision 1 unconditionally, so a second initial
+    // grant on a domain that already had authority created a RIVAL lineage
+    // rather than being refused — two revision-1 records for one domain, with
+    // nothing to say which governed.
+    //
+    // This surfaced when the operation id stopped being derived from the draft:
+    // the old id was deterministic, so a duplicate grant replayed the first one
+    // and hid the missing check. Idempotency was doing a job that belonged to a
+    // compare-and-swap.
+    if (request.source_exception_id) {
+      const governing = journal.currentForDomain(request.source_exception_id);
+      if (governing) {
+        return {
+          ok: false, outcome: "stale_revision",
+          reason: "this authority domain already has a grant; amend it or review again",
+        };
+      }
+    }
+
     const identity = policyIdentity(draft);
     if (request.policy_identity !== identity) {
       return { ok: false, outcome: "stale_preview", reason: "the draft changed after the preview; review is required again" };
@@ -139,7 +159,21 @@ export function createAuthorityStore({ boundary, exceptions, now, verifier = ver
   }
 
   function buildAmend(request, at) {
-    const existing = journal.current(request.goal_id);
+    // `request.existing` is the CURRENT RECORD FROM THE OUTER JOURNAL, supplied
+    // by the caller that owns the transaction.
+    //
+    // This store is constructed over its own journal, and in the deployed
+    // composition that journal is a dummy — the durable one lives outside, held
+    // by the commit path so there is exactly one transaction per mutation. So
+    // `journal.current()` here always saw nothing, and narrow and revoke could
+    // never build at all: they would refuse with "no authority to amend" for an
+    // authority that plainly existed.
+    //
+    // Falling back to the internal journal keeps the older in-process path
+    // working unchanged.
+    const existing = request.existing !== undefined
+      ? request.existing
+      : journal.current(request.goal_id);
     if (!existing) return { ok: false, outcome: "transaction_failed", reason: "no authority to amend" };
 
     // §6: compare-and-swap against the CURRENT committed revision.
@@ -181,6 +215,23 @@ export function createAuthorityStore({ boundary, exceptions, now, verifier = ver
      * asserted, via a fault injector supplied when this store is constructed —
      * never by anything in a request.
      */
+    /**
+     * Build the authority record WITHOUT transacting.
+     *
+     * The V6.1.6 commit path owns its own durable transaction — the pre-prompt
+     * claim, the presence consume and the final CAS all have to sit inside one
+     * `transact`, and calling `commit()` from within it would nest a
+     * transaction inside a transaction. This exposes the record construction on
+     * its own so there is still exactly ONE way a record is built, and exactly
+     * one journal it lands in.
+     *
+     * It writes nothing. The caller supplies the transaction.
+     */
+    buildFor(request, at = now()) {
+      const amending = request.action === "narrow_authority" || request.action === "revoke_authority";
+      return amending ? buildAmend(request, at) : buildGrant(request, at);
+    },
+
     commit(request) {
       if (!request.operation_id) return { ok: false, reason: "an authorization requires an operation_id" };
 
@@ -243,9 +294,19 @@ export function createAuthorityStore({ boundary, exceptions, now, verifier = ver
      * The V5 bridge (§8). Granting, narrowing and revoking are history; draft
      * edits and preview navigation emit nothing at all.
      */
-    materialEvents() {
-      return bridge(materialMutations(), { source_system: "continuity.authority" });
-    },
+    /**
+     * The material mutations, as DATA (V5 §8).
+     *
+     * The `bridge()` projection used to happen here. That put `bridge.js` — and
+     * through it the event schema outside `control/` — into the deployed
+     * authority subsystem's import closure, which the runtime gate refuses.
+     * It is right to refuse: a reviewed security set should not span the tree
+     * for a history projection the authority host never calls.
+     *
+     * So the store still produces the mutations and `authority-events.js` does
+     * the projection. Nothing is lost and the boundary stays where it belongs.
+     */
+    materialMutations,
   };
 }
 
